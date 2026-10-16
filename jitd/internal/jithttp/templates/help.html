@@ -1,0 +1,67 @@
+{{define "content"}}
+<h1>Help</h1>
+<p class="sub">Just-in-time access to Tailscale Services: ask for what you need, a person approves, the access turns itself off.</p>
+
+<div class="grid2 wide-left">
+<div>
+<section class="card prose">
+  <h2>How it works</h2>
+  <ol>
+    <li><b>Request.</b> Pick what you need, such as <i>Database access (read-only)</i>, and say why. Choose how long: minutes, hours or days, up to the flow's maximum. The access is for the device you are on{{with .Me}} (<b>{{.DeviceName}}</b>){{end}}.</li>
+    <li><b>Approve.</b> The flow's approvers get the request on their <a href="/">overview</a>; one click approves it; declining needs a short reason. Some flows need more than one approval, and some let you approve your own request.</li>
+    <li><b>Use.</b> Within a second or two the services appear on your device (<code>tailscale service list</code>). Connect without a username or password: Tailscale PAM adds the credentials for you. What you may do there is still up to the policy, so a read-only grant refuses writes.</li>
+    <li><b>Done.</b> Access ends on its own when the time is up. Finish early with <i>Revoke access</i>; withdraw a request nobody has decided on with <i>Cancel request</i>.</li>
+  </ol>
+  <p>Behind the scenes an approval sets the flow's device posture attribute (<code>custom:jit_&lt;name&gt;</code>) with an expiry through the Tailscale API, and a grant in the tailnet policy gated on that posture is what gives the access. The list under <i>Gives access to</i> is the admin's description of that grant, for choosing what to request. Each request page shows whether that attribute was read back from the device (<i>confirmed</i>) and, after it ends, whether it was seen gone again.</p>
+</section>
+
+<section class="card prose">
+  <h2>From Claude Code or scripts</h2>
+  <p>Install the <b>tailscale-pam</b> plugin (<code>/plugin marketplace add atoonk/tailscale-jit</code>, then <code>/plugin install tailscale-pam@tailscale-jit</code>). Claude then sees what you can reach, lists what you can request, files a request and prints the approval link for you to click.</p>
+  <p>Claude only asks for what a task needs, and never for longer than the flow allows. You stay in control: the approval link always comes to you.</p>
+</section>
+
+{{if .Admin}}
+<section class="card prose">
+  <h2>For admins</h2>
+  <ul>
+    <li><b>Define what people can ask for</b> in <a href="/admin/workflows">Approval flows</a>: who can request, who approves and how many must, how long access may last, and the one <b>posture attribute</b> an approval sets (such as <code>custom:jit_db_ro</code>). <b>Gives access to</b> describes what that unlocks, so people and agents pick the right flow; it grants nothing by itself. Each flow's page checks this against the tailnet policy. Disable a flow to stop new requests and keep its history.</li>
+    <li><b>Connect flows to the policy</b> with the <a href="/admin/policy">Policy snippet</a>: one posture and one grant per flow, each marked <i>already in your policy</i> or <i>NEW</i>. Paste what is missing into the tailnet policy and add the PAM permissions there; jitd never edits the policy itself. Remove any standing grant to the same services, or the approval changes nothing.</li>
+    <li><b>Check the credential</b> on <a href="/admin/setup">Setup</a>. It tries what approvals need (reading the policy, and setting a <a href="https://tailscale.com/docs/features/tailscale-accessbot-jit#posture-attributes-api-with-expiry">posture attribute with an expiry</a> on jitd's own node) and says what to fix. The credential lives in a file on the jitd host and is never shown. After editing the file, click <i>Check again</i>; no restart needed.</li>
+    <li><b>Roles.</b> Admins are set with <code>jitd -admins</code> (logins, <code>group:</code>, <code>tag:</code>). Admins see every request, can decline any pending request and revoke any access. Everyone else sees their own requests and the ones they approve for. Only the requester can cancel a request.</li>
+    <li><b>Pending requests</b> expire undecided after the flow's approval timeout (default 24 hours). One live request per flow and device.</li>
+    <li><b>Manage.</b> Everything above lives under <a href="/admin">/admin</a>, listed in the <i>Manage</i> section of the sidebar. End users never see that section.</li>
+    <li><b>API.</b> Anything on the tailnet can use the same JSON API the UI and the plugin use: <code>GET /v1/requestable</code> → <code>POST /v1/requests</code> → poll <code>GET /v1/requests/{id}</code>. Callers are identified by their Tailscale connection; there are no tokens. The <a href="/api/docs">interactive API docs</a> describe every endpoint; the raw spec is at <a href="/api/openapi.json"><code>/api/openapi.json</code></a>.</li>
+  </ul>
+</section>
+{{end}}
+</div>
+
+<div>
+<section class="card">
+  <h2>Links</h2>
+  <table class="plain">
+    <tr><td><a href="/requests/new">Request access</a></td></tr>
+    <tr><td><a href="/requests?scope=mine">My requests</a></td></tr>
+    {{if .Admin}}<tr><td><a href="/admin">Admin overview</a></td></tr>
+    <tr><td><a href="/api/docs">API documentation</a></td></tr>{{end}}
+    <tr><td><a href="https://github.com/atoonk/tailscale-jit">Source, plugin and README</a></td></tr>
+    {{if .Admin}}<tr><td><a href="https://github.com/atoonk/tailscale-jit/tree/main/jitd">Setting up and running jitd</a></td></tr>{{end}}
+    <tr><td><a href="https://tailscale.com/docs/features/device-posture/postures-in-access-rules">Tailscale: postures in access rules</a></td></tr>
+    <tr><td><a href="https://tailscale.com/docs/features/tailscale-accessbot-jit#posture-attributes-api-with-expiry">Tailscale: posture attributes API with expiry</a></td></tr>
+  </table>
+</section>
+<section class="card">
+  <h2>Statuses</h2>
+  <table class="plain">
+    <tr><td><span class="status pending">pending</span></td><td>waiting for approval</td></tr>
+    <tr><td><span class="status approved">approved</span></td><td>access is on, until it expires</td></tr>
+    <tr><td><span class="status declined">declined</span></td><td>an approver said no</td></tr>
+    <tr><td><span class="status cancelled">cancelled</span></td><td>withdrawn by the requester</td></tr>
+    <tr><td><span class="status expired">expired</span></td><td>time ran out, or nobody decided</td></tr>
+    <tr><td><span class="status revoked">revoked</span></td><td>ended early</td></tr>
+  </table>
+</section>
+</div>
+</div>
+{{end}}

@@ -1,0 +1,71 @@
+{{define "content"}}
+<div class="crumbs"><a href="/requests">Access requests</a> › New</div>
+<h1>Request access</h1>
+<p class="sub">Pick one or more, then <b>Request access</b>. Access goes to this device{{with .Me}} ({{.DeviceName}}){{end}} once it is approved, and ends on its own.</p>
+{{if not .Me}}
+<div class="empty">Cannot identify you: {{.MeErr}}</div>
+{{else if not .Data}}
+<div class="empty">There is nothing you can request. No approval flow lists you as a requester.</div>
+{{else}}
+<div class="picker" id="picker">
+  <div class="toolbar">
+    <input type="search" id="filter" placeholder="Filter by name, description or resource…" autocomplete="off" aria-label="Filter">
+    <div class="views" role="group" aria-label="View">
+      <button type="button" class="on" data-view="tiles" title="Tiles">▦ Tiles</button>
+      <button type="button" data-view="list" title="List">☰ List</button>
+    </div>
+  </div>
+
+  <div class="tiles" id="flows">
+    {{range $w := .Data}}
+    <label class="tile" data-text="{{$w.WorkflowName}} {{$w.Description}} {{range $w.Resources}}{{.Name}} {{.Description}} {{end}}">
+      <input type="checkbox" name="workflow" value="{{$w.WorkflowID}}"
+        data-name="{{$w.WorkflowName}}" data-max="{{secs $w.MaxDuration}}" data-maxlabel="{{human $w.MaxDuration}}" data-default="{{secs $w.DefaultDuration}}"
+        {{with $w.ActiveStatus}}data-active="{{.}}"{{end}}>
+      <span class="box" aria-hidden="true"></span>
+      <div class="tilebody">
+        <div class="tilehead">
+          <b>{{$w.WorkflowName}}</b>
+          {{with $w.ActiveStatus}}<a class="status {{.}}" href="/requests/{{$w.ActiveRequestID}}" title="You already have a request for this; open it">{{if eq . "approved"}}active{{else}}{{.}}{{end}}</a>{{end}}
+        </div>
+        {{with $w.Description}}<div class="desc">{{.}}</div>{{end}}
+        {{if $w.Policy.NoEffect}}<div class="small warn">⚠ Not set up in the tailnet policy yet: approving this unlocks nothing. Ask an admin.</div>{{end}}
+        {{if $w.Resources}}<ul class="resources">{{range $w.Resources}}<li><code>{{.Name}}</code>{{with .Description}} <span class="muted">{{.}}</span>{{end}}</li>{{end}}</ul>{{end}}
+        <div class="meta">Up to {{human $w.MaxDuration}} · {{if $w.AllowSelfApproval}}you can approve it yourself{{else}}approved by {{principals $w.Approvers}}{{end}}{{if gt $w.ApprovalsRequired 1}} · {{$w.ApprovalsRequired}} approvals{{end}}</div>
+      </div>
+    </label>
+    {{end}}
+  </div>
+  <div class="empty" id="nomatch" hidden>Nothing matches that filter.</div>
+
+  <div class="selbar" id="selbar" hidden>
+    <span id="selcount"></span>
+    <button type="button" class="btn" id="clearsel">Clear</button>
+    <button type="button" class="btn primary" id="openreq">Request access</button>
+  </div>
+</div>
+
+<dialog id="reqdialog" class="modal">
+  <form class="form" data-form="request" method="dialog">
+    <h2>Request access</h2>
+    <ul class="chosen" id="chosen"></ul>
+    <div class="field">
+      <span class="label">For how long</span>
+      <div class="durpick">
+        <input type="number" name="dur_n" min="1" step="1" inputmode="numeric" required aria-label="Amount">
+        <select name="dur_unit" aria-label="Unit">
+          {{range durationUnits}}<option value="{{.Seconds}}" data-suffix="{{.Suffix}}">{{.Label}}</option>{{end}}
+        </select>
+      </div>
+      <span class="hint" id="maxhint"></span>
+    </div>
+    <label>Reason <textarea name="reason" rows="3" required placeholder="What you need to do and why"></textarea></label>
+    <div class="actions">
+      <button class="btn primary" type="submit" id="submitreq">Submit request</button>
+      <button class="btn" type="button" id="closereq">Cancel</button>
+    </div>
+    <ul class="results" id="results" hidden></ul>
+  </form>
+</dialog>
+{{end}}
+{{end}}

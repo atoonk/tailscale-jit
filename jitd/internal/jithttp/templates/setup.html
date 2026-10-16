@@ -1,0 +1,75 @@
+{{define "content"}}
+<div class="head">
+  <div>
+    <h1>Setup</h1>
+    <p class="sub">Is jitd installed right? This checks the Tailscale API credentials by using them the way an approval does. The credentials themselves are never shown here.</p>
+  </div>
+  <button class="btn primary" type="button" id="setupcheck">Check again</button>
+</div>
+{{with .Data}}
+{{if .OK}}
+<div class="flash ok" style="display:block">Everything works. Checked {{ago .CheckedAt}}.</div>
+{{else}}
+{{if .Transient}}
+<div class="flash error" style="display:block">The Tailscale API could not be reached or failed for a moment, so the check is incomplete; jitd keeps using the credential and retries. Checked {{ago .CheckedAt}}.</div>
+{{else}}
+<div class="flash error" style="display:block">Something needs fixing; see below. Checked {{ago .CheckedAt}}. Approvals fail until this is green.</div>
+{{end}}
+{{end}}
+
+<div class="grid2 wide-left">
+<div>
+<section class="card">
+  <h2>Checks</h2>
+  <table class="plain checks">
+    {{range .Checks}}
+    <tr>
+      <td class="nowrap"><b>{{.Name}}</b></td>
+      <td class="nowrap">{{if .Skipped}}<span class="status expired">skipped</span>{{else if .OK}}<span class="status approved">passed</span>{{else}}<span class="status declined">failed</span>{{end}}</td>
+      <td>{{.Detail}}{{with .Fix}}<div class="fix">{{.}}</div>{{end}}</td>
+    </tr>
+    {{end}}
+  </table>
+</section>
+
+<section class="card prose">
+  <h2>How to set up the credentials</h2>
+  <p>jitd needs an API credential to set posture attributes on devices (that is how an approval turns access on) and to read the policy file (to resolve <code>group:</code> principals, check each flow against the policy and mark the policy snippet). It reads the credential from a file on the host it runs on, so none of the admins here ever sees it.</p>
+  <p>Approvals use custom posture attributes with an expiry, set through the Tailscale API; see <a href="https://tailscale.com/docs/features/tailscale-accessbot-jit#posture-attributes-api-with-expiry">Posture attributes API with expiry</a>; it needs a Premium or Enterprise plan.</p>
+  <ol>
+    <li>In the <a href="https://login.tailscale.com/admin/settings/oauth">Tailscale admin console</a> go to <b>Settings → OAuth clients → Generate OAuth client</b>. Give it a description such as <i>jitd</i> and these scopes: <b>Devices → Posture attributes: Write</b> and <b>Policy file: Read</b>. Copy the client ID and the secret; the secret is shown once.</li>
+    <li>On the host running jitd, put them in <code>{{.Credentials.File}}</code>, one per line, readable only by the user jitd runs as (<code>chmod 600</code>):
+<pre class="code">TS_OAUTH_CLIENT_ID=...
+TS_OAUTH_CLIENT_SECRET=tskey-client-...</pre>
+      An API access token (<code>TS_API_KEY=tskey-api-...</code>) works too, but it expires after at most 90 days; an OAuth client does not.</li>
+    <li>Come back here and click <b>Check again</b>. No restart is needed; jitd re-reads the file and starts using the new credential if the checks pass.</li>
+  </ol>
+  <p class="muted small">Variables set in jitd's environment are used for anything the file does not set (for example when it runs in a container). Another file can be chosen with <code>jitd -env-file</code>.</p>
+</section>
+</div>
+
+<div>
+<section class="card">
+  <h2>Credentials</h2>
+  <table class="plain">
+    <tr><td>Type</td><td>{{if eq .Credentials.Kind "oauth"}}OAuth client{{else if eq .Credentials.Kind "api_key"}}API access token{{else}}<span class="warn">none</span>{{end}}</td></tr>
+    <tr><td>File</td><td><code>{{.Credentials.File}}</code>{{if .Credentials.FileExists}} <span class="muted">(present)</span>{{else}} <span class="warn">(missing)</span>{{end}}{{with .Credentials.FileWarning}}<div class="warn small">{{.}}</div>{{end}}</td></tr>
+    {{with .Credentials.FromFile}}<tr><td>From the file</td><td>{{join .}}</td></tr>{{end}}
+    {{with .Credentials.FromEnv}}<tr><td>From the environment</td><td>{{join .}}</td></tr>{{end}}
+  </table>
+</section>
+<section class="card">
+  <h2>This node</h2>
+  <table class="plain">
+    <tr><td>Name</td><td>{{or .Node.DNSName "unknown"}}</td></tr>
+    <tr><td>Node ID</td><td><code>{{or .Node.ID "unknown"}}</code></td></tr>
+    <tr><td>Tags</td><td>{{if .Node.Tags}}{{join .Node.Tags}}{{else}}<span class="muted">none</span>{{end}}</td></tr>
+  </table>
+  <p class="muted small">The tailnet policy must let people reach this node: <code>tagOwners</code> for <code>{{.Tag}}</code> and a grant to it on the port jitd serves (<code>tcp:80</code>, plus <code>tcp:443</code> with <code>-https</code>); both are in the <a href="/admin/policy">policy snippet</a>.</p>
+</section>
+</div>
+</div>
+{{else}}
+<div class="empty">This build has no setup check (the preview and tests run without a Tailscale API).</div>
+{{end}}
+{{end}}

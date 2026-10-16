@@ -1,0 +1,20 @@
+{{define "content"}}
+<div class="head">
+  <div>
+    <h1>Policy snippet</h1>
+    <p class="sub">The postures and grants your approval flows need, generated from the flows. Merge this into the tailnet policy file in the admin console; this app never edits your policy.</p>
+  </div>
+  <button class="btn" type="button" data-copy="snippet">Copy</button>
+</div>
+{{with .Data}}
+{{if .Checked}}
+<div class="views" role="group" aria-label="Show" style="margin-bottom:12px">
+  <a class="{{if not .Missing}}on{{end}}" href="/admin/policy">Everything, marked</a>
+  <a class="{{if .Missing}}on{{end}}" href="/admin/policy?missing=1">Only what is missing</a>
+</div>
+{{else}}
+<div class="flash error" style="display:block">Could not read the policy file ({{.Error}}), so nothing is marked as already present. See <a href="/admin/setup">Setup</a>.</div>
+{{end}}
+<div class="scroll"><pre class="code" id="snippet">{{.Snippet}}</pre></div>
+{{end}}
+{{end}}

@@ -1,0 +1,77 @@
+{{define "enforcement"}}
+{{- $e := .Enforcement -}}
+{{- if eq .Status "approved" -}}
+  {{- if $e.ConfirmedAt}}<div class="verify ok"><i></i>Active · confirmed on the device <span class="muted" title="{{ts $e.ConfirmedAt}}">{{ago $e.ConfirmedAt}}</span></div>
+  {{- else if $e.Error}}<div class="verify warn"><i></i>Approved, but the device could not be checked: {{$e.Error}}</div>
+  {{- else}}<div class="verify warn"><i></i>Approved · not yet confirmed on the device</div>{{end}}
+{{- else if or (eq .Status "expired") (eq .Status "revoked") -}}
+  {{- if $e.RemovedAt}}<div class="verify off"><i></i>Access removed · confirmed gone from the device <span class="muted" title="{{ts $e.RemovedAt}}">{{ago $e.RemovedAt}}</span></div>
+  {{- else if .Attributes}}<div class="verify warn"><i></i>Ended · removal not yet confirmed on the device{{with $e.Error}} ({{.}}){{end}}</div>{{end}}
+{{- end -}}
+{{end}}
+{{define "content"}}
+{{$r := .Data.R}}{{$can := .Data.Can}}{{$self := mine .Me $r}}
+<div class="crumbs"><a href="/requests">Access requests</a> › {{$r.WorkflowName}}</div>
+<div class="head">
+  <h1>{{$r.WorkflowName}} <span class="status {{$r.Status}}">{{$r.Status}}</span></h1>
+</div>
+
+<div class="card hero">
+  <p>
+    <b>{{$r.Requester.Actor}}</b> asked for <b>{{human $r.Duration}}</b> of access from <b>{{$r.Requester.DeviceName}}</b>
+    <span class="muted" title="{{ts $r.CreatedAt}}">{{ago $r.CreatedAt}}</span>.
+    {{if eq $r.Status "pending"}}It is waiting for approval{{if gt $r.ApprovalsRequired 1}} (<b>{{$r.ApprovalsCounted}} of {{$r.ApprovalsRequired}}</b> approvals so far){{end}}{{if and $self $can.Approve}}; this flow lets you <b>approve it yourself</b>{{end}}.{{end}}
+    {{if eq $r.Status "approved"}}Approved <span title="{{ts $r.ApprovedAt}}">{{ago $r.ApprovedAt}}</span>; access ends <b title="{{ts $r.ExpiresAt}}">{{ago $r.ExpiresAt}}</b>.{{end}}
+  </p>
+  {{template "enforcement" $r}}
+  <blockquote>{{$r.Reason}}</blockquote>
+  {{if $r.Resources}}<ul class="resources">{{range $r.Resources}}<li><code>{{.Name}}</code>{{with .Description}} <span class="muted">{{.}}</span>{{end}}</li>{{end}}</ul>{{end}}
+  {{with $r.LastError}}<div class="error">Last error: {{.}}</div>{{end}}
+  {{if or $can.Approve (and $can.Decline (not $self)) $can.Revoke}}
+  <div class="actions decide">
+    <input id="note" placeholder="{{if $can.Decline}}Note · required to decline{{else}}Add a note (optional){{end}}" class="grow">
+    {{if $can.Cancel}}<button class="btn" data-action="/v1/requests/{{$r.ID}}/cancel">Cancel request</button>{{end}}
+    {{if $can.Approve}}<button class="btn ok" data-action="/v1/requests/{{$r.ID}}/approve">Approve</button>{{end}}
+    {{if and $can.Decline (not $self)}}<button class="btn" data-action="/v1/requests/{{$r.ID}}/decline" data-needs-note="A reason is needed to decline. Add it in the note field.">Decline</button>{{end}}
+    {{if $can.Revoke}}<button class="btn danger" data-action="/v1/requests/{{$r.ID}}/revoke">Revoke access</button>{{end}}
+  </div>
+  {{else if $can.Cancel}}
+  <div class="actions decide">
+    <span class="muted grow">Changed your mind? You can withdraw this request.</span>
+    <button class="btn" data-action="/v1/requests/{{$r.ID}}/cancel">Cancel request</button>
+  </div>
+  {{end}}
+  {{if and (eq $r.Status "pending") (not $can.Approve) $can.Why (or (not $self) $.Approver)}}<p class="muted small">You can't approve this: {{$can.Why}}.</p>{{end}}
+</div>
+
+<div class="grid2">
+  <section class="card">
+    <h2>Timeline</h2>
+    <ul class="feed">
+    {{range reversed $r.Timeline}}
+      <li class="ev-{{.Type}}">
+        <i></i>
+        <div>
+          <b>{{.Actor}}</b> {{if eq .Type "submitted"}}requested access{{else if eq .Type "approval"}}approved{{else if eq .Type "approve_failed"}}tried to approve{{else if eq .Type "revoke_failed"}}tried to revoke{{else}}{{.Type}}{{end}}
+          <span class="meta" title="{{ts .At}}">{{ago .At}}</span>
+          {{with .Note}}<div class="note">{{.}}</div>{{end}}
+        </div>
+      </li>
+    {{end}}
+    </ul>
+  </section>
+  <section class="card">
+    <h2>Details</h2>
+    <dl>
+      <dt>Approval flow</dt><dd>{{if $.Admin}}<a href="/admin/workflows/{{$r.WorkflowID}}">{{$r.WorkflowName}}</a>{{else}}{{$r.WorkflowName}}{{end}}</dd>
+      <dt>Requester</dt><dd>{{$r.Requester.Actor}}</dd>
+      <dt>Device</dt><dd>{{$r.Requester.DeviceName}}</dd>
+      <dt>Duration</dt><dd>{{human $r.Duration}}</dd>
+      {{with $r.ExpiresAt}}<dt>Ends</dt><dd>{{ts .}}</dd>{{end}}
+      {{if gt $r.ApprovalsRequired 1}}<dt>Approvals</dt><dd>{{$r.ApprovalsCounted}} of {{$r.ApprovalsRequired}}{{range $r.Approvals}}<div class="muted small">{{.Actor}} · {{ago .At}}</div>{{end}}</dd>{{end}}
+      {{if $.Admin}}<dt>Device attribute</dt><dd><code>{{$r.Attribute}}</code> <a href="/v1/devices/{{$r.TargetDeviceID}}/attributes" class="small">check</a></dd>{{end}}
+      <dt>Request ID</dt><dd><code>{{$r.ID}}</code></dd>
+    </dl>
+  </section>
+</div>
+{{end}}

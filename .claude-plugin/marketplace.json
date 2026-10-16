@@ -1,0 +1,15 @@
+{
+  "name": "tailscale-jit",
+  "description": "Experimental: just-in-time access to Tailscale PAM services from Claude Code",
+  "owner": {
+    "name": "Andree Toonk"
+  },
+  "plugins": [
+    {
+      "name": "tailscale-pam",
+      "source": "./plugins/tailscale-pam",
+      "homepage": "https://github.com/atoonk/tailscale-jit",
+      "description": "Connect to infrastructure over Tailscale PAM (SSH, databases, Kubernetes, RDP, ...) and request just-in-time access through jitd"
+    }
+  ]
+}

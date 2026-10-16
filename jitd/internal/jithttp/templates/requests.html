@@ -1,0 +1,48 @@
+{{define "content"}}
+<div class="head">
+  <div>
+    <h1>{{if eq .Nav "admin-requests"}}All requests{{else}}My requests{{end}}</h1>
+    <p class="sub">{{if eq .Nav "admin-requests"}}Every request in the organisation, newest first.{{else if .Approver}}Requests you made, and the ones waiting on you.{{else}}Everything you asked for, newest first.{{end}}</p>
+  </div>
+  <a class="btn primary" href="/requests/new">Request access</a>
+</div>
+{{if not .Me}}
+<div class="empty">Cannot identify you: {{.MeErr}}</div>
+{{else}}
+{{$scope := .Data.Scope}}{{$base := "/requests"}}{{if eq .Nav "admin-requests"}}{{$base = "/admin/requests"}}{{end}}
+{{if and (ne .Nav "admin-requests") .Approver}}
+<div class="scopes">
+  <a href="/requests?scope=mine" {{if eq $scope "mine"}}class="on"{{end}}>Mine</a>
+  <a href="/requests?scope=approvals" {{if eq $scope "approvals"}}class="on"{{end}}>Others' requests I approve</a>
+</div>
+{{end}}
+<div class="tabs">
+  {{$cur := .Data.Status}}{{$counts := .Data.Counts}}
+  <a href="{{$base}}?scope={{$scope}}" {{if not $cur}}class="on"{{end}}>All <em>{{.Data.Total}}</em></a>
+  {{range .Data.Statuses}}{{if or (index $counts .) (eq . "pending") (eq . "approved")}}<a href="{{$base}}?scope={{$scope}}&status={{.}}" {{if eq . $cur}}class="on"{{end}}>{{.}} <em>{{index $counts .}}</em></a>{{end}}{{end}}
+</div>
+{{if .Data.Requests}}
+<div class="scroll">
+<table class="list">
+  <thead><tr><th>Status</th><th>Requester</th><th>Access</th><th>Reason</th><th>Duration</th><th>Submitted</th><th>Expires</th></tr></thead>
+  <tbody>
+  {{range .Data.Requests}}
+  <tr data-href="/requests/{{.ID}}">
+    <td><span class="status {{.Status}}">{{.Status}}</span></td>
+    <td><b>{{.Requester.Actor}}</b><div class="muted small">{{.Requester.DeviceName}}</div></td>
+    <td><a href="/requests/{{.ID}}">{{.WorkflowName}}</a>
+      <div class="muted small" title="{{join .ResourceNames}}"><code>{{.Attribute}}</code></div></td>
+    <td><div class="reason">{{.Reason}}</div></td>
+    <td class="nowrap">{{human .Duration}}</td>
+    <td class="nowrap" title="{{ts .CreatedAt}}">{{ago .CreatedAt}}</td>
+    <td class="nowrap">{{if and .ExpiresAt (eq .Status "approved")}}<span title="{{ts .ExpiresAt}}">{{ago .ExpiresAt}}</span>{{else}}<span class="muted">-</span>{{end}}</td>
+  </tr>
+  {{end}}
+  </tbody>
+</table>
+</div>
+{{else}}
+<div class="empty">No access requests{{with .Data.Status}} with status {{.}}{{end}}{{if eq $scope "approvals"}} in flows you approve for{{end}}.</div>
+{{end}}
+{{end}}
+{{end}}

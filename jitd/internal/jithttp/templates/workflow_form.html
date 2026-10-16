@@ -1,0 +1,100 @@
+{{define "content"}}
+{{$policy := .Data.Policy}}
+{{with .Data.Flow}}
+<div class="crumbs"><a href="/admin/workflows">Approval flows</a> › {{if .ID}}{{.Name}}{{else}}New{{end}}</div>
+<h1>{{if .ID}}Edit approval flow{{else}}New approval flow{{end}}</h1>
+<p class="sub">Who can ask, who says yes, and the one posture attribute an approval sets.</p>
+<form class="form" data-form="workflow" data-id="{{.ID}}">
+  <div class="card fields">
+    <h2>About</h2>
+    <label>Name <input name="name" value="{{.Name}}" required placeholder="Database access (read-only)"></label>
+    <label>Description <input name="description" value="{{.Description}}" placeholder="Read-only queries on all databases"></label>
+  </div>
+
+  <div class="card fields">
+    <h2>Access</h2>
+    <label>Posture attribute
+      <span class="prefixed"><span class="prefix">custom:jit_</span><input name="attribute" value="{{attrname .Attribute}}" placeholder="db_ro" class="short" required pattern="[a-z0-9_]{1,32}" title="1-32 of a-z, 0-9, _"></span>
+      <span class="hint">The only thing an approval does: it sets this attribute on the requester's device, with an expiry. What it unlocks is decided by the tailnet policy, through a grant with <code>srcPosture</code> on <code>posture:jit_&lt;name&gt;</code>.</span>
+    </label>
+    <div class="field">
+      <span class="label">Gives access to <span class="opt">optional</span></span>
+      <div class="resrows" id="resrows">
+        <div class="reshead"><span>Target</span><span>Description</span><span></span></div>
+        {{range .Resources}}{{template "resrow" .}}{{end}}
+        {{if not .Resources}}{{template "resrow" .}}{{end}}
+      </div>
+      <button type="button" class="btn sm" id="addres">+ Add another</button>
+      <span class="hint">Target is the name as it appears in a policy grant: <code>svc:mysql-prod</code>, <code>tag:bastion</code>, a host name or a CIDR. Discovery only, for people and agents choosing what to request; it grants nothing, the policy does.</span>
+    </div>
+    {{if .ID}}
+    <div class="policycheck {{if $policy.OK}}ok{{else}}warn{{end}}">
+      <b>Policy check</b>
+      {{if $policy.OK}}<span>the tailnet policy has <code>{{$policy.Posture}}</code> and gates {{join $policy.Grants}} on it.</span>
+      {{else}}<ul>{{range $policy.Problems}}<li>{{.}}</li>{{end}}</ul>{{end}}
+      <span class="muted small">Checked against the policy file through the API (cached for a minute). The <a href="/admin/policy">policy snippet</a> has what to merge.</span>
+    </div>
+    {{end}}
+  </div>
+
+  <div class="card fields">
+    <h2>People</h2>
+    <label>Who can request
+      <input name="requesters" value="{{principals .Requesters}}" placeholder="autogroup:member" required>
+      <span class="hint">Logins, <code>group:</code> from the policy file, <code>tag:</code>, or <code>autogroup:member</code> for everyone.</span>
+    </label>
+    <label>Who can approve
+      <input name="approvers" value="{{principals .Approvers}}" placeholder="you@example.com, group:security" required>
+      <span class="hint">Logins, <code>group:</code>, <code>tag:</code> or <code>autogroup:member</code>. A <code>tag:</code> approver counts every tagged device as a separate person: whoever can tag two devices can meet a quorum of 2 alone, or approve their own request from a tagged device.</span>
+    </label>
+    <div class="row2">
+      <label>Approvals required
+        <select name="approvals_required">
+          {{$n := .ApprovalsRequired}}{{range $i := seq 1 maxApprovals}}<option value="{{$i}}" {{if eq $i $n}}selected{{end}}>{{$i}}</option>{{end}}
+        </select>
+        <span class="hint">Distinct approvers who must say yes before access is granted.</span>
+      </label>
+      <label class="check top"><input type="checkbox" name="allow_self_approval" {{if .AllowSelfApproval}}checked{{end}}> Let people approve their own requests</label>
+    </div>
+    <div class="row2">
+      <div class="field">
+        <span class="label">Default request duration</span>
+        {{template "durfield" (durfield "default_duration" .DefaultDuration)}}
+        <span class="hint">Preselected when requesting.</span>
+      </div>
+      <div class="field">
+        <span class="label">Maximum request duration</span>
+        {{template "durfield" (durfield "max_duration" .MaxDuration)}}
+      </div>
+      <div class="field">
+        <span class="label">Approval timeout</span>
+        {{template "durfield" (durfield "approval_timeout" .ApprovalTimeout)}}
+        <span class="hint">Pending requests nobody decides on expire after this.</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="card fields">
+    <label class="check"><input type="checkbox" name="enabled" {{if not .Disabled}}checked{{end}}> Enabled
+      <span class="hint">Turn off to stop new requests and approvals. Existing access runs out on its own; history is kept.</span></label>
+  </div>
+
+  <div class="actions">
+    <button class="btn primary" type="submit">Save</button>
+    <a class="btn" href="/admin/workflows">Cancel</a>
+    {{if .ID}}<button class="btn danger right-push" type="button" data-delete="/v1/workflows/{{.ID}}" data-then="/admin/workflows">Delete</button>{{end}}
+  </div>
+</form>
+{{end}}
+{{end}}
+
+{{define "durfield"}}<div class="durpick" data-dur="{{.Name}}">
+  <input type="number" min="1" step="1" inputmode="numeric" required value="{{.N}}" aria-label="Amount">
+  <select aria-label="Unit">{{$u := .Unit}}{{range durationUnits}}<option value="{{.Suffix}}" {{if eq .Suffix $u}}selected{{end}}>{{.Label}}</option>{{end}}</select>
+</div>{{end}}
+
+{{define "resrow"}}<div class="resrow">
+  <input name="res_name" value="{{.Name}}" placeholder="svc:mysql-prod" class="mono" pattern="\S+" title="No spaces: svc:<name>, tag:<name>, a host or a CIDR" aria-label="Target">
+  <input name="res_desc" value="{{.Description}}" placeholder="Production MySQL, orders and customers (us-east-1)" maxlength="200" aria-label="Description">
+  <button type="button" class="btn sm" data-removeres title="Remove">✕</button>
+</div>{{end}}

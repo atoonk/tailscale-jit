@@ -1,0 +1,131 @@
+{{define "content"}}
+{{$d := .Data}}
+<div class="head">
+  <div>
+    <h1>{{if $d.Admin}}Admin overview{{else}}Overview{{end}}</h1>
+    <p class="sub">{{if $d.Admin}}Everyone's access right now, what is waiting for approval, and what happened recently.{{else if $.Approver}}Your access, requests waiting on you, and what happened recently.{{else}}What you can reach right now, and what you asked for.{{end}}</p>
+  </div>
+  {{if not $d.Admin}}<a class="btn primary" href="/requests/new">Request access</a>{{end}}
+</div>
+
+{{if and $d.NeedsMe (not $d.Admin)}}
+<a class="callout" href="#pending"><b>{{$d.NeedsMe}} request{{if ne $d.NeedsMe 1}}s{{end}} need{{if eq $d.NeedsMe 1}}s{{end}} your approval.</b> Review {{if eq $d.NeedsMe 1}}it{{else}}them{{end}} below.</a>
+{{end}}
+<div class="stats">
+  {{$base := "/requests"}}{{if $d.Admin}}{{$base = "/admin/requests"}}{{end}}
+  {{/* For approvers the pending count includes other people's requests, which live under the approvals scope. */}}
+  {{$pendingURL := printf "%s?status=pending" $base}}{{if and (not $d.Admin) $d.NeedsMe}}{{$pendingURL = "/requests?scope=approvals&status=pending"}}{{end}}
+  <a class="stat" href="{{$base}}?status=approved"><span>Active access</span><b class="ok">{{len $d.Active}}</b><small>granted right now</small></a>
+  <a class="stat" href="{{$pendingURL}}"><span>Waiting for approval</span><b class="{{if $d.Pending}}warn{{end}}">{{len $d.Pending}}</b><small>pending requests</small></a>
+  {{if $d.Admin}}<a class="stat" href="{{$base}}"><span>Requests</span><b>{{$d.Requests7d}}</b><small>last 7 days</small></a>{{end}}
+  {{if $d.Admin}}<div class="stat"><span>Approved</span><b>{{$d.Approved30d}}<em> / {{$d.Done30d}}</em></b><small>decided, last 30 days</small></div>{{end}}
+  {{if $d.Admin}}<a class="stat" href="/admin/workflows"><span>Approval flows</span><b>{{$d.Flows}}</b><small>configured</small></a>{{else}}<a class="stat" href="/requests/new"><span>Available to you</span><b>{{$d.Flows}}</b><small>approval flows</small></a>{{end}}
+</div>
+
+<div class="grid2">
+  <section class="card" id="pending">
+    <div class="cardhead"><h2>Waiting for approval</h2><a href="{{$pendingURL}}" class="small">All pending</a></div>
+    {{if $d.Pending}}
+    <ul class="rows">
+      {{range $d.Pending}}{{$r := .R}}{{$self := mine $.Me $r}}
+      <li>
+        <a class="rowmain" href="/requests/{{$r.ID}}">
+          <span>{{if .Can.Approve}}<span class="needs">needs you</span> {{end}}{{if and $self (not $d.Admin)}}<b>You</b> asked for{{else}}<b>{{$r.Requester.Actor}}</b> wants{{end}} <b>{{$r.WorkflowName}}</b> for {{human $r.Duration}}{{if gt $r.ApprovalsRequired 1}} <span class="badge">{{$r.ApprovalsCounted}}/{{$r.ApprovalsRequired}} approvals</span>{{end}}</span>
+          <span class="muted">{{$r.Reason}}</span>
+          <span class="meta">{{$r.Requester.DeviceName}} · {{ago $r.CreatedAt}}{{if and $self (not .Can.Approve)}} · waiting for {{if gt $r.ApprovalsRequired 1}}{{$n := $r.ApprovalsCounted}}{{$left := sub $r.ApprovalsRequired $n}}{{if eq $left 1}}one more approver{{else}}{{$left}} more approvers{{end}}{{else}}an approver{{end}}{{end}}</span>
+        </a>
+        <span class="rowact">
+          {{if .Can.Approve}}<button class="btn ok sm" data-action="/v1/requests/{{$r.ID}}/approve">Approve</button>{{end}}
+          {{if $self}}
+            {{if .Can.Cancel}}<button class="btn sm" data-action="/v1/requests/{{$r.ID}}/cancel">Cancel</button>{{end}}
+          {{else}}
+            {{if .Can.Decline}}<button class="btn sm" data-action="/v1/requests/{{$r.ID}}/decline" data-needs-note="Why decline this request?">Decline</button>{{end}}
+          {{end}}
+        </span>
+      </li>
+      {{end}}
+    </ul>
+    {{else}}<div class="none">{{if or $d.Admin $.Approver}}Nothing is waiting for approval.{{else}}You have no pending requests.{{end}}</div>{{end}}
+  </section>
+
+  <section class="card">
+    <div class="cardhead"><h2>Active access</h2><a href="{{$base}}?status=approved" class="small">All active</a></div>
+    {{if $d.Active}}
+    <ul class="rows">
+      {{range $d.Active}}{{$r := .R}}
+      <li>
+        <a class="rowmain" href="/requests/{{$r.ID}}">
+          <span>{{if and (mine $.Me $r) (not $d.Admin)}}<b>You</b> have{{else}}<b>{{$r.Requester.Actor}}</b> has{{end}} <b>{{$r.WorkflowName}}</b>{{if not $r.Enforcement.ConfirmedAt}} <span class="badge">unconfirmed</span>{{end}}</span>
+          <span class="meta">{{$r.Requester.DeviceName}} · <code>{{$r.Attribute}}</code> · expires <b title="{{ts $r.ExpiresAt}}">{{ago $r.ExpiresAt}}</b></span>
+        </a>
+        <span class="rowact">{{if .Can.Revoke}}<button class="btn sm" data-action="/v1/requests/{{$r.ID}}/revoke">Revoke</button>{{end}}</span>
+      </li>
+      {{end}}
+    </ul>
+    {{else}}<div class="none">{{if $d.Admin}}Nobody has JIT access right now.{{else}}You have no active access.{{end}}</div>{{end}}
+    {{if $d.ActiveOthers}}<div class="muted small" style="margin-top:10px">{{$d.ActiveOthers}} other{{if ne $d.ActiveOthers 1}}s have{{else}} has{{end}} access through flows you approve for · <a href="/requests?scope=approvals&status=approved">see them</a></div>{{end}}
+  </section>
+</div>
+
+{{if $d.Admin}}
+<section class="card">
+  <div class="cardhead"><h2>Requests per day</h2><span class="small muted">last 14 days, by current status</span></div>
+  <div class="chart">
+    {{range $d.Days}}
+    <div class="day" title="{{.Label}}: {{.Total}} request{{if ne .Total 1}}s{{end}}">
+      <div class="bar">
+        {{with index .Pct "pending"}}<i class="pending" style="height:{{.}}%"></i>{{end}}
+        {{with index .Pct "approved"}}<i class="approved" style="height:{{.}}%"></i>{{end}}
+        {{with index .Pct "expired"}}<i class="expired" style="height:{{.}}%"></i>{{end}}
+        {{with index .Pct "revoked"}}<i class="revoked" style="height:{{.}}%"></i>{{end}}
+        {{with index .Pct "declined"}}<i class="declined" style="height:{{.}}%"></i>{{end}}
+        {{with index .Pct "cancelled"}}<i class="cancelled" style="height:{{.}}%"></i>{{end}}
+      </div>
+      <span>{{.Label}}</span>
+    </div>
+    {{end}}
+  </div>
+  <div class="legend">
+    <span><i class="approved"></i>Active</span><span><i class="expired"></i>Expired</span><span><i class="revoked"></i>Revoked</span>
+    <span><i class="declined"></i>Declined</span><span><i class="cancelled"></i>Cancelled</span><span><i class="pending"></i>Pending</span>
+  </div>
+</section>
+
+{{end}}
+<div class="grid2 {{if $d.Admin}}wide-left{{end}}">
+  <section class="card">
+    <div class="cardhead"><h2>Recent activity</h2></div>
+    {{if $d.Activity}}
+    <ul class="feed">
+      {{range $d.Activity}}
+      <li class="ev-{{.Event.Type}}">
+        <i></i>
+        <div>
+          <b>{{.Event.Actor}}</b> {{if eq .Event.Type "submitted"}}requested{{else if eq .Event.Type "approval"}}approved{{else if eq .Event.Type "approve_failed"}}tried to approve{{else if eq .Event.Type "revoke_failed"}}tried to revoke{{else}}{{.Event.Type}}{{end}}
+          <a href="/requests/{{.Request.ID}}">{{.Request.WorkflowName}}</a>{{if ne .Event.Type "submitted"}} for {{.Request.Requester.Actor}}{{end}}
+          <span class="meta" title="{{ts .Event.At}}">{{ago .Event.At}}</span>
+        </div>
+      </li>
+      {{end}}
+    </ul>
+    {{else}}<div class="none">{{if $d.Admin}}No activity yet.{{else}}Nothing yet. Your requests and their decisions will show up here.{{end}}</div>{{end}}
+  </section>
+  {{if $d.Admin}}
+  <section class="card">
+    <div class="cardhead"><h2>Most requested</h2><span class="small muted">last 30 days</span></div>
+    {{if $d.TopFlows}}
+    <table class="plain">
+      {{range $d.TopFlows}}<tr><td><a href="/admin/workflows/{{.ID}}">{{.Name}}</a></td><td class="right"><b>{{.Count}}</b></td></tr>{{end}}
+    </table>
+    {{else}}<div class="none">No requests in the last 30 days.</div>{{end}}
+  </section>
+  {{else}}
+  <section class="card">
+    <div class="cardhead"><h2>Need something?</h2></div>
+    <p class="muted" style="margin:0 0 12px">Ask for access to databases, SSH hosts and more. A person approves it, and it switches itself off when the time is up.</p>
+    <a class="btn primary" href="/requests/new">Request access</a>
+    <a class="btn" href="/help" style="margin-left:6px">How it works</a>
+  </section>
+  {{end}}
+</div>
+{{end}}

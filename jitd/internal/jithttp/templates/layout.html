@@ -1,0 +1,47 @@
+{{define "layout"}}<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{.Title}} · Tailscale JIT access</title>
+<link rel="stylesheet" href="/static/style.css">
+<script src="/static/app.js" defer></script>
+</head>
+<body>
+<aside class="side">
+  <a class="brand" href="/">
+    <span class="logo" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span>
+    <span>JIT access<small>Tailscale PAM</small></span>
+  </a>
+  <nav>
+    <a href="/" {{if eq .Nav "overview"}}class="on"{{end}}>Overview</a>
+    <a href="/requests" {{if eq .Nav "requests"}}class="on"{{end}}>My requests</a>
+    <a href="/help" {{if eq .Nav "help"}}class="on"{{end}}>Help</a>
+    {{if .Admin}}
+    <div class="group">Manage</div>
+    <a href="/admin" {{if eq .Nav "admin-overview"}}class="on"{{end}}>Admin overview</a>
+    <a href="/admin/requests" {{if eq .Nav "admin-requests"}}class="on"{{end}}>All requests</a>
+    <a href="/admin/workflows" {{if eq .Nav "admin-workflows"}}class="on"{{end}}>Approval flows</a>
+    <a href="/admin/policy" {{if eq .Nav "admin-policy"}}class="on"{{end}}>Policy snippet</a>
+    <a href="/admin/setup" {{if eq .Nav "admin-setup"}}class="on"{{end}}>Setup{{if .SetupBad}} <span class="dot bad" title="The setup check failed"></span>{{end}}</a>
+    <a href="/api/docs">API docs</a>
+    {{end}}
+  </nav>
+  <div class="me">
+    {{with .Me}}
+      <span class="avatar">{{if .Tagged}}T{{else}}{{initial .Login}}{{end}}</span>
+      <div>
+        <div class="who">{{if .Tagged}}{{join .Tags}}{{else}}{{.Login}}{{end}}</div>
+        <div class="dev">{{.DeviceName}}{{if $.Admin}} · admin{{end}}</div>
+      </div>
+    {{else}}
+      <div><div class="who warn">No identity</div><div class="dev">{{.MeErr}}</div></div>
+    {{end}}
+  </div>
+</aside>
+<main data-changes="{{.Changes}}">
+  <div id="flash" class="flash" hidden></div>
+  {{template "content" .}}
+</main>
+</body>
+</html>{{end}}
