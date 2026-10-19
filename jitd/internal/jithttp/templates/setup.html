@@ -37,7 +37,7 @@
   <p>jitd needs an API credential to set posture attributes on devices (that is how an approval turns access on) and to read the policy file (to resolve <code>group:</code> principals, check each flow against the policy and mark the policy snippet). It reads the credential from a file on the host it runs on, so none of the admins here ever sees it.</p>
   <p>Approvals use custom posture attributes with an expiry, set through the Tailscale API; see <a href="https://tailscale.com/docs/features/tailscale-accessbot-jit#posture-attributes-api-with-expiry">Posture attributes API with expiry</a>; it needs a Premium or Enterprise plan.</p>
   <ol>
-    <li>In the <a href="https://login.tailscale.com/admin/settings/oauth">Tailscale admin console</a> go to <b>Settings → OAuth clients → Generate OAuth client</b>. Give it a description such as <i>jitd</i> and these scopes: <b>Devices → Posture attributes: Write</b> and <b>Policy file: Read</b>. Copy the client ID and the secret; the secret is shown once.</li>
+    <li>In the <a href="https://console.tailscale.com/admin/settings/trust-credentials/add">Tailscale admin console</a> go to <b>Settings → Trust credentials → New credential</b> and pick <b>OAuth</b>. Give it a description such as <i>jitd</i> and, on the <b>Scopes</b> step, these scopes: <b>Devices → Posture attributes: Write</b> and <b>Policy file: Read</b>. Copy the client ID and the secret; the secret is shown once.</li>
     <li>On the host running jitd, put them in <code>{{.Credentials.File}}</code>, one per line, readable only by the user jitd runs as (<code>chmod 600</code>):
 <pre class="code">TS_OAUTH_CLIENT_ID=...
 TS_OAUTH_CLIENT_SECRET=tskey-client-...</pre>

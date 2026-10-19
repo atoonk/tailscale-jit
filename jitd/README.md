@@ -70,8 +70,10 @@ jitd needs two things from the admin console.
 Make it **one-off** (not reusable) and give it the tag `tag:jit`. jitd uses
 it only on its first start.
 
-**An OAuth client for the Tailscale API.** Go to Settings → OAuth clients →
-**Generate OAuth client** and give it two scopes:
+**An OAuth client for the Tailscale API.** Go to Settings → Trust credentials
+→ **New credential** ([direct link](https://console.tailscale.com/admin/settings/trust-credentials/add)),
+pick **OAuth**, add a description such as `jitd`, then on the **Scopes** step
+give it two scopes:
 
 - **Devices → Posture attributes: Write**, so it can set and remove the
   attributes. This is how an approval turns access on and off.

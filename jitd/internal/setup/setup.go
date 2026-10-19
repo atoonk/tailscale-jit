@@ -377,7 +377,7 @@ func fixFor(err error, scope, fileHint string) string {
 	if errors.As(err, &ae) {
 		switch ae.Status {
 		case http.StatusForbidden:
-			return fmt.Sprintf("The credential works but lacks the %s scope. Create a new OAuth client with it in the admin console (Settings → OAuth clients); scopes cannot be added to an existing one. %s", scope, fileHint)
+			return fmt.Sprintf("The credential works but lacks the %s scope. Create a new OAuth client with it in the admin console (Settings → Trust credentials → New credential → OAuth); scopes cannot be added to an existing one. %s", scope, fileHint)
 		case http.StatusUnauthorized:
 			return "The credential was rejected: it is wrong, revoked or expired. " + fileHint
 		}
