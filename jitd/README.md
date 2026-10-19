@@ -47,10 +47,15 @@ You need:
 
 ### 1. Let people reach jitd
 
-In the admin console, open **Access controls**. Add an owner for `tag:jit`
-and a grant that lets everyone reach it:
+In the admin console, open **Access controls**. Add a group for the people
+who will run jitd, an owner for `tag:jit`, and a grant that lets everyone
+reach it:
 
 ```jsonc
+"groups": {
+  // jitd admins: they manage approval flows and see every request.
+  "group:jit-admins": ["you@example.com"]
+},
 "tagOwners": {
   "tag:jit": ["autogroup:admin"]
 },
@@ -61,6 +66,11 @@ and a grant that lets everyone reach it:
 ```
 
 If you'll run with `-https`, allow `tcp:443` too.
+
+Use a group of logins for the admins: jitd can't use `autogroup:admin` (it
+can't see Tailscale roles), and a group can't contain an autogroup. Adding or
+removing a jitd admin is then a policy edit, with no restart; jitd picks it up
+within a minute.
 
 ### 2. Create the credentials
 
@@ -111,11 +121,11 @@ On macOS, the default location is
 `~/Library/Application Support/jitd/env`. Pass `-env-file ~/.config/jitd/env`
 to use the path above.
 
-Then start jitd. Pass the auth key just this once, and name yourself as an
-admin:
+Then start jitd. Pass the auth key just this once, and make the
+`group:jit-admins` group the admins, plus your own login as a fallback:
 
 ```sh
-TS_AUTHKEY=tskey-auth-... bin/jitd -admins you@example.com
+TS_AUTHKEY=tskey-auth-... bin/jitd -admins group:jit-admins,you@example.com
 ```
 
 When the log says `serving url=http://jit.<your-tailnet>.ts.net/`, open
@@ -124,10 +134,11 @@ When the log says `serving url=http://jit.<your-tailnet>.ts.net/`, open
 Things to know:
 
 - **`-admins`** decides who may manage approval flows and see every request.
-  It takes logins, `group:` and `tag:`, separated by commas. Include at
-  least one login: groups are looked up through the Tailscale API, so with a
-  broken credential only a login can still get in to fix it. With no
-  admins, nobody can create flows.
+  It takes logins, `group:` and `tag:`, separated by commas; `group:jit-admins`
+  from step 1 is the usual choice. Include at least one login as well:
+  groups are looked up through the Tailscale API, so with a broken
+  credential only a login can still get in to fix it. With no admins, nobody
+  can create flows.
 - **Keep two things:** the node's identity in `./tsnet-state` (`-state-dir`)
   and the flows and requests in the SQLite database `./jit.db` (`-data`).
   Lose the state directory and jitd joins the tailnet as a new machine.
@@ -163,7 +174,7 @@ Wants=network-online.target
 [Service]
 User=jitd
 WorkingDirectory=/var/lib/jitd
-ExecStart=/usr/local/bin/jitd -admins you@example.com -env-file /etc/jitd/env
+ExecStart=/usr/local/bin/jitd -admins group:jit-admins,you@example.com -env-file /etc/jitd/env
 # Only for the first start; see below. The "-" means it may be missing.
 EnvironmentFile=-/etc/jitd/authkey
 Restart=on-failure
@@ -389,7 +400,7 @@ expired attribute about a minute after the expiry time (we measured about
 
 | Flag | Default | |
 |---|---|---|
-| `-admins` | none | who may manage flows and see every request: logins, `group:`, `tag:` |
+| `-admins` | none | who may manage flows and see every request: logins, `group:`, `tag:` (not `autogroup:admin`; use a group such as `group:jit-admins`) |
 | `-state-dir` | `tsnet-state` | the node's identity; keep it |
 | `-data` | `jit.db` | the SQLite database with the approval flows and access requests. Name an older jitd's `.json` file and jitd uses the `.db` of the same name, filled from the `.json` the first time |
 | `-env-file` | `~/.config/jitd/env` (Linux), `~/Library/Application Support/jitd/env` (macOS) | Tailscale API credentials: `TS_OAUTH_CLIENT_ID` and `TS_OAUTH_CLIENT_SECRET`, or `TS_API_KEY` |

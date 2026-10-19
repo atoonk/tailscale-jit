@@ -45,7 +45,7 @@ it and the access ends.
 Follow **[jitd/README.md](jitd/README.md)**. It takes you through it step by
 step:
 
-1. Let people reach `tag:jit` in the policy.
+1. Add a `group:jit-admins` group and let people reach `tag:jit` in the policy.
 2. Create an auth key and an OAuth client.
 3. Build and start jitd.
 4. Check that it works at http://jit/admin/setup.
