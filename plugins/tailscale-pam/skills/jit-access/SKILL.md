@@ -37,7 +37,7 @@ Tools come from the `tailscale-pam` MCP server:
    http://jit.example.ts.net/requests/req_...
    ```
 
-5. Wait for the decision by running the wait command from the `request_access` result (`<plugin>/libexec/<os>-<arch>/pamagent wait <request_id>`) **in the background**. It checks every 20 seconds for 2 minutes, then every minute, and exits 0 when approved (its last line says whether the services are visible yet), 1 when declined, cancelled, revoked or expired, 2 on error, and 3 if nobody decided within 5 minutes. On 3, tell the user it is still pending, repeat the link, and offer to wait again (run the same command); don't poll in a loop yourself. Or call `get_access_request`.
+5. Wait for the decision by running the wait command from the `request_access` result (`<plugin>/libexec/<os>-<arch>/pamagent wait -service svc:<name> <request_id>`) **in the background**. Pass the service you actually need with `-service` (comma-separated for several; flags go before the id), so it returns as soon as that one is reachable instead of waiting for every service the flow covers. It checks every 3 seconds for 2 minutes, then every 20 seconds, and exits 0 when approved (its last line says what is visible), 1 when declined, cancelled, revoked or expired, 2 on error, and 3 if nobody decided within 5 minutes. On 3, tell the user it is still pending, repeat the link, and offer to wait again (run the same command); don't poll in a loop yourself. Or call `get_access_request`.
 6. After approval, call `list_services` to confirm the service is visible before using it.
 
 ## Rules

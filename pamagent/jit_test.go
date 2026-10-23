@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -175,7 +176,7 @@ func TestJITTools(t *testing.T) {
 	if len(posted) != 3 {
 		t.Errorf("posted body should be exactly workflow_id, reason, duration: %v", posted)
 	}
-	for _, want := range []string{"PENDING", "\nhttp://jit.example/requests/req_1\n", "/x/pamagent wait req_1"} {
+	for _, want := range []string{"PENDING", "\nhttp://jit.example/requests/req_1\n", "/x/pamagent wait -service svc:<the service you need> req_1"} {
 		if !strings.Contains(text(res), want) {
 			t.Errorf("request_access text missing %q:\n%s", want, text(res))
 		}
@@ -246,7 +247,7 @@ func TestWaitForRequest(t *testing.T) {
 		c := &jitClient{base: srv.URL, hc: srv.Client(), log: slog.New(slog.NewTextHandler(io.Discard, nil))}
 		ctx, cancel := context.WithTimeout(context.Background(), tc.timeout)
 		var out bytes.Buffer
-		got := waitForRequest(ctx, context.Background(), c, &fakeServices{visible: visible}, tc.id, func(time.Duration) time.Duration { return 10 * time.Millisecond }, time.Second, &out)
+		got := waitForRequest(ctx, context.Background(), c, &fakeServices{visible: visible}, tc.id, nil, func(time.Duration) time.Duration { return 10 * time.Millisecond }, time.Second, &out)
 		cancel()
 		if got != tc.want {
 			t.Errorf("%s: exit %d, want %d\n%s", tc.name, got, tc.want, out.String())
@@ -356,21 +357,23 @@ func TestListServicesConnectAndAccess(t *testing.T) {
 
 func TestBackoff(t *testing.T) {
 	for _, tc := range []struct{ waited, want time.Duration }{
-		{0, 20 * time.Second}, {time.Minute, 20 * time.Second}, {119 * time.Second, 20 * time.Second},
-		{2 * time.Minute, time.Minute}, {4 * time.Minute, time.Minute},
+		{0, 3 * time.Second}, {time.Minute, 3 * time.Second}, {119 * time.Second, 3 * time.Second},
+		{2 * time.Minute, 20 * time.Second}, {4 * time.Minute, 20 * time.Second},
+		{10 * time.Minute, time.Minute}, {30 * time.Minute, time.Minute},
 	} {
 		if got := backoff(tc.waited); got != tc.want {
 			t.Errorf("backoff(%v) = %v, want %v", tc.waited, got, tc.want)
 		}
 	}
-	// With the 5-minute default: checks at 0, 20s ... 2m (7), then 3m, 4m, 5m.
+	// With the 5-minute default: checks at 0, 3s ... 2m (41), then every
+	// 20s until 5m (9 more).
 	n, at := 0, time.Duration(0)
 	for at <= 5*time.Minute {
 		n++
 		at += backoff(at)
 	}
-	if n != 10 {
-		t.Errorf("%d checks in 5 minutes, want 10", n)
+	if n != 50 {
+		t.Errorf("%d checks in 5 minutes, want 50", n)
 	}
 }
 
@@ -451,7 +454,7 @@ func TestWaitVisibilityOutlivesTimeout(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
 	var out bytes.Buffer
-	got := waitForRequest(ctx, context.Background(), c, src, "req_1", func(time.Duration) time.Duration { return 10 * time.Millisecond }, 5*time.Second, &out)
+	got := waitForRequest(ctx, context.Background(), c, src, "req_1", nil, func(time.Duration) time.Duration { return 10 * time.Millisecond }, 5*time.Second, &out)
 	if got != waitApproved || !strings.Contains(out.String(), "visible: svc:db1, svc:db2") {
 		t.Errorf("exit %d\n%s", got, out.String())
 	}
@@ -474,5 +477,41 @@ func TestKubeHint(t *testing.T) {
 	// No hostname: fall back to the address.
 	if got := connectHint(action{Type: "kubernetes", Port: 80}, "100.64.0.9", ""); !strings.Contains(got, "--http 100.64.0.9") {
 		t.Errorf("no hostname: %s", got)
+	}
+}
+
+// After approval, wait settles for the services the agent needs (or, without
+// -service, any granted one) instead of waiting for every service the flow
+// covers: one offline host must not hold it up for a minute.
+func TestWaitVisiblePartial(t *testing.T) {
+	src := &fakeServices{visible: map[tailcfg.ServiceName]tailcfg.ServiceDetails{"svc:db1": {}}}
+	granted := []string{"svc:db1", "svc:db2"}
+	for _, tc := range []struct {
+		name    string
+		want    []string
+		within  time.Duration
+		maxTime time.Duration
+		out     string
+	}{
+		{"any granted", nil, 5 * time.Second, time.Second, "visible: svc:db1; not visible yet: svc:db2"},
+		{"the one needed", []string{"svc:db1"}, 5 * time.Second, time.Second, "visible: svc:db1\n"},
+		{"needed but missing", []string{"svc:db2"}, 1500 * time.Millisecond, 3 * time.Second, "not visible to this node yet: svc:db2"},
+	} {
+		var out bytes.Buffer
+		start := time.Now()
+		got := waitVisible(context.Background(), src, granted, tc.want, tc.within, &out)
+		if took := time.Since(start); got != waitApproved || took > tc.maxTime || !strings.Contains(out.String(), tc.out) {
+			t.Errorf("%s: exit %d after %v\n%s", tc.name, got, took, out.String())
+		}
+	}
+}
+
+func TestServiceNames(t *testing.T) {
+	got := serviceNames(" svc:server01, bastion03 ,,")
+	if want := []string{"svc:server01", "svc:bastion03"}; !slices.Equal(got, want) {
+		t.Errorf("serviceNames = %q, want %q", got, want)
+	}
+	if got := serviceNames(""); got != nil {
+		t.Errorf("serviceNames(\"\") = %q, want nil", got)
 	}
 }

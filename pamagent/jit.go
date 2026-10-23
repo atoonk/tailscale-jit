@@ -451,7 +451,7 @@ func summarizeRequest(r accessRequest, waitCmd string) string {
 		}
 		b.WriteString(".\n")
 		fmt.Fprintf(&b, "Tell the user you submitted an access request and show this approval link on its own line:\n%s\n", r.URL)
-		fmt.Fprintf(&b, "Do not try to reach these services another way while it is pending. To wait, run in the background: %s %s\n", waitCmd, r.ID)
+		fmt.Fprintf(&b, "Do not try to reach these services another way while it is pending. To wait, run in the background: %s -service svc:<the service you need> %s\n", waitCmd, r.ID)
 	case "approved":
 		fmt.Fprintf(&b, "Access request %s for %s is APPROVED until %s.\n%s\n", r.ID, what, shortTime(r.ExpiresAt), r.URL)
 		b.WriteString("Call list_services to confirm the services are visible before using them.\n")
@@ -474,10 +474,14 @@ func summarizeRequest(r accessRequest, waitCmd string) string {
 }
 
 // backoff is how long wait sleeps between checks, given how long it has been
-// waiting: every 20 seconds for the first two minutes (someone is probably
-// approving right now, e.g. in a demo), then every minute.
+// waiting: every 3 seconds for the first two minutes (someone is probably
+// approving right now, and a check costs jitd next to nothing), every 20
+// seconds until 10 minutes, then every minute.
 func backoff(waited time.Duration) time.Duration {
-	if waited < 2*time.Minute {
+	switch {
+	case waited < 2*time.Minute:
+		return 3 * time.Second
+	case waited < 10*time.Minute:
 		return 20 * time.Second
 	}
 	return time.Minute
@@ -494,11 +498,12 @@ const (
 // waitForRequest polls jitd until the request leaves "pending", sleeping
 // sched(time waited so far) between checks; ctx bounds that wait. If it was
 // approved and src is set, it then waits up to visibleWithin until the local
-// tailscaled lists the Tailscale Services the approval should expose. That
+// tailscaled lists the Tailscale Services in want (the ones the agent needs),
+// or, with want empty, any of the services the approval should expose. That
 // part is bounded by sig (signals only), not ctx, so a late approval is not
 // cut short. It writes one line per change and returns the process exit code
 // (see waitApproved and friends).
-func waitForRequest(ctx, sig context.Context, c *jitClient, src source, id string, sched func(time.Duration) time.Duration, visibleWithin time.Duration, w io.Writer) int {
+func waitForRequest(ctx, sig context.Context, c *jitClient, src source, id string, want []string, sched func(time.Duration) time.Duration, visibleWithin time.Duration, w io.Writer) int {
 	last := ""
 	start := time.Now()
 	gaveUp := func() int {
@@ -528,7 +533,7 @@ func waitForRequest(ctx, sig context.Context, c *jitClient, src source, id strin
 			if src == nil {
 				return waitApproved
 			}
-			return waitVisible(sig, src, r.services(), visibleWithin, w)
+			return waitVisible(sig, src, r.services(), want, visibleWithin, w)
 		case "declined", "cancelled", "revoked", "expired":
 			return waitDenied
 		}
@@ -549,8 +554,15 @@ func resourceNames(rs []resource) []string {
 	return out
 }
 
-func waitVisible(ctx context.Context, src source, services []string, within time.Duration, w io.Writer) int {
-	if len(services) == 0 {
+// waitVisible waits until the local tailscaled lists every service in want,
+// or, with want empty, at least one of granted (one host being offline must
+// not hold up the others). It reports what is visible and what is not yet.
+func waitVisible(ctx context.Context, src source, granted, want []string, within time.Duration, w io.Writer) int {
+	all := len(want) > 0
+	if !all {
+		want = granted
+	}
+	if len(want) == 0 {
 		// Nothing the local node can confirm (tags, hosts, or no list):
 		// approval is all we can report.
 		fmt.Fprintf(w, "%s approved; no Tailscale Services to look for, so visibility cannot be checked here\n", stamp())
@@ -560,27 +572,41 @@ func waitVisible(ctx context.Context, src source, services []string, within time
 	defer cancel()
 	for {
 		m, err := src.GetServices(ctx)
-		if err == nil && allVisible(m, services) {
-			fmt.Fprintf(w, "%s visible: %s\n", stamp(), strings.Join(services, ", "))
+		var seen, missing []string
+		if err == nil {
+			seen, missing = splitVisible(m, want)
+		}
+		if len(missing) == 0 || (!all && len(seen) > 0) {
+			fmt.Fprintf(w, "%s visible: %s", stamp(), strings.Join(seen, ", "))
+			if len(missing) > 0 {
+				fmt.Fprintf(w, "; not visible yet: %s", strings.Join(missing, ", "))
+			}
+			fmt.Fprintln(w)
 			return waitApproved
 		}
 		select {
 		case <-ctx.Done():
 			// Still exit 0: the request is approved; the line says the rest.
-			fmt.Fprintf(w, "%s approved, but not all services are visible to this node yet: %s\n", stamp(), strings.Join(services, ", "))
+			if missing == nil {
+				missing = want
+			}
+			fmt.Fprintf(w, "%s approved, but not visible to this node yet: %s\n", stamp(), strings.Join(missing, ", "))
 			return waitApproved
 		case <-time.After(time.Second):
 		}
 	}
 }
 
-func allVisible(m map[tailcfg.ServiceName]tailcfg.ServiceDetails, services []string) bool {
+// splitVisible splits services into the ones m lists and the rest.
+func splitVisible(m map[tailcfg.ServiceName]tailcfg.ServiceDetails, services []string) (seen, missing []string) {
 	for _, s := range services {
-		if _, ok := m[tailcfg.ServiceName(s)]; !ok {
-			return false
+		if _, ok := m[tailcfg.ServiceName(s)]; ok {
+			seen = append(seen, s)
+		} else {
+			missing = append(missing, s)
 		}
 	}
-	return true
+	return seen, missing
 }
 
 func stamp() string { return time.Now().UTC().Format("15:04:05") }

@@ -1,6 +1,6 @@
 {
   "name": "tailscale-pam",
-  "version": "0.5.2",
+  "version": "0.5.3",
   "description": "Connect to infrastructure over Tailscale PAM (SSH, MySQL, PostgreSQL, MongoDB, MS SQL, Elasticsearch, Kubernetes, RDP, and more): see what this machine can reach, and request just-in-time access through jitd. Credentials are injected by Tailscale PAM.",
   "author": {
     "name": "Andree Toonk"

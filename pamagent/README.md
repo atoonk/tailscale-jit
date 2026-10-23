@@ -48,17 +48,23 @@ The agent runs this in the background instead of polling in the
 conversation:
 
 ```sh
-pamagent wait [-jit-url URL] [-timeout 5m] [-interval 30s] req_...   # flags go before the id
+pamagent wait [-service svc:server01] [-jit-url URL] [-timeout 5m] [-interval 30s] req_...   # flags go before the id
 ```
 
-It checks every 20 seconds for the first two minutes, when someone is
-probably approving right now. After that it checks once a minute, and it
-stops after 5 minutes. `-interval` replaces this backoff with a fixed
-interval. It prints one line per status change.
+It checks every 3 seconds for the first two minutes, when someone is
+probably approving right now; a check costs jitd next to nothing. After that
+it checks every 20 seconds, then once a minute after 10 minutes, and by
+default it stops after 5 minutes. `-interval` replaces this backoff with a
+fixed interval. It prints one line per status change.
+
+Once the request is approved, it waits (up to a minute) until this machine
+can see the services: the ones named with `-service`, or without it, any of
+the services the approval grants. Its last line lists what is visible and
+what isn't yet. One host of a flow being offline doesn't hold it up.
 
 | Exit code | Meaning |
 |---|---|
-| 0 | approved; the last line says whether what the policy grants is visible to this node yet (it waits up to a minute for that) |
+| 0 | approved; the last line says what is visible to this node and what isn't yet |
 | 1 | declined, cancelled, revoked or expired |
 | 2 | error |
 | 3 | still pending when it stopped; the agent repeats the link and offers to wait again |

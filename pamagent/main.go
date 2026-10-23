@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -24,7 +25,7 @@ import (
 	"tailscale.com/paths"
 )
 
-var version = "0.5.2"
+var version = "0.5.3"
 
 // defaultJITURL is where jitd answers on a tailnet with MagicDNS.
 const defaultJITURL = "http://jit"
@@ -62,9 +63,11 @@ Access requests:
 		`from the result's "url" field on its own line so they can click it, for example:
     I've submitted an access request for "Database access (read-only)" (15m, reason: ...). It needs approval here:
     ` + jitURL + `/requests/req_...
-- To wait for the decision, run "` + waitCmd + ` <request_id>" in the background; it exits when the request ` +
-		`is decided (exit 0 approved: its last line says whether the services are visible yet; 1 declined/cancelled/revoked/expired; 2 error). It checks every 20 seconds ` +
-		`for 2 minutes, then every minute, and stops after 5 minutes with exit 3 if nobody has decided yet: then tell the user ` +
+- To wait for the decision, run "` + waitCmd + ` -service svc:<the service you need> <request_id>" in the background ` +
+		`(flags before the id; -service takes a comma-separated list, and without it wait settles for any service the approval grants). ` +
+		`It exits when the request is decided and that service is visible (exit 0 approved: its last line says what is visible; ` +
+		`1 declined/cancelled/revoked/expired; 2 error). It checks every 3 seconds for 2 minutes, then every 20 seconds, ` +
+		`and stops after 5 minutes with exit 3 if nobody has decided yet: then tell the user ` +
 		`the request is still pending, repeat the link, and offer to keep waiting (run wait again) instead of polling in a loop yourself. Or call get_access_request.
 - If the user no longer needs the access, or asks to end it early, call cancel_access_request: it withdraws a pending ` +
 		`request or ends approved access now. Do not end access on your own initiative while the user may still use it.
@@ -113,6 +116,20 @@ func main() {
 	}
 }
 
+// serviceNames parses -service: comma-separated, "svc:" added if missing.
+func serviceNames(s string) []string {
+	var out []string
+	for _, n := range strings.Split(s, ",") {
+		if n = strings.TrimSpace(n); n != "" {
+			if !strings.HasPrefix(n, "svc:") {
+				n = "svc:" + n
+			}
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
 // waitCommand is the shell command an agent runs to wait for a request.
 func waitCommand(jitURL string) string {
 	exe, err := os.Executable()
@@ -130,11 +147,12 @@ func runWait(args []string) int {
 	fs := flag.NewFlagSet("pamagent wait", flag.ContinueOnError)
 	jitURL := fs.String("jit-url", defaultJITURL, "base URL of jitd")
 	socket := fs.String("socket", "", "tailscaled LocalAPI socket path (default: platform default)")
-	interval := fs.Duration("interval", 0, "ask jitd at this fixed interval instead of the default backoff (every 20s for 2 minutes, then every minute)")
+	interval := fs.Duration("interval", 0, "ask jitd at this fixed interval instead of the default backoff (every 3s for 2 minutes, every 20s until 10 minutes, then every minute)")
+	service := fs.String("service", "", "after approval, wait until these Tailscale Services are visible (comma-separated, e.g. svc:server01); by default, until any service the approval grants is")
 	timeout := fs.Duration("timeout", 5*time.Minute, "stop waiting after this long; the request stays pending and wait can be run again")
 	fs.Usage = func() {
 		fmt.Fprintf(fs.Output(), "usage: pamagent wait [flags] <request_id>\n\nWaits until a jitd access request is decided; "+
-			"if approved, also until its services are visible to this node.\nIt asks every 20s for the first 2 minutes, then every minute.\n"+
+			"if approved, also until the services you need (-service) are visible to this node.\nIt asks every 3s for the first 2 minutes, every 20s until 10 minutes, then every minute.\n"+
 			"Exit status: 0 approved, 1 declined/cancelled/revoked/expired, 2 error, 3 still pending when -timeout ran out.\n\n")
 		fs.PrintDefaults()
 	}
@@ -153,5 +171,5 @@ func runWait(args []string) int {
 	if *interval > 0 {
 		sched = func(time.Duration) time.Duration { return *interval }
 	}
-	return waitForRequest(ctx, sig, c, &local.Client{Socket: *socket}, fs.Arg(0), sched, time.Minute, os.Stdout)
+	return waitForRequest(ctx, sig, c, &local.Client{Socket: *socket}, fs.Arg(0), serviceNames(*service), sched, time.Minute, os.Stdout)
 }

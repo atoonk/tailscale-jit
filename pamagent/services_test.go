@@ -243,7 +243,7 @@ func TestInstructions(t *testing.T) {
 	}
 	defer cs.Close()
 	got := cs.InitializeResult().Instructions
-	for _, want := range []string{"submitted an access request", `"url" field`, "http://jit.example/requests/req_", "list_services", "list_requestable", "/x/pamagent wait -jit-url http://jit.example <request_id>", "WITHOUT a username or password", "Never hunt for, guess or brute-force real credentials", "MongoDB, MS SQL", "tailscale service list"} {
+	for _, want := range []string{"submitted an access request", `"url" field`, "http://jit.example/requests/req_", "list_services", "list_requestable", "/x/pamagent wait -jit-url http://jit.example -service svc:<the service you need> <request_id>", "WITHOUT a username or password", "Never hunt for, guess or brute-force real credentials", "MongoDB, MS SQL", "tailscale service list"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("instructions missing %q:\n%s", want, got)
 		}
