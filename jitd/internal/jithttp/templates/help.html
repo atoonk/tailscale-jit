@@ -18,6 +18,7 @@
 <section class="card prose">
   <h2>From Claude Code or scripts</h2>
   <p>Install the <b>tailscale-pam</b> plugin (<code>/plugin marketplace add atoonk/tailscale-jit</code>, then <code>/plugin install tailscale-pam@tailscale-jit</code>). Claude then sees what you can reach, lists what you can request, files a request and prints the approval link for you to click.</p>
+  {{with .Data.PluginURL}}<p>The plugin looks for jitd at <code>http://jit</code>, but this server is at <code>{{.}}</code>. Tell the plugin once: run <code>/plugin configure tailscale-pam@tailscale-jit</code> in Claude Code, set <b>jitd URL</b> to <code>{{.}}</code>, and restart Claude Code.</p>{{end}}
   <p>Claude only asks for what a task needs, and never for longer than the flow allows. You stay in control: the approval link always comes to you.</p>
 </section>
 

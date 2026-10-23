@@ -2,7 +2,7 @@
   "mcpServers": {
     "tailscale-pam": {
       "command": "${CLAUDE_PLUGIN_ROOT}/bin/pamagent",
-      "args": ["-jit-url", "http://jit"]
+      "args": ["-jit-url", "${user_config.jit_url}"]
     }
   }
 }

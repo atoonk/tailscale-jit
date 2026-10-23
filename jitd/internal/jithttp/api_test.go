@@ -426,3 +426,29 @@ func TestUnknownHostRefused(t *testing.T) {
 		}
 	}
 }
+
+func TestPluginURL(t *testing.T) {
+	for base, want := range map[string]string{
+		"http://jit.example.ts.net/":    "",
+		"http://jit":                    "",
+		"http://jit-1.example.ts.net":   "http://jit-1",
+		"http://access.example.ts.net/": "http://access",
+		"https://jit.example.ts.net":    "https://jit.example.ts.net",
+		"http://100.64.0.1":             "http://100.64.0.1",
+	} {
+		if got := (&Server{BaseURL: base}).pluginURL(); got != want {
+			t.Errorf("pluginURL(%q) = %q, want %q", base, got, want)
+		}
+	}
+}
+
+func TestHelpTellsPluginURL(t *testing.T) {
+	srv, _ := newTestServer(t)
+	if _, body := getPage(t, srv, "alice", "/help"); strings.Contains(body, "/plugin configure") {
+		t.Error("help mentions configuring the plugin although jitd is at http://jit")
+	}
+	srv, _, _ = newTestServerWith(t, func(s *Server) { s.BaseURL = "http://jit-1.example.ts.net" })
+	if _, body := getPage(t, srv, "alice", "/help"); !strings.Contains(body, "<code>http://jit-1</code>") {
+		t.Error("help does not tell people to set the plugin's jitd URL to http://jit-1")
+	}
+}

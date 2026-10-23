@@ -24,7 +24,7 @@ import (
 	"tailscale.com/paths"
 )
 
-var version = "0.5.1"
+var version = "0.5.2"
 
 // defaultJITURL is where jitd answers on a tailnet with MagicDNS.
 const defaultJITURL = "http://jit"

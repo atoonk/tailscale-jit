@@ -75,7 +75,7 @@ Flags:
 
 | Flag | Default | |
 |---|---|---|
-| `-jit-url` | `http://jit` | where jitd is |
+| `-jit-url` | `http://jit` | where jitd is; the plugin passes its **jitd URL** option here |
 | `-socket` | the platform's tailscaled socket | tailscaled LocalAPI socket |
 | `-timeout` | `5s` | timeout for each call to tailscaled |
 

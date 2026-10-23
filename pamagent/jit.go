@@ -258,7 +258,7 @@ func (c *jitClient) do(ctx context.Context, method, path string, in, out any) er
 	}
 	resp, err := c.hc.Do(req)
 	if err != nil {
-		return fmt.Errorf("jitd_unavailable: could not reach jitd at %s (is this machine on the tailnet, and may it reach tag:jit? Setting up jitd: %s/tree/main/jitd): %w", c.base, repoURL, err)
+		return fmt.Errorf("jitd_unavailable: could not reach jitd at %s (is this machine on the tailnet, and may it reach tag:jit? If jitd runs under another name, set the plugin's jitd URL with /plugin configure tailscale-pam@tailscale-jit and restart Claude Code. Setting up jitd: %s/tree/main/jitd): %w", c.base, repoURL, err)
 	}
 	defer resp.Body.Close()
 	b, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))

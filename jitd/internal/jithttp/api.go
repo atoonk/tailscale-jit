@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -298,6 +299,28 @@ func (s *Server) setupResult(r *http.Request) *setup.Result {
 // requestURL is the approval page for an access request.
 func (s *Server) requestURL(id string) string {
 	return s.base() + "/requests/" + id
+}
+
+// pluginURL is the jitd URL to give the Claude Code plugin when its default,
+// http://jit, does not reach this server: http://<short name> on plain HTTP,
+// or the full name with -https (the certificate is for that name). It is
+// empty when the default works.
+func (s *Server) pluginURL() string {
+	u, err := url.Parse(s.base())
+	if err != nil || u.Hostname() == "" {
+		return ""
+	}
+	if u.Scheme == "https" {
+		return s.base()
+	}
+	short, _, _ := strings.Cut(u.Hostname(), ".")
+	if net.ParseIP(u.Hostname()) != nil {
+		short = u.Hostname()
+	}
+	if short == "jit" {
+		return ""
+	}
+	return "http://" + short
 }
 
 // base is the URL people reach jitd at, without a trailing slash.

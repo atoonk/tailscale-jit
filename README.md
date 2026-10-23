@@ -59,7 +59,8 @@ You need:
 - Tailscale **1.98 or newer**, running and logged in on the machine where
   Claude Code runs. (Claude Code on the web can't use it: the tools need a
   device on the tailnet.)
-- jitd running at `http://jit` on your tailnet.
+- jitd running on your tailnet, normally at `http://jit` (see below if
+  yours has another name).
 - Linux or macOS, on amd64 or arm64. The plugin ships prebuilt binaries, so
   there is nothing to build. macOS hasn't been tested yet, and there is no
   Windows build.
@@ -87,10 +88,21 @@ yet."*
 
 A few tips:
 
-- **jitd lives somewhere other than `http://jit`?** Clone the repository
-  (`git clone https://github.com/atoonk/tailscale-jit`), change `-jit-url`
-  in `plugins/tailscale-pam/.mcp.json`, and install from the checkout:
-  `/plugin marketplace add ./tailscale-jit`.
+- **jitd lives somewhere other than `http://jit`?** That happens when
+  another machine was already called `jit` (jitd then joins as `jit-1`) or
+  when jitd runs with `-hostname`. jitd's Help page shows the value to use.
+  Set the plugin's **jitd URL** option: run
+  `/plugin configure tailscale-pam@tailscale-jit` in Claude Code, or use the
+  `/config` panel, and enter for example `http://jit-1`. From a shell:
+
+  ```sh
+  echo '{"jit_url": "http://jit-1"}' | claude plugin configure tailscale-pam@tailscale-jit --values-stdin
+  ```
+
+  Then restart Claude Code. The setting lives in your own Claude Code
+  settings, so plugin updates keep it. If you never set it, the plugin uses
+  `http://jit`; that's also why the install says an option is "not yet
+  set": you can ignore that.
 - **Registered pamagent by hand before?** Remove that entry so the tools
   don't show up twice: `claude mcp remove pamagent` (add `-s user` if you
   added it with that scope).

@@ -1,6 +1,6 @@
 {
   "name": "tailscale-pam",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "description": "Connect to infrastructure over Tailscale PAM (SSH, MySQL, PostgreSQL, MongoDB, MS SQL, Elasticsearch, Kubernetes, RDP, and more): see what this machine can reach, and request just-in-time access through jitd. Credentials are injected by Tailscale PAM.",
   "author": {
     "name": "Andree Toonk"
@@ -8,5 +8,13 @@
   "homepage": "https://github.com/atoonk/tailscale-jit",
   "repository": "https://github.com/atoonk/tailscale-jit",
   "license": "Apache-2.0",
-  "keywords": ["tailscale", "pam", "jit", "access-requests", "mcp"]
+  "keywords": ["tailscale", "pam", "jit", "access-requests", "mcp"],
+  "userConfig": {
+    "jit_url": {
+      "type": "string",
+      "title": "jitd URL",
+      "description": "Where jitd answers on your tailnet. Change it only if jitd doesn't run as the machine named jit, for example http://jit-1 or http://access.",
+      "default": "http://jit"
+    }
+  }
 }

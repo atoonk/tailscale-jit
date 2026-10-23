@@ -150,8 +150,12 @@ Things to know:
   then on. Either way the JSON file is left as it was; keep it as a backup.
   The log says `imported the old JSON data file`.
 - **The name is taken?** If a machine called `jit` already exists, the new
-  node becomes `jit-1`. Remove the old machine in the admin console, or pick
-  another name with `-hostname`.
+  node becomes `jit-1`. Remove the old machine in the admin console and
+  rename the node to `jit`, or keep the other name (or pick one with
+  `-hostname`). The Claude Code plugin looks for `http://jit`, so with
+  another name everyone using it sets the plugin's **jitd URL** once, for
+  example to `http://jit-1`, with `/plugin configure tailscale-pam@tailscale-jit`. jitd's
+  Help page tells people the exact value.
 - **No auth key?** Then jitd logs a login URL instead. Open it and approve
   the machine, then tag it `tag:jit` in the admin console.
 
