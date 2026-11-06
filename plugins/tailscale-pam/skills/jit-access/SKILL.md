@@ -28,8 +28,8 @@ Tools come from the `tailscale-pam` MCP server:
 ## Getting access
 
 1. Call `list_services`. If the service is there, use it (see above).
-2. Otherwise call `list_requestable` and pick the **narrowest** flow whose "gives access to" covers the task (the descriptions say what each resource is): read-only before read-write, and the shortest duration that fits. If a flow is flagged as not in the policy yet, tell the user instead of requesting it.
-3. Call `request_access` with an honest reason; the approver sees it.
+2. Otherwise call `list_requestable` and pick the flow that fits the task (see **Choosing what to request**). If a flow is flagged as not in the policy yet, tell the user instead of requesting it.
+3. Call `request_access` with an honest reason that says what you will do and on what; the approver sees it.
 4. **Immediately tell the user** you submitted an access request, then print the approval link from the result's `url` field **on its own line** so they can click it:
 
    ```
@@ -39,6 +39,15 @@ Tools come from the `tailscale-pam` MCP server:
 
 5. Wait for the decision by running the wait command from the `request_access` result (`<plugin>/libexec/<os>-<arch>/pamagent wait -service svc:<name> <request_id>`) **in the background**. Pass the service you actually need with `-service` (comma-separated for several; flags go before the id), so it returns as soon as that one is reachable instead of waiting for every service the flow covers. It checks every 3 seconds for 2 minutes, then every 20 seconds, and exits 0 when approved (its last line says what is visible), 1 when declined, cancelled, revoked or expired, 2 on error, and 3 if nobody decided within 5 minutes. On 3, tell the user it is still pending, repeat the link, and offer to wait again (run the same command); don't poll in a loop yourself. Or call `get_access_request`.
 6. After approval, call `list_services` to confirm the service is visible before using it.
+
+## Choosing what to request
+
+Ask for the access the task needs, not the most you could get.
+
+- **Overlapping flows:** when several flows cover the same thing (read-only and read-write on one database, read-only and operate on a cluster), pick the one that fits the **current step**. Investigating is read-only, even if a fix may follow.
+- **Escalate when you get there:** don't request a broader flow "just in case", or several overlapping flows at once. When a later step needs more (a write, a restart), request the higher flow then, with a reason naming that step: "restart deployment payments to drop leaked DB connections".
+- **But don't under-ask on purpose:** if the task clearly needs more from the start (the user asked you to change something), request that flow directly rather than read-only first. Two approvals for one obvious change waste the approver's time.
+- **Duration:** pick it for the work, not the flow's maximum.
 
 ## Rules
 

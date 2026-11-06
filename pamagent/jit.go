@@ -317,6 +317,7 @@ func registerJITTools(s *mcp.Server, c *jitClient, waitCmd string) {
 		Name:  "request_access",
 		Title: "Request just-in-time access",
 		Description: "Submit a just-in-time access request through a jitd approval flow (workflow_id from list_requestable). " +
+			"Request the flow that fits the current step of the task, not the broadest one, for the time the work needs. " +
 			"A human must approve it. The result contains the approval URL: always show it to the user on its own line. " +
 			"Then wait for the decision (" + waitCmd + " in the background, or get_access_request) before using the service.",
 		Annotations: &mcp.ToolAnnotations{DestructiveHint: new(false), OpenWorldHint: new(false)},
