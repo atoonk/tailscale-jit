@@ -152,9 +152,32 @@ type Workflow struct {
 	DefaultDuration Duration `json:"default_duration,omitempty"`
 	// Disabled stops new requests and approvals; existing access runs out
 	// on its own.
-	Disabled  bool      `json:"disabled,omitempty"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	Disabled bool `json:"disabled,omitempty"`
+	// Slack is where requests through this flow are announced, if Slack is
+	// connected. Nil means nowhere.
+	Slack     *WorkflowSlack `json:"slack,omitempty"`
+	CreatedAt time.Time      `json:"created_at"`
+	UpdatedAt time.Time      `json:"updated_at"`
+}
+
+// WorkflowSlack is a flow's Slack settings.
+type WorkflowSlack struct {
+	Channel     string `json:"channel,omitempty"`      // channel ID (C…/G…) new requests are posted to
+	ChannelName string `json:"channel_name,omitempty"` // its name when it was picked, for display
+	DMApprovers bool   `json:"dm_approvers,omitempty"` // also send each approver a direct message
+	// BrowserOnly leaves the Approve and Decline buttons off the Slack
+	// messages: decisions for this flow are made in the browser, where the
+	// approver is identified by Tailscale, not by their Slack account.
+	BrowserOnly bool `json:"browser_only,omitempty"`
+}
+
+// SlackMessage is one message jitd posted about a request, so it can be
+// updated as the request moves on.
+type SlackMessage struct {
+	Channel string `json:"channel"`        // channel or DM conversation ID
+	TS      string `json:"ts"`             // the message's timestamp, Slack's message ID
+	Kind    string `json:"kind,omitempty"` // "channel" or "dm"
+	User    string `json:"user,omitempty"` // the Slack user a DM went to
 }
 
 // Resource is one thing an attribute gives access to, as a policy grant
@@ -209,7 +232,18 @@ type Identity struct {
 	DeviceID    string   `json:"device_id"`
 	DeviceName  string   `json:"device_name,omitempty"`
 	Tags        []string `json:"tags,omitempty"`
+	// Via says how the caller was identified when it was not Tailscale:
+	// "slack" for a Slack user matched to this login by email. Recorded with
+	// every decision they make.
+	Via string `json:"via,omitempty"`
+	// SlackUser is the Slack account behind a Via "slack" identity, as
+	// "<team ID>/<user ID>", so a decision can be traced to the account that
+	// made it even if that account's email changes later.
+	SlackUser string `json:"slack_user,omitempty"`
 }
+
+// ViaSlack marks identities that came from a Slack account, not WhoIs.
+const ViaSlack = "slack"
 
 // Tagged reports whether the caller is a tagged device (no user identity).
 func (id Identity) Tagged() bool { return len(id.Tags) > 0 }
@@ -224,12 +258,14 @@ func (id Identity) Actor() string {
 
 // Approval is one approver's vote on a request.
 type Approval struct {
-	Actor    string    `json:"actor"`
-	Login    string    `json:"login,omitempty"`     // with Tags, who voted, to re-check against the flow
-	Tags     []string  `json:"tags,omitempty"`      // the voter's tags, for tagged devices
-	DeviceID string    `json:"device_id,omitempty"` // tells tagged approvers apart (their name can change)
-	Note     string    `json:"note,omitempty"`
-	At       time.Time `json:"at"`
+	Actor     string    `json:"actor"`
+	Login     string    `json:"login,omitempty"`     // with Tags, who voted, to re-check against the flow
+	Tags      []string  `json:"tags,omitempty"`      // the voter's tags, for tagged devices
+	DeviceID  string    `json:"device_id,omitempty"` // tells tagged approvers apart (their name can change)
+	Note      string    `json:"note,omitempty"`
+	Via       string    `json:"via,omitempty"`        // "slack" when the vote came through Slack
+	SlackUser string    `json:"slack_user,omitempty"` // with Via "slack": "<team>/<user>"
+	At        time.Time `json:"at"`
 }
 
 // Identity is who cast the vote, as far as matching principals goes.
@@ -253,11 +289,20 @@ type Enforcement struct {
 
 // Event is one entry in an access request's timeline.
 type Event struct {
-	Type  string    `json:"type"` // submitted approval approved approve_failed declined cancelled revoked revoke_failed expired
-	Actor string    `json:"actor"`
-	Note  string    `json:"note,omitempty"`
-	At    time.Time `json:"at"`
+	Type      string    `json:"type"` // submitted approval approved approve_failed declined cancelled revoked revoke_failed expired
+	Actor     string    `json:"actor"`
+	Note      string    `json:"note,omitempty"`
+	Via       string    `json:"via,omitempty"`        // "slack" when the actor acted through Slack
+	SlackUser string    `json:"slack_user,omitempty"` // with Via "slack": "<team>/<user>"
+	At        time.Time `json:"at"`
 }
+
+// Event types a Notifier sees that are not timeline entries: the device
+// attribute was read back present, or gone.
+const (
+	EventConfirmed = "confirmed"
+	EventRemoved   = "removed"
+)
 
 // AccessRequest is a request for time-limited access through one workflow.
 type AccessRequest struct {
@@ -283,8 +328,10 @@ type AccessRequest struct {
 	ExpiresAt         *time.Time  `json:"expires_at,omitempty"`
 	Attributes        []string    `json:"attributes,omitempty"` // [Attribute] once it was set on approve; empty if never granted
 	LastError         string      `json:"last_error,omitempty"`
-	CreatedAt         time.Time   `json:"created_at"`
-	UpdatedAt         time.Time   `json:"updated_at"`
+	// Slack lists the Slack messages posted about this request.
+	Slack     []SlackMessage `json:"slack,omitempty"`
+	CreatedAt time.Time      `json:"created_at"`
+	UpdatedAt time.Time      `json:"updated_at"`
 	// Policy is what the tailnet policy grants for Attribute; set by the
 	// HTTP layer, not stored.
 	Policy *PolicyUse `json:"policy,omitempty"`
@@ -345,7 +392,20 @@ func (w *Workflow) Normalize() {
 	if w.DefaultDuration == 0 {
 		w.DefaultDuration = min(DefaultMaxDuration, w.MaxDuration)
 	}
+	if w.Slack != nil {
+		w.Slack.Channel = strings.TrimSpace(w.Slack.Channel)
+		w.Slack.ChannelName = strings.TrimPrefix(strings.TrimSpace(w.Slack.ChannelName), "#")
+		if w.Slack.Channel == "" {
+			w.Slack.ChannelName = ""
+		}
+		if *w.Slack == (WorkflowSlack{}) {
+			w.Slack = nil
+		}
+	}
 }
+
+// slackChannelRE is the shape of a Slack conversation ID.
+var slackChannelRE = regexp.MustCompile(`^[CG][A-Z0-9]{6,}$`)
 
 // Validate checks a normalized workflow.
 func (w *Workflow) Validate() error {
@@ -410,6 +470,9 @@ func (w *Workflow) Validate() error {
 	}
 	if named == len(w.Approvers) && named < w.ApprovalsRequired {
 		return badRequest("approvals_required is %d but only %d approvers are listed", w.ApprovalsRequired, named)
+	}
+	if w.Slack != nil && w.Slack.Channel != "" && !slackChannelRE.MatchString(w.Slack.Channel) {
+		return badRequest("invalid Slack channel ID %q: pick a channel from the list", w.Slack.Channel)
 	}
 	return nil
 }

@@ -3,10 +3,10 @@
 // pages when something changed on the server.
 "use strict";
 
-function flash(msg) {
+function flash(msg, ok) {
   const el = document.getElementById("flash");
   el.textContent = msg;
-  el.className = "flash error";
+  el.className = ok ? "flash ok" : "flash error";
   el.hidden = false;
   window.scrollTo(0, 0);
 }
@@ -77,6 +77,20 @@ function workflowBody(f) {
     approval_timeout: dur(f, "approval_timeout"),
     approvals_required: Number(f.approvals_required.value),
     disabled: !f.enabled.checked,
+    slack: slackBody(f),
+  };
+}
+
+// slackBody reads the flow form's Slack part (absent in builds without it).
+function slackBody(f) {
+  const ch = f.slack_channel;
+  if (!ch) return undefined;
+  const opt = ch.selectedOptions[0];
+  return {
+    channel: ch.value,
+    channel_name: (opt && opt.dataset.name) || "",
+    dm_approvers: f.slack_dm.checked,
+    browser_only: f.slack_browser_only.checked,
   };
 }
 
@@ -91,6 +105,17 @@ document.addEventListener("submit", async (ev) => {
       location.href = "/admin/workflows";
     } else if (f.dataset.form === "request") {
       await submitRequests(f);
+    } else if (f.dataset.form === "slack-connect") {
+      await api("POST", "/v1/slack/connect", {
+        bot_token: f.bot_token.value.trim(), app_token: f.app_token.value.trim(), allowed_domains: list(f.allowed_domains.value),
+      });
+      location.reload();
+    } else if (f.dataset.form === "slack-domains") {
+      await api("PUT", "/v1/slack/domains", { allowed_domains: list(f.allowed_domains.value) });
+      flash("Saved.", true);
+    } else if (f.dataset.form === "slack-test") {
+      await api("POST", "/v1/slack/test", { channel: f.channel.value });
+      flash("Sent. Have a look in Slack.", true);
     }
   } catch (e) {
     flash(e.message);
@@ -374,6 +399,27 @@ document.addEventListener("click", (ev) => {
       flash(e.message);
       b.disabled = false;
       b.textContent = "Check again";
+    }
+  });
+})();
+
+// Slack page: disconnect, with a second click to confirm.
+(() => {
+  const b = document.getElementById("slackdisconnect");
+  if (!b) return;
+  b.addEventListener("click", async () => {
+    if (b.dataset.armed !== "1") {
+      b.dataset.armed = "1";
+      b.textContent = "Click again to disconnect";
+      return;
+    }
+    b.disabled = true;
+    try {
+      await api("POST", "/v1/slack/disconnect");
+      location.reload();
+    } catch (e) {
+      flash(e.message);
+      b.disabled = false;
     }
   });
 })();

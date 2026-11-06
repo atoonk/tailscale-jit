@@ -13,7 +13,7 @@
   <tbody>
   {{range .Data}}
   <tr data-href="/admin/workflows/{{.Flow.ID}}">
-    <td><a href="/admin/workflows/{{.Flow.ID}}"><b>{{.Flow.Name}}</b></a>{{if .Flow.Disabled}} <span class="status expired">disabled</span>{{end}}{{with .Flow.Description}}<div class="muted small">{{.}}</div>{{end}}</td>
+    <td><a href="/admin/workflows/{{.Flow.ID}}"><b>{{.Flow.Name}}</b></a>{{if .Flow.Disabled}} <span class="status expired">disabled</span>{{end}}{{with .Flow.Description}}<div class="muted small">{{.}}</div>{{end}}{{with .Flow.Slack}}{{if .Channel}}<div class="muted small">Slack: #{{or .ChannelName .Channel}}{{if .BrowserOnly}} (browser only){{end}}</div>{{end}}{{end}}</td>
     <td><code>{{.Flow.Attribute}}</code>{{if not .Policy.OK}}<div class="small warn" title="{{join .Policy.Problems}}">⚠ {{index .Policy.Problems 0}}</div>{{end}}</td>
     <td><div class="svcs">{{range .Flow.Resources}}<span title="{{.Description}}">{{.Name}}</span>{{end}}</div></td>
     <td>{{principals .Flow.Requesters}}</td>

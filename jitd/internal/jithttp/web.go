@@ -14,6 +14,8 @@ import (
 
 	"github.com/atoonk/tailscale-jit/jitd/internal/jit"
 	"github.com/atoonk/tailscale-jit/jitd/internal/setup"
+	"github.com/atoonk/tailscale-jit/jitd/internal/slack"
+	"github.com/atoonk/tailscale-jit/jitd/internal/slackbot"
 )
 
 //go:embed templates/*.html
@@ -87,6 +89,13 @@ func init() {
 		"durfield":      durField,
 		"durationUnits": func() []durationUnit { return durationUnits },
 		"maxApprovals":  func() int { return jit.MaxApprovalsRequired },
+		"slackform": func(w *jit.Workflow, f *slackField) map[string]any {
+			cur := w.Slack
+			if cur == nil {
+				cur = &jit.WorkflowSlack{}
+			}
+			return map[string]any{"F": f, "Current": cur}
+		},
 	}
 	base := template.Must(template.New("layout.html").Funcs(funcs).ParseFS(templateFS, "templates/layout.html"))
 	entries, _ := fs.Glob(templateFS, "templates/*.html")
@@ -161,6 +170,36 @@ func relative(t time.Time) string {
 type flowRow struct {
 	Flow   *jit.Workflow
 	Policy *jit.PolicyUse
+	Slack  *slackField // nil: no Slack integration in this build
+}
+
+// slackField fills the Slack part of the flow form.
+type slackField struct {
+	Connected bool
+	Channels  []slack.Channel
+	Error     string // the channels could not be listed
+	// Missing is the flow's channel when it is not among Channels (deleted,
+	// or private and the bot was removed).
+	Missing string
+}
+
+// slackField builds the flow form's Slack part for w.
+func (s *Server) slackField(r *http.Request, w *jit.Workflow) *slackField {
+	if s.Slack == nil {
+		return nil
+	}
+	f := &slackField{Connected: s.Slack.Status().Configured()}
+	if f.Connected {
+		cs, err := s.Slack.Channels(r.Context())
+		if err != nil {
+			f.Error = err.Error()
+		}
+		f.Channels = cs
+	}
+	if w.Slack != nil && w.Slack.Channel != "" && !slices.ContainsFunc(f.Channels, func(c slack.Channel) bool { return c.ID == w.Slack.Channel }) {
+		f.Missing = w.Slack.Channel
+	}
+	return f
 }
 
 type page struct {
@@ -171,6 +210,8 @@ type page struct {
 	Admin    bool
 	Approver bool   // approves for at least one flow: shows the approval views
 	SetupBad bool   // the last setup check failed: marks the Setup link (admins)
+	SlackOn  bool   // the build has the Slack integration (admins see its page)
+	SlackBad string // Slack is set up but not connected: why (marks the Slack link)
 	Changes  uint64 // store change counter at render time, for auto-refresh
 	Data     any
 }
@@ -197,6 +238,9 @@ func (s *Server) renderStatus(w http.ResponseWriter, r *http.Request, status int
 			if res := s.Setup.Last(); res != nil && !res.OK {
 				p.SetupBad = true
 			}
+		}
+		if p.Admin && s.Slack != nil {
+			p.SlackOn, p.SlackBad = true, s.Slack.Problem()
 		}
 	}
 	var buf bytes.Buffer
@@ -244,7 +288,7 @@ func (s *Server) webRoutes(mux *http.ServeMux) {
 		wf := &jit.Workflow{MaxDuration: jit.DefaultMaxDuration, ApprovalTimeout: jit.DefaultApprovalTimeout}
 		wf.Normalize()
 		wf.Attribute = ""
-		s.renderAdmin(w, r, "workflow_form", "New approval flow", "workflows", flowRow{Flow: wf})
+		s.renderAdmin(w, r, "workflow_form", "New approval flow", "workflows", flowRow{Flow: wf, Slack: s.slackField(r, wf)})
 	}))
 	mux.HandleFunc("GET /admin/workflows/{id}", s.adminPage(func(w http.ResponseWriter, r *http.Request, _ jit.Identity) {
 		wf, err := s.Svc.GetWorkflow(r.PathValue("id"))
@@ -252,7 +296,7 @@ func (s *Server) webRoutes(mux *http.ServeMux) {
 			s.notFound(w, r, err)
 			return
 		}
-		s.renderAdmin(w, r, "workflow_form", "Edit approval flow", "workflows", flowRow{Flow: wf, Policy: s.Svc.PolicyUse(r.Context(), wf)})
+		s.renderAdmin(w, r, "workflow_form", "Edit approval flow", "workflows", flowRow{Flow: wf, Policy: s.Svc.PolicyUse(r.Context(), wf), Slack: s.slackField(r, wf)})
 	}))
 	mux.HandleFunc("GET /admin/policy", s.adminPage(func(w http.ResponseWriter, r *http.Request, _ jit.Identity) {
 		missing := r.URL.Query().Get("missing") == "1"
@@ -269,6 +313,13 @@ func (s *Server) webRoutes(mux *http.ServeMux) {
 			res = s.setupResult(r)
 		}
 		s.renderAdmin(w, r, "setup", "Setup", "setup", res)
+	}))
+	mux.HandleFunc("GET /admin/slack", s.adminPage(func(w http.ResponseWriter, r *http.Request, id jit.Identity) {
+		if s.Slack == nil {
+			s.notFound(w, r, &jit.Error{Code: "not_found", Status: 404, Message: "no Slack integration in this build"})
+			return
+		}
+		s.renderAdmin(w, r, "slack", "Slack", "slack", s.slackPage(r, id))
 	}))
 	// Old links.
 	for _, old := range []string{"/workflows", "/workflows/{rest...}", "/policy"} {
@@ -307,11 +358,38 @@ func (s *Server) webRoutes(mux *http.ServeMux) {
 				nav = "admin-requests"
 			}
 		}
-		s.render(w, r, "request", "Access request", nav, map[string]any{"R": req, "Can": s.Svc.Permissions(r.Context(), id, req)})
+		s.render(w, r, "request", "Access request", nav, map[string]any{"R": req, "Can": s.Svc.Permissions(r.Context(), id, req), "SlackNote": s.slackNote(req)})
 	})
 	mux.HandleFunc("GET /help", func(w http.ResponseWriter, r *http.Request) {
 		s.render(w, r, "help", "Help", "help", map[string]any{"PluginURL": s.pluginURL()})
 	})
+}
+
+// slackPageData fills the Slack page.
+type slackPageData struct {
+	Status   slackbot.Status
+	Flows    []slackbot.FlowCheck
+	CheckErr string
+	Channels []slack.Channel
+	// Domain is the admin's own email domain, the first guess for the
+	// allowed domains.
+	Domain string
+}
+
+func (s *Server) slackPage(r *http.Request, admin jit.Identity) slackPageData {
+	d := slackPageData{Status: s.Slack.Status()}
+	if _, dom, ok := strings.Cut(admin.Login, "@"); ok {
+		d.Domain = strings.ToLower(dom)
+	}
+	if d.Status.Configured() {
+		fcs, err := s.Slack.Check(r.Context())
+		if err != nil {
+			d.CheckErr = err.Error()
+		}
+		d.Flows = fcs
+		d.Channels, _ = s.Slack.Channels(r.Context())
+	}
+	return d
 }
 
 // requestsPage lists requests: the viewer's own and the ones they approve
@@ -364,4 +442,13 @@ func (s *Server) adminPage(h func(http.ResponseWriter, *http.Request, jit.Identi
 
 func (s *Server) notFound(w http.ResponseWriter, r *http.Request, err error) {
 	s.renderStatus(w, r, http.StatusNotFound, "notfound", "Not found", "", jit.AsError(err).Message)
+}
+
+// slackNote says why a pending request is missing from its flow's Slack
+// channel, or "".
+func (s *Server) slackNote(req *jit.AccessRequest) string {
+	if s.Slack == nil {
+		return ""
+	}
+	return s.Slack.RequestNote(req)
 }

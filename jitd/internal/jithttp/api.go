@@ -16,6 +16,7 @@ import (
 
 	"github.com/atoonk/tailscale-jit/jitd/internal/jit"
 	"github.com/atoonk/tailscale-jit/jitd/internal/setup"
+	"github.com/atoonk/tailscale-jit/jitd/internal/slackbot"
 	"github.com/atoonk/tailscale-jit/jitd/internal/tsapi"
 )
 
@@ -25,6 +26,7 @@ type Server struct {
 	Resolver jit.Resolver
 	TS       tsapi.Client   // for the attribute passthrough endpoint
 	Setup    *setup.Checker // the setup check behind /admin/setup; nil hides it
+	Slack    *slackbot.Bot  // the Slack integration behind /admin/slack; nil hides it
 	JITTag   string         // tag used in the policy snippet, e.g. "tag:jit"
 	BaseURL  string         // e.g. "http://jit"; used for approval links in responses
 	// Hosts are the names and addresses jitd answers to (Host header,
@@ -203,6 +205,64 @@ func (s *Server) Handler() http.Handler {
 		io.WriteString(w, snip)
 	}))
 
+	mux.HandleFunc("GET /v1/slack", s.withSlack(func(w http.ResponseWriter, r *http.Request, _ jit.Identity) {
+		writeJSON(w, http.StatusOK, s.Slack.Status())
+	}))
+	mux.HandleFunc("POST /v1/slack/connect", s.withSlack(func(w http.ResponseWriter, r *http.Request, id jit.Identity) {
+		var in slackbot.ConnectInput
+		if !decode(w, r, &in) {
+			return
+		}
+		out, err := s.Slack.Connect(r.Context(), id, in)
+		s.reply(w, http.StatusOK, out, err)
+	}))
+	mux.HandleFunc("POST /v1/slack/disconnect", s.withSlack(func(w http.ResponseWriter, r *http.Request, id jit.Identity) {
+		if err := s.Slack.Disconnect(r.Context(), id); err != nil {
+			writeErr(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, s.Slack.Status())
+	}))
+	mux.HandleFunc("PUT /v1/slack/domains", s.withSlack(func(w http.ResponseWriter, r *http.Request, id jit.Identity) {
+		var in struct {
+			AllowedDomains []string `json:"allowed_domains"`
+		}
+		if !decode(w, r, &in) {
+			return
+		}
+		out, err := s.Slack.SetDomains(id, in.AllowedDomains)
+		s.reply(w, http.StatusOK, out, err)
+	}))
+	mux.HandleFunc("GET /v1/slack/channels", s.withSlack(func(w http.ResponseWriter, r *http.Request, _ jit.Identity) {
+		cs, err := s.Slack.Channels(r.Context())
+		if err != nil {
+			writeErr(w, &jit.Error{Code: "slack_error", Status: http.StatusBadGateway, Message: err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"channels": jit.OrEmpty(cs)})
+	}))
+	mux.HandleFunc("GET /v1/slack/check", s.withSlack(func(w http.ResponseWriter, r *http.Request, _ jit.Identity) {
+		fcs, err := s.Slack.Check(r.Context())
+		if err != nil {
+			writeErr(w, &jit.Error{Code: "slack_error", Status: http.StatusBadGateway, Message: err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"flows": jit.OrEmpty(fcs)})
+	}))
+	mux.HandleFunc("POST /v1/slack/test", s.withSlack(func(w http.ResponseWriter, r *http.Request, id jit.Identity) {
+		var in struct {
+			Channel string `json:"channel"`
+		}
+		if !decode(w, r, &in) {
+			return
+		}
+		if err := s.Slack.TestMessage(r.Context(), id, in.Channel); err != nil {
+			writeErr(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"sent": true})
+	}))
+
 	mux.HandleFunc("GET /v1/devices/{id}/attributes", s.withAdmin(func(w http.ResponseWriter, r *http.Request, _ jit.Identity) {
 		a, err := s.TS.GetAttributes(r.Context(), r.PathValue("id"))
 		if err != nil {
@@ -355,6 +415,18 @@ func (s *Server) withAdmin(h func(http.ResponseWriter, *http.Request, jit.Identi
 	return s.withID(func(w http.ResponseWriter, r *http.Request, id jit.Identity) {
 		if !s.Svc.IsAdmin(r.Context(), id) {
 			writeErr(w, &jit.Error{Code: "forbidden", Status: http.StatusForbidden, Message: "admins only"})
+			return
+		}
+		h(w, r, id)
+	})
+}
+
+// withSlack is withAdmin for the Slack endpoints, which are not there in a
+// build without the integration.
+func (s *Server) withSlack(h func(http.ResponseWriter, *http.Request, jit.Identity)) http.HandlerFunc {
+	return s.withAdmin(func(w http.ResponseWriter, r *http.Request, id jit.Identity) {
+		if s.Slack == nil {
+			writeErr(w, &jit.Error{Code: "not_found", Status: http.StatusNotFound, Message: "no Slack integration in this build"})
 			return
 		}
 		h(w, r, id)

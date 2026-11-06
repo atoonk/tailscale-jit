@@ -24,6 +24,7 @@
     <a href="/admin/workflows" {{if eq .Nav "admin-workflows"}}class="on"{{end}}>Approval flows</a>
     <a href="/admin/policy" {{if eq .Nav "admin-policy"}}class="on"{{end}}>Policy snippet</a>
     <a href="/admin/setup" {{if eq .Nav "admin-setup"}}class="on"{{end}}>Setup{{if .SetupBad}} <span class="dot bad" title="The setup check failed"></span>{{end}}</a>
+    {{if .SlackOn}}<a href="/admin/slack" {{if eq .Nav "admin-slack"}}class="on"{{end}}>Slack{{if .SlackBad}} <span class="dot bad" title="Slack is not connected: {{.SlackBad}}"></span>{{end}}</a>{{end}}
     <a href="/api/docs">API docs</a>
     {{end}}
   </nav>

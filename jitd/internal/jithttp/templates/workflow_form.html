@@ -1,5 +1,5 @@
 {{define "content"}}
-{{$policy := .Data.Policy}}
+{{$policy := .Data.Policy}}{{$slack := .Data.Slack}}
 {{with .Data.Flow}}
 <div class="crumbs"><a href="/admin/workflows">Approval flows</a> › {{if .ID}}{{.Name}}{{else}}New{{end}}</div>
 <h1>{{if .ID}}Edit approval flow{{else}}New approval flow{{end}}</h1>
@@ -74,6 +74,8 @@
     </div>
   </div>
 
+  {{with $slack}}{{template "slackfields" (slackform $.Data.Flow .)}}{{end}}
+
   <div class="card fields">
     <label class="check"><input type="checkbox" name="enabled" {{if not .Disabled}}checked{{end}}> Enabled
       <span class="hint">Turn off to stop new requests and approvals. Existing access runs out on its own; history is kept.</span></label>
@@ -87,6 +89,25 @@
 </form>
 {{end}}
 {{end}}
+
+{{define "slackfields"}}{{$cur := .Current}}<div class="card fields">
+    <h2>Slack <span class="opt">optional</span></h2>
+    <label>Post new requests to
+      <select name="slack_channel" {{if not .F.Connected}}disabled{{end}}>
+        <option value="">No channel</option>
+        {{range .F.Channels}}<option value="{{.ID}}" data-name="{{.Name}}" {{if eq .ID $cur.Channel}}selected{{end}}>{{if .IsPrivate}}🔒 {{else}}# {{end}}{{.Name}}</option>{{end}}
+        {{with .F.Missing}}<option value="{{.}}" data-name="{{$cur.ChannelName}}" selected>#{{or $cur.ChannelName .}} (not found in Slack)</option>{{end}}
+      </select>
+      {{if not .F.Connected}}<span class="hint">Connect Slack on the <a href="/admin/slack">Slack page</a> first.</span>
+      {{else if .F.Error}}<span class="hint bad">Could not list the channels: {{.F.Error}}</span>
+      {{else}}<span class="hint">The message updates as the request moves on. Public channels work as they are; a private one shows here once you <code>/invite @JIT access</code> into it.</span>{{end}}
+    </label>
+    <label class="check"><input type="checkbox" name="slack_dm" {{if $cur.DMApprovers}}checked{{end}} {{if not .F.Connected}}disabled{{end}}> Also send each approver a direct message</label>
+    <div class="field">
+      <label class="check"><input type="checkbox" name="slack_browser_only" {{if $cur.BrowserOnly}}checked{{end}}> Decide in the browser only</label>
+      <span class="hint">Leaves Approve and Decline off the Slack messages. In the browser an approver is identified by Tailscale; in Slack, by their Slack email.</span>
+    </div>
+  </div>{{end}}
 
 {{define "durfield"}}<div class="durpick" data-dur="{{.Name}}">
   <input type="number" min="1" step="1" inputmode="numeric" required value="{{.N}}" aria-label="Amount">

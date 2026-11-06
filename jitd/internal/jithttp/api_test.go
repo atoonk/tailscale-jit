@@ -35,6 +35,16 @@ func (f *fakeTS) DeleteAttribute(ctx context.Context, device, key string) error 
 }
 func (f *fakeTS) GetPolicy(ctx context.Context) (tsapi.Policy, error) { return tsapi.Policy{}, nil }
 
+// ListDevices gives each test person their device, so Slack can tell they
+// are on the tailnet.
+func (f *fakeTS) ListDevices(ctx context.Context) ([]tsapi.Device, error) {
+	var out []tsapi.Device
+	for _, p := range people {
+		out = append(out, tsapi.Device{NodeID: p.DeviceID, Name: p.DeviceName + ".example.ts.net", User: p.Login, Authorized: true})
+	}
+	return out, nil
+}
+
 // The test resolver takes the caller from the X-Test-User header so one server
 // can be driven as several people. jitd itself only uses WhoIs.
 var people = map[string]jit.Identity{

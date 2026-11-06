@@ -364,7 +364,7 @@ func TestStoreMigratesV1(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "jit.db")
 	s := openStore(t, path)
 	for _, q := range []string{
-		`DROP TABLE workflows`, `DROP TABLE requests`, schemaV1, `PRAGMA user_version = 1`,
+		`DROP TABLE workflows`, `DROP TABLE requests`, `DROP TABLE settings`, schemaV1, `PRAGMA user_version = 1`,
 		`INSERT INTO workflows VALUES ('wf_1', 'one', CAST('{"id":"wf_1","name":"one"}' AS BLOB))`,
 		`INSERT INTO requests VALUES ('req_1', 'wf_1', 'maya', 'expired', '2026-10-01T12:00:00.5Z',
 			CAST('{"id":"req_1","workflow_id":"wf_1","status":"expired","created_at":"2026-10-01T12:00:00.5Z"}' AS BLOB))`,
@@ -390,6 +390,64 @@ func TestStoreMigratesV1(t *testing.T) {
 			t.Errorf("after the migration: %+v", d)
 		}
 	})
+}
+
+func TestStoreMigratesV2AndSettings(t *testing.T) {
+	// A schema 2 database has no settings table; opening it adds one and
+	// keeps the rows.
+	path := filepath.Join(t.TempDir(), "jit.db")
+	s := openStore(t, path)
+	if err := s.Update(func(d *Data) error {
+		d.Workflows["wf_1"] = &Workflow{ID: "wf_1", Name: "one"}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, q := range []string{`DROP TABLE settings`, `PRAGMA user_version = 2`} {
+		if _, err := s.db.Exec(q); err != nil {
+			t.Fatal(q, err)
+		}
+	}
+	s.Close()
+
+	s = openStore(t, path)
+	if v, _ := s.version(); v != schemaVersion {
+		t.Errorf("version %d", v)
+	}
+	s.View(func(d *Data) {
+		if d.Workflows["wf_1"] == nil {
+			t.Error("flow lost in the migration")
+		}
+	})
+	type conn struct{ Token string }
+	var got conn
+	if ok, err := s.GetSetting("slack", &got); ok || err != nil {
+		t.Fatalf("empty settings: %v %v", ok, err)
+	}
+	before := s.Changes()
+	if err := s.PutSetting("slack", conn{"xoxb-1"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PutSetting("slack", conn{"xoxb-2"}); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := s.GetSetting("slack", &got); !ok || err != nil || got.Token != "xoxb-2" {
+		t.Fatalf("setting = %+v %v %v", got, ok, err)
+	}
+	if s.Changes() != before {
+		t.Error("a setting counted as a change pages reload for")
+	}
+	s.Close()
+	s = openStore(t, path)
+	if ok, _ := s.GetSetting("slack", &got); !ok || got.Token != "xoxb-2" {
+		t.Fatalf("after reopen: %+v", got)
+	}
+	if err := s.DeleteSetting("slack"); err != nil {
+		t.Fatal(err)
+	}
+	if ok, _ := s.GetSetting("slack", &got); ok {
+		t.Error("deleted setting still there")
+	}
 }
 
 func TestStoreReadOnly(t *testing.T) {

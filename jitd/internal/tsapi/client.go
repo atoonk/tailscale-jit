@@ -1,9 +1,11 @@
 // Package tsapi is a minimal client for the parts of the Tailscale public API
-// that jitd needs: custom device posture attributes and the policy file.
+// that jitd needs: custom device posture attributes, the policy file and the
+// device list.
 package tsapi
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -51,6 +53,35 @@ type Grant struct {
 	Src        []string `json:"src"`
 	Dst        []string `json:"dst"`
 	SrcPosture []string `json:"srcPosture"`
+}
+
+// Device is one device in GET /api/v2/tailnet/-/devices.
+type Device struct {
+	ID                 string    `json:"id"`
+	NodeID             string    `json:"nodeId"` // the stable ID WhoIs reports
+	Name               string    `json:"name"`   // MagicDNS name
+	Hostname           string    `json:"hostname"`
+	User               string    `json:"user"` // the owner's login
+	OS                 string    `json:"os"`
+	Tags               []string  `json:"tags"`
+	Authorized         bool      `json:"authorized"`
+	LastSeen           time.Time `json:"lastSeen"`
+	ConnectedToControl bool      `json:"connectedToControl"`
+}
+
+// ShortName is the device's name without the tailnet suffix.
+func (d Device) ShortName() string {
+	if n, _, ok := strings.Cut(d.Name, "."); ok && n != "" {
+		return n
+	}
+	return cmp.Or(d.Name, d.Hostname, d.NodeID)
+}
+
+// DeviceLister lists the tailnet's devices. It is separate from Client
+// because only filing a request for someone else's choice of device (from
+// Slack) needs it, and it takes an extra scope: devices:core (read).
+type DeviceLister interface {
+	ListDevices(ctx context.Context) ([]Device, error)
 }
 
 // APIError is a non-2xx response from the Tailscale API.
@@ -179,6 +210,20 @@ func (s *Switchable) GetPolicy(ctx context.Context) (Policy, error) {
 	return c.GetPolicy(ctx)
 }
 
+// ListDevices lists the tailnet's devices through the backing client, if it
+// can.
+func (s *Switchable) ListDevices(ctx context.Context) ([]Device, error) {
+	c, err := s.get()
+	if err != nil {
+		return nil, err
+	}
+	l, ok := c.(DeviceLister)
+	if !ok {
+		return nil, errors.New("this Tailscale API client cannot list devices")
+	}
+	return l.ListDevices(ctx)
+}
+
 func attrPath(deviceID, key string) string {
 	p := "/api/v2/device/" + url.PathEscape(deviceID) + "/attributes"
 	if key != "" {
@@ -217,6 +262,16 @@ func (c *HTTP) GetPolicy(ctx context.Context) (Policy, error) {
 	var p Policy
 	err := c.do(ctx, http.MethodGet, "/api/v2/tailnet/-/acl", nil, &p)
 	return p, err
+}
+
+// ListDevices lists every device in the tailnet. It needs the
+// devices:core (read) scope.
+func (c *HTTP) ListDevices(ctx context.Context) ([]Device, error) {
+	var out struct {
+		Devices []Device `json:"devices"`
+	}
+	err := c.do(ctx, http.MethodGet, "/api/v2/tailnet/-/devices", nil, &out)
+	return out.Devices, err
 }
 
 func (c *HTTP) do(ctx context.Context, method, path string, in, out any) error {

@@ -1,0 +1,121 @@
+{{define "content"}}
+{{$d := .Data}}{{$st := $d.Status}}
+<div class="head">
+  <div>
+    <h1>Slack {{if $st.Configured}}{{if $st.Connected}}<span class="status approved">connected</span>{{else if eq $st.State "error"}}<span class="status declined">not connected</span>{{else}}<span class="status pending">{{$st.State}}</span>{{end}}{{end}}</h1>
+    <p class="sub">Announce access requests in Slack and let approvers decide from the message. jitd connects out to Slack; Slack never connects to jitd, so jitd stays on the tailnet.</p>
+  </div>
+</div>
+
+{{if not $st.Configured}}
+<div class="grid2 wide-left">
+<div>
+<section class="card prose">
+  <h2>Connect Slack</h2>
+  <ol class="steps">
+    <li><b>Create the Slack app.</b> This opens Slack with the app filled in: its name, the bot, Socket Mode, the <code>/jit</code> command and the permissions jitd needs. Pick your workspace and click <b>Create</b>.
+      <div><a class="btn primary" href="{{$st.ManifestURL}}" target="_blank" rel="noopener">Create the Slack app</a></div></li>
+    <li><b>Install it.</b> On the app's page, open <b>Install App</b>, click <b>Install to <i>your workspace</i></b> and allow it. If it says <b>Request to Install</b>, a workspace admin has to approve the app first. Then open <b>OAuth &amp; Permissions</b> and copy the <b>Bot User OAuth Token</b>; it starts with <code>xoxb-</code>.</li>
+    <li><b>Make an app-level token.</b> Under <b>Basic Information → App-Level Tokens</b>, click <b>Generate Token and Scopes</b>, name it <i>jitd</i>, add the <code>connections:write</code> scope and copy the token; it starts with <code>xapp-</code>.</li>
+    <li><b>Paste both here.</b>
+      <form class="form slackform" data-form="slack-connect">
+        <label>Bot token <input name="bot_token" type="password" autocomplete="off" placeholder="xoxb-…" required pattern="xoxb-.+"></label>
+        <label>App-level token <input name="app_token" type="password" autocomplete="off" placeholder="xapp-…" required pattern="xapp-.+"></label>
+        <label>Allowed email domains
+          <input name="allowed_domains" value="{{$d.Domain}}" placeholder="example.com" required>
+          <span class="hint">Someone in Slack is matched to a Tailscale login by their Slack email, and only if it is in one of these domains (comma-separated).</span>
+        </label>
+        <div class="actions"><button class="btn primary" type="submit">Connect</button></div>
+      </form>
+    </li>
+  </ol>
+  <p class="muted small">The tokens are kept in jitd's database and are never shown again, here or in the API. To keep them out of the database, put <code>SLACK_BOT_TOKEN</code> and <code>SLACK_APP_TOKEN</code> (and <code>SLACK_ALLOWED_DOMAINS</code>) in <code>{{$st.EnvFile}}</code> instead and restart jitd.</p>
+</section>
+</div>
+<div>{{template "slackhow" .}}</div>
+</div>
+
+{{else}}
+{{if $st.Connected}}
+<div class="flash ok" style="display:block">Connected to <b>{{$st.TeamName}}</b> as <b>{{or $st.BotName "the bot"}}</b>, {{ago $st.Since}}.</div>
+{{else if eq $st.State "error"}}
+<div class="flash error" style="display:block">jitd can't reach Slack: {{$st.LastError}}. It keeps retrying. Requests and approvals in the browser are not affected.</div>
+{{end}}
+
+<div class="grid2 wide-left">
+<div>
+<section class="card">
+  <div class="cardhead"><h2>Approval flows</h2><span class="muted small">Set the channel on each flow's page.</span></div>
+  {{with $d.CheckErr}}<div class="error">Could not check with Slack: {{.}}</div>{{end}}
+  <table class="plain slackflows">
+    {{range $d.Flows}}
+    <tr>
+      <td class="nowrap"><a href="/admin/workflows/{{.WorkflowID}}"><b>{{.WorkflowName}}</b></a>
+        <div class="muted small">{{if .Channel}}#{{or .ChannelName .Channel}}{{else}}no channel{{end}}{{if .DMApprovers}} · DMs to approvers{{end}}{{if .BrowserOnly}} · browser only{{end}}</div>
+        {{with .ChannelIssue}}<div class="warn small">⚠ {{.}}</div>{{end}}
+      </td>
+      <td>
+        {{range .Approvers}}<div class="small">{{.Login}} {{if .Problem}}<span class="warn">⚠ {{.Problem}}</span>{{else}}<span class="muted">→ {{.SlackUser}}</span> <span class="ok">✓</span>{{end}}</div>{{end}}
+        {{if .Members}}<div class="small muted">autogroup:member: anyone on the tailnet; from Slack too, if their Slack email is their Tailscale login</div>{{end}}
+        {{range .OtherApprovers}}<div class="small muted">{{.}}: approves in the browser only</div>{{end}}
+        {{with .ApproverIssue}}<div class="warn small">⚠ {{.}}</div>{{end}}
+        {{if and (not .Approvers) (not .OtherApprovers) (not .Members)}}<span class="muted small">no approvers</span>{{end}}
+      </td>
+    </tr>
+    {{else}}
+    <tr><td class="muted">No approval flows yet.</td></tr>
+    {{end}}
+  </table>
+  <p class="muted small">Each approver is matched to a Slack account by email; the login must also own a device on the tailnet. A ⚠ means that person can't decide from Slack (they still can in the browser).</p>
+</section>
+
+<section class="card">
+  <h2>Send a test message</h2>
+  <form class="actions" data-form="slack-test">
+    <select name="channel" class="grow" required>
+      <option value="">Pick a channel…</option>
+      {{range $d.Channels}}<option value="{{.ID}}">{{if .IsPrivate}}🔒 {{else}}# {{end}}{{.Name}}</option>{{end}}
+    </select>
+    <button class="btn" type="submit">Send</button>
+  </form>
+  <p class="muted small">Public channels work without an invite. A private channel only shows here once the bot is in it: type <code>/invite @JIT access</code> in it.</p>
+</section>
+</div>
+
+<div>
+<section class="card">
+  <h2>Connection</h2>
+  <table class="plain">
+    <tr><td>Workspace</td><td>{{if $st.TeamURL}}<a href="{{$st.TeamURL}}" target="_blank" rel="noopener">{{$st.TeamName}}</a>{{else}}{{or $st.TeamName "unknown"}}{{end}}</td></tr>
+    <tr><td>Bot</td><td>{{or $st.BotName "unknown"}}</td></tr>
+    <tr><td>Socket</td><td>{{if $st.Connected}}<span class="status approved">connected</span>{{else if eq $st.State "error"}}<span class="status declined">error</span>{{else}}<span class="status pending">{{$st.State}}</span>{{end}}{{if not $st.Since.IsZero}} <span class="muted small">{{ago $st.Since}}</span>{{end}}</td></tr>
+    <tr><td>Tokens</td><td><code>xoxb-{{$st.BotTokenHint}}</code> <code>xapp-{{$st.AppTokenHint}}</code><div class="muted small">{{if eq $st.Source "env"}}from {{$st.EnvFile}}{{else}}saved here{{if $st.ConnectedBy}} by {{$st.ConnectedBy}}, {{ago $st.ConnectedAt}}{{end}}{{end}}</div></td></tr>
+  </table>
+  <form class="form slackform" data-form="slack-domains">
+    <label>Allowed email domains
+      <input name="allowed_domains" value="{{join $st.AllowedDomains}}" required>
+      <span class="hint">Slack users are matched to Tailscale logins by email, only in these domains.</span>
+    </label>
+    <div class="actions"><button class="btn sm" type="submit">Save domains</button>
+    {{if ne $st.Source "env"}}<button class="btn sm danger right-push" type="button" id="slackdisconnect">Disconnect</button>{{end}}</div>
+  </form>
+  {{if eq $st.Source "env"}}<p class="muted small">Set up in <code>{{$st.EnvFile}}</code>; change or remove it there and restart jitd.</p>{{end}}
+</section>
+{{template "slackhow" .}}
+</div>
+</div>
+{{end}}
+{{end}}
+
+{{define "slackhow"}}
+<section class="card prose">
+  <h2>How it works</h2>
+  <ul>
+    <li>Each approval flow can post new requests to a channel, and send each approver a direct message. The message updates itself as the request is approved, declined, expires or is revoked.</li>
+    <li><b>Approve</b> and <b>Decline</b> in Slack run the same checks as the browser: who may approve, no self-approval unless the flow allows it, how many approvals it needs. Revoking stays in the browser.</li>
+    <li>In the browser, Tailscale says who you are. In Slack, jitd goes by your Slack email: you must be a full member of this workspace (no guests, no one from a shared channel's other company) with a confirmed email in an allowed domain, that email must be your Tailscale login, and that login must own a device on the tailnet. Decisions made this way are marked <i>via Slack</i> on the request, with the Slack account that made them.</li>
+    <li>For a flow that should only be decided in the browser, turn on <b>Browser only</b> on its page: its messages then carry no buttons.</li>
+    <li><code>/jit</code> in Slack lists what is waiting for you and your own requests. <code>/jit request</code> asks for access: pick a flow and one of your own devices (Tailscale lists them by your login).</li>
+  </ul>
+</section>
+{{end}}

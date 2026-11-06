@@ -35,8 +35,38 @@ type Service struct {
 	// UIPorts are the ports people reach jitd on, for the policy snippet's
 	// grant to the jitd tag. Default tcp:80.
 	UIPorts []string
+	// Notify, if set, is told about every change to an access request once
+	// it is saved (see Notifier).
+	Notify Notifier
 
 	mu sync.Mutex
+}
+
+// Notifier is told about access request changes: a new request, a vote, a
+// decision, an expiry, and the device read-backs (EventConfirmed,
+// EventRemoved). It is called in order, with a copy of the request as it is
+// after the change, while the service lock is held: it must return at once
+// (queue the event) and must not call back into the Service.
+type Notifier interface {
+	RequestChanged(r *AccessRequest, ev Event)
+}
+
+// emit tells the Notifier about a saved change to r.
+func (s *Service) emit(r *AccessRequest, ev Event) {
+	if s.Notify != nil && r != nil {
+		s.Notify.RequestChanged(clone(r), ev)
+	}
+}
+
+// emitVerified reports a read-back that confirmed the attribute present or
+// gone, given the enforcement before and after.
+func (s *Service) emitVerified(r *AccessRequest, was Enforcement) {
+	switch {
+	case was.ConfirmedAt == nil && r.Enforcement.ConfirmedAt != nil:
+		s.emit(r, Event{Type: EventConfirmed, Actor: "system", At: *r.Enforcement.ConfirmedAt})
+	case was.RemovedAt == nil && r.Enforcement.RemovedAt != nil:
+		s.emit(r, Event{Type: EventRemoved, Actor: "system", At: *r.Enforcement.RemovedAt})
+	}
 }
 
 func (s *Service) now() time.Time {
@@ -106,6 +136,7 @@ func (s *Service) UpdateWorkflow(id string, w Workflow) (*Workflow, error) {
 		return nil, err
 	}
 	var out *Workflow
+	var expired []*AccessRequest
 	err := s.Store.Update(func(d *Data) error {
 		old, ok := d.Workflows[id]
 		if !ok {
@@ -118,6 +149,7 @@ func (s *Service) UpdateWorkflow(id string, w Workflow) (*Workflow, error) {
 		w.ID, w.CreatedAt, w.UpdatedAt = id, old.CreatedAt, now
 		d.Workflows[id] = clone(&w)
 		out = clone(&w)
+		expired = nil
 		// Pending requests follow the flow as it is now: a new attribute
 		// means they ask for something else (they expire, so the requester
 		// can file again), and a changed quorum applies to them.
@@ -129,12 +161,18 @@ func (s *Service) UpdateWorkflow(id string, w Workflow) (*Workflow, error) {
 				r.Status, r.UpdatedAt = StatusExpired, now
 				r.Timeline = append(r.Timeline, Event{Type: "expired", Actor: "system", At: now,
 					Note: fmt.Sprintf("the approval flow now sets %s instead of %s; file a new request", w.Attribute, r.Attribute)})
+				expired = append(expired, clone(r))
 				continue
 			}
 			r.ApprovalsRequired = w.ApprovalsRequired
 		}
 		return nil
 	})
+	if err == nil {
+		for _, r := range expired {
+			s.emit(r, r.Timeline[len(r.Timeline)-1])
+		}
+	}
 	return out, err
 }
 
@@ -487,12 +525,107 @@ func (s *Service) Submit(ctx context.Context, caller Identity, in NewRequest) (*
 		Status: StatusPending, CreatedAt: now, UpdatedAt: now, ApprovalsRequired: max(1, w.ApprovalsRequired),
 	}
 	note := fmt.Sprintf("for %s: %s", dur.Human(), reason)
-	r.Timeline = append(r.Timeline, Event{Type: "submitted", Actor: caller.Actor(), Note: note, At: now})
+	r.Timeline = append(r.Timeline, Event{Type: "submitted", Actor: caller.Actor(), Note: note, Via: caller.Via, SlackUser: caller.SlackUser, At: now})
 	if err := s.Store.Update(func(d *Data) error { d.Requests[r.ID] = clone(r); return nil }); err != nil {
 		return nil, err
 	}
 	s.Log.Info("access request submitted", "id", r.ID, "by", caller.Actor(), "attribute", w.Attribute, "duration", dur)
+	s.emit(r, r.Timeline[len(r.Timeline)-1])
 	return r, nil
+}
+
+// RecordSlackMessages notes Slack messages posted about request id, so they
+// can be updated later. Bookkeeping: it does not count as a change.
+func (s *Service) RecordSlackMessages(id string, ms []SlackMessage) error {
+	if len(ms) == 0 {
+		return nil
+	}
+	s.mu.Lock() // an action in flight must not save over it
+	defer s.mu.Unlock()
+	return s.Store.UpdateQuiet(func(d *Data) (bool, error) {
+		r, ok := d.Requests[id]
+		if !ok {
+			return false, notFound("access request %q not found", id)
+		}
+		for _, m := range ms {
+			if !slices.ContainsFunc(r.Slack, func(x SlackMessage) bool { return x.Channel == m.Channel && x.TS == m.TS }) {
+				r.Slack = append(r.Slack, m)
+			}
+		}
+		return false, nil
+	})
+}
+
+// Request returns a copy of request id, without a visibility check (for
+// internal callers such as notifiers), or nil.
+func (s *Service) Request(id string) *AccessRequest {
+	var out *AccessRequest
+	s.Store.View(func(d *Data) {
+		if r, ok := d.Requests[id]; ok {
+			out = clone(r)
+		}
+	})
+	return out
+}
+
+// Requests returns copies of every request keep returns true for, in no
+// particular order. For internal callers such as notifiers; it does no
+// visibility check.
+func (s *Service) Requests(keep func(*AccessRequest) bool) []*AccessRequest {
+	var out []*AccessRequest
+	s.Store.View(func(d *Data) {
+		for _, r := range d.Requests {
+			if keep == nil || keep(r) {
+				out = append(out, clone(r))
+			}
+		}
+	})
+	return out
+}
+
+// ApproverLogins lists the people who approve for w by login: named logins,
+// plus the members of group: principals (through the policy cache). tag: and
+// autogroup: approvers are left out; they are not people one can name.
+func (s *Service) ApproverLogins(ctx context.Context, w *Workflow) ([]string, error) {
+	seen := map[string]bool{}
+	var out []string
+	add := func(login string) {
+		if k := strings.ToLower(strings.TrimSpace(login)); k != "" && !seen[k] {
+			seen[k] = true
+			out = append(out, k)
+		}
+	}
+	var groups map[string][]string
+	var groupsErr error
+	loaded := false
+	for _, p := range w.Approvers {
+		switch {
+		case p.IsLogin():
+			add(string(p))
+		case strings.HasPrefix(string(p), "group:"):
+			if !loaded && s.PolicyCache != nil {
+				groups, groupsErr = s.PolicyCache.Groups(ctx)
+				loaded = true
+			}
+			for _, m := range groups[string(p)] {
+				add(m)
+			}
+		}
+	}
+	if groupsErr != nil {
+		groupsErr = fmt.Errorf("group approvers left out, the policy file could not be read: %w", groupsErr)
+	}
+	return out, groupsErr
+}
+
+// browserOnly refuses a decision made through Slack on a flow that is
+// decided in the browser only. The Slack messages of such a flow carry no
+// buttons; this also covers forms opened before the setting changed.
+func browserOnly(actor Identity, w *Workflow) error {
+	if actor.Via == ViaSlack && w != nil && w.Slack != nil && w.Slack.BrowserOnly {
+		return forbidden("approval flow %q is decided in the browser only", w.Name)
+	}
+	return nil
 }
 
 // loadFor is load for an action by actor: a request actor may not see is
@@ -615,6 +748,9 @@ func (s *Service) Approve(ctx context.Context, actor Identity, id, note string) 
 	if r.Status != StatusPending {
 		return nil, conflict("request is %s, not pending", r.Status)
 	}
+	if err := browserOnly(actor, w); err != nil {
+		return nil, err
+	}
 	if !s.matches(ctx, w.Approvers, actor) {
 		return nil, forbidden("%s is not an approver in approval flow %q", actor.Actor(), w.Name)
 	}
@@ -635,18 +771,19 @@ func (s *Service) Approve(ctx context.Context, actor Identity, id, note string) 
 	// then it grants.
 	voted := slices.ContainsFunc(r.Approvals, func(a Approval) bool { return sameApprover(a, actor) })
 	if !voted {
-		r.Approvals = append(r.Approvals, Approval{Actor: actor.Actor(), Login: actor.Login, Tags: actor.Tags, DeviceID: actor.DeviceID, Note: note, At: now})
+		r.Approvals = append(r.Approvals, Approval{Actor: actor.Actor(), Login: actor.Login, Tags: actor.Tags, DeviceID: actor.DeviceID, Note: note, Via: actor.Via, SlackUser: actor.SlackUser, At: now})
 	}
 	valid := s.validVotes(ctx, r, w)
 	if valid < r.ApprovalsRequired {
 		if voted {
 			return r, nil
 		}
-		r.Timeline = append(r.Timeline, Event{Type: "approval", Actor: actor.Actor(), At: now,
+		r.Timeline = append(r.Timeline, Event{Type: "approval", Actor: actor.Actor(), At: now, Via: actor.Via, SlackUser: actor.SlackUser,
 			Note: joinNote(note, fmt.Sprintf("%d of %d approvals", valid, r.ApprovalsRequired))})
 		if err := s.save(r); err != nil {
 			return nil, err
 		}
+		s.emit(r, r.Timeline[len(r.Timeline)-1])
 		return r, nil
 	}
 
@@ -673,15 +810,16 @@ func (s *Service) Approve(ctx context.Context, actor Identity, id, note string) 
 			r.Approvals = r.Approvals[:len(r.Approvals)-1]
 		}
 		r.LastError = err.Error()
-		r.Timeline = append(r.Timeline, Event{Type: "approve_failed", Actor: actor.Actor(), Note: r.LastError, At: now})
+		r.Timeline = append(r.Timeline, Event{Type: "approve_failed", Actor: actor.Actor(), Note: r.LastError, Via: actor.Via, SlackUser: actor.SlackUser, At: now})
 		if serr := s.save(r); serr != nil {
 			return nil, serr
 		}
 		s.Log.Info("access request approve failed", "id", id, "by", actor.Actor(), "err", r.LastError)
+		s.emit(r, r.Timeline[len(r.Timeline)-1])
 		return r, apiFailed("could not set the posture attribute: %s", r.LastError)
 	}
 	r.LastError = ""
-	r.Timeline = append(r.Timeline, Event{Type: "approved", Actor: actor.Actor(), At: now,
+	r.Timeline = append(r.Timeline, Event{Type: "approved", Actor: actor.Actor(), At: now, Via: actor.Via, SlackUser: actor.SlackUser,
 		Note: joinNote(grantNote, fmt.Sprintf("for %s, until %s", r.Duration.Human(), exp.Format("2006-01-02 15:04 MST")))})
 	s.verify(actx, r)
 	if err := s.save(r); err != nil {
@@ -694,6 +832,7 @@ func (s *Service) Approve(ctx context.Context, actor Identity, id, note string) 
 		return nil, err
 	}
 	s.Log.Info("access request approved", "id", id, "by", actor.Actor(), "attribute", r.Attribute, "expires", exp)
+	s.emit(r, r.Timeline[len(r.Timeline)-1])
 	return r, nil
 }
 
@@ -747,6 +886,9 @@ func (s *Service) Decline(ctx context.Context, actor Identity, id, note string) 
 	if r.Status != StatusPending {
 		return nil, conflict("request is %s, not pending", r.Status)
 	}
+	if err := browserOnly(actor, w); err != nil {
+		return nil, err
+	}
 	if isSelf(actor, r.Requester) {
 		return nil, forbidden("you cannot decline your own request; cancel it instead")
 	}
@@ -758,11 +900,12 @@ func (s *Service) Decline(ctx context.Context, actor Identity, id, note string) 
 	}
 	now := s.now()
 	r.Status, r.UpdatedAt = StatusDeclined, now
-	r.Timeline = append(r.Timeline, Event{Type: "declined", Actor: actor.Actor(), Note: note, At: now})
+	r.Timeline = append(r.Timeline, Event{Type: "declined", Actor: actor.Actor(), Note: note, Via: actor.Via, SlackUser: actor.SlackUser, At: now})
 	if err := s.save(r); err != nil {
 		return nil, err
 	}
 	s.Log.Info("access request declined", "id", id, "by", actor.Actor())
+	s.emit(r, r.Timeline[len(r.Timeline)-1])
 	return r, nil
 }
 
@@ -793,19 +936,21 @@ func (s *Service) Revoke(ctx context.Context, actor Identity, id, note string) (
 	if err := s.syncAttribute(actx, r.TargetDeviceID, r.Attribute, r); err != nil {
 		r.Status = StatusApproved
 		r.LastError = err.Error()
-		r.Timeline = append(r.Timeline, Event{Type: "revoke_failed", Actor: actor.Actor(), Note: r.LastError, At: now})
+		r.Timeline = append(r.Timeline, Event{Type: "revoke_failed", Actor: actor.Actor(), Note: r.LastError, Via: actor.Via, SlackUser: actor.SlackUser, At: now})
 		if serr := s.save(r); serr != nil {
 			return nil, serr
 		}
+		s.emit(r, r.Timeline[len(r.Timeline)-1])
 		return r, apiFailed("could not remove access: %s", r.LastError)
 	}
 	r.LastError = ""
-	r.Timeline = append(r.Timeline, Event{Type: "revoked", Actor: actor.Actor(), Note: note, At: now})
+	r.Timeline = append(r.Timeline, Event{Type: "revoked", Actor: actor.Actor(), Note: note, Via: actor.Via, SlackUser: actor.SlackUser, At: now})
 	s.verify(actx, r)
 	if err := s.save(r); err != nil {
 		return nil, err
 	}
 	s.Log.Info("access request revoked", "id", id, "by", actor.Actor())
+	s.emit(r, r.Timeline[len(r.Timeline)-1])
 	return r, nil
 }
 
@@ -830,11 +975,12 @@ func (s *Service) Cancel(ctx context.Context, actor Identity, id, note string) (
 	}
 	now := s.now()
 	r.Status, r.UpdatedAt = StatusCancelled, now
-	r.Timeline = append(r.Timeline, Event{Type: "cancelled", Actor: actor.Actor(), Note: note, At: now})
+	r.Timeline = append(r.Timeline, Event{Type: "cancelled", Actor: actor.Actor(), Note: note, Via: actor.Via, SlackUser: actor.SlackUser, At: now})
 	if err := s.save(r); err != nil {
 		return nil, err
 	}
 	s.Log.Info("access request cancelled", "id", id, "by", actor.Actor())
+	s.emit(r, r.Timeline[len(r.Timeline)-1])
 	return r, nil
 }
 
@@ -848,14 +994,15 @@ func (s *Service) ExpireDue() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := s.now()
-	var ids []string
+	var expired []*AccessRequest
 	err := s.Store.Update(func(d *Data) error {
+		expired = nil
 		for _, r := range d.Requests {
 			switch {
 			case r.Status == StatusApproved && r.ExpiresAt != nil && !r.ExpiresAt.After(now):
 				r.Status, r.UpdatedAt = StatusExpired, now
 				r.Timeline = append(r.Timeline, Event{Type: "expired", Actor: "system", At: now})
-				ids = append(ids, r.ID)
+				expired = append(expired, clone(r))
 			case r.Status == StatusPending:
 				timeout := DefaultApprovalTimeout
 				if w, ok := d.Workflows[r.WorkflowID]; ok && w.ApprovalTimeout > 0 {
@@ -864,11 +1011,11 @@ func (s *Service) ExpireDue() int {
 				if !r.CreatedAt.Add(time.Duration(timeout)).After(now) {
 					r.Status, r.UpdatedAt = StatusExpired, now
 					r.Timeline = append(r.Timeline, Event{Type: "expired", Actor: "system", Note: fmt.Sprintf("no decision within %s", timeout), At: now})
-					ids = append(ids, r.ID)
+					expired = append(expired, clone(r))
 				}
 			}
 		}
-		if len(ids) == 0 {
+		if len(expired) == 0 {
 			return errNoChange // the usual tick: skip comparing every row
 		}
 		return nil
@@ -877,8 +1024,11 @@ func (s *Service) ExpireDue() int {
 		s.Log.Error("expiring requests", "err", err)
 		return 0
 	}
-	for _, id := range ids {
-		s.Log.Info("access request expired", "id", id)
+	ids := make([]string, 0, len(expired))
+	for _, r := range expired {
+		ids = append(ids, r.ID)
+		s.Log.Info("access request expired", "id", r.ID)
+		s.emit(r, r.Timeline[len(r.Timeline)-1])
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
@@ -908,11 +1058,13 @@ func (s *Service) verifyRemovals(ctx context.Context) {
 		due = due[:verifyBatch]
 	}
 	var checked []*AccessRequest
+	was := map[string]Enforcement{}
 	changed := false
 	for _, r := range due {
 		if ctx.Err() != nil {
 			break
 		}
+		was[r.ID] = r.Enforcement
 		changed = s.verify(ctx, r) || changed
 		checked = append(checked, r)
 	}
@@ -929,6 +1081,10 @@ func (s *Service) verifyRemovals(ctx context.Context) {
 	})
 	if err != nil {
 		s.Log.Error("verifying attribute removal", "err", err)
+		return
+	}
+	for _, r := range checked {
+		s.emitVerified(r, was[r.ID])
 	}
 }
 
@@ -958,6 +1114,7 @@ func (s *Service) VerifyNow(ctx context.Context, viewer Identity, id string) (*A
 	if err != nil {
 		return nil, err
 	}
+	was := r.Enforcement
 	changed := s.verify(ctx, r)
 	err = s.Store.UpdateQuiet(func(d *Data) (bool, error) {
 		cur, ok := d.Requests[id]
@@ -967,6 +1124,9 @@ func (s *Service) VerifyNow(ctx context.Context, viewer Identity, id string) (*A
 		cur.Enforcement = r.Enforcement
 		return changed, nil
 	})
+	if err == nil {
+		s.emitVerified(r, was)
+	}
 	return r, err
 }
 

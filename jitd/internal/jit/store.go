@@ -32,7 +32,7 @@ const LegacyDataFile = "jit-data.json"
 
 // schemaVersion is kept in PRAGMA user_version. To change the tables, add a
 // step to migrate and bump it; never edit schemaV1 or an existing step.
-const schemaVersion = 2
+const schemaVersion = 3
 
 const schemaV1 = `
 CREATE TABLE workflows (
@@ -272,10 +272,64 @@ func (s *Store) migrate() error {
 			return fmt.Errorf("upgrading to schema 2: %w", err)
 		}
 	}
+	if v < 3 {
+		if _, err := tx.Exec(schemaV3); err != nil {
+			return fmt.Errorf("upgrading to schema 3: %w", err)
+		}
+	}
 	if _, err := tx.Exec(fmt.Sprintf("PRAGMA user_version = %d", schemaVersion)); err != nil {
 		return err
 	}
 	return tx.Commit()
+}
+
+// schemaV3 adds server settings (for example the Slack connection), one JSON
+// value per key. They are read and written directly, not through the
+// in-memory working copy.
+const schemaV3 = `
+CREATE TABLE settings (
+	key   TEXT PRIMARY KEY,
+	value TEXT NOT NULL -- JSON
+);
+`
+
+// GetSetting reads the setting called key into v. It reports whether there
+// was one.
+func (s *Store) GetSetting(key string, v any) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var b []byte
+	err := s.db.QueryRow("SELECT value FROM settings WHERE key = ?", key).Scan(&b)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if err := json.Unmarshal(b, v); err != nil {
+		return true, fmt.Errorf("setting %s: %w", key, err)
+	}
+	return true, nil
+}
+
+// PutSetting stores v as the setting called key.
+func (s *Store) PutSetting(key string, v any) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err = s.db.Exec(`INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value`, key, string(b))
+	return err
+}
+
+// DeleteSetting removes the setting called key, if there is one.
+func (s *Store) DeleteSetting(key string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.Exec("DELETE FROM settings WHERE key = ?", key)
+	return err
 }
 
 // migrateV2 stores data as text rather than as a blob, and created_at with a

@@ -22,6 +22,8 @@ import (
 	"github.com/atoonk/tailscale-jit/jitd/internal/jit"
 	"github.com/atoonk/tailscale-jit/jitd/internal/jithttp"
 	"github.com/atoonk/tailscale-jit/jitd/internal/setup"
+	"github.com/atoonk/tailscale-jit/jitd/internal/slack"
+	"github.com/atoonk/tailscale-jit/jitd/internal/slackbot"
 	"github.com/atoonk/tailscale-jit/jitd/internal/tsapi"
 )
 
@@ -66,6 +68,17 @@ func (f *fakeTS) DeleteAttribute(ctx context.Context, device, key string) error 
 	delete(f.attrs, device+"|"+key)
 	return nil
 }
+
+// ListDevices lists one device per preview person (for /jit request).
+func (f *fakeTS) ListDevices(ctx context.Context) ([]tsapi.Device, error) {
+	var out []tsapi.Device
+	for _, p := range people {
+		out = append(out, tsapi.Device{NodeID: p.DeviceID, Name: p.DeviceName + ".example.ts.net", User: p.Login, Tags: p.Tags,
+			OS: "macOS", Authorized: true, ConnectedToControl: true})
+	}
+	return out, nil
+}
+
 func (f *fakeTS) GetPolicy(ctx context.Context) (tsapi.Policy, error) {
 	if f.policy != nil {
 		return *f.policy, nil
@@ -89,6 +102,7 @@ func main() {
 	demo := flag.Bool("demo", false, "use the demo cast (Maya, Sam, Priya, Leo), demo flows and two weeks of history, for screenshots")
 	baseURL := flag.String("base-url", "", "base URL used in approval links (default http://<listen>)")
 	defaultWho := flag.String("default", "", "person to assume when a request has no who cookie (e.g. so pamagent can talk to the preview)")
+	slackConnected := flag.Bool("slack", true, "start with a made-up Slack workspace connected (false: the Slack page shows the setup steps)")
 	flag.Parse()
 	admins := []jit.Principal{"root@example.com"}
 	if *demo {
@@ -110,6 +124,28 @@ func main() {
 	ts := &fakeTS{attrs: map[string]time.Time{}}
 	svc := &jit.Service{Store: st, TS: ts, Log: log, Admins: admins}
 	svc.PolicyCache = &jit.PolicyCache{TS: ts, TTL: time.Minute, Log: log}
+
+	// A made-up Slack: everyone in the cast has an account, and the bot can
+	// post to a few channels. Posts go nowhere.
+	base := cmp.Or(*baseURL, "http://"+*listen)
+	fs := slack.NewFake()
+	for name, p := range people {
+		fs.AddUser("U"+strings.ToUpper(name), p.Login, p.DisplayName)
+	}
+	fs.AddChannel("C0SREONCALL", "sre-oncall", false)
+	fs.AddChannel("C0JITAPPROV", "jit-approvals", false)
+	fs.AddChannel("G0SECURITY0", "security", true)
+	bot := &slackbot.Bot{Svc: svc, Log: log, BaseURL: base, EnvFile: filepath.Join(dir, "env"),
+		NewAPI: func(string, string) slack.API { return fs }, Dial: fs.Dial}
+	svc.Notify = bot
+	bot.Start(context.Background())
+	if *slackConnected {
+		admin := jit.Identity{Login: string(admins[0])}
+		if _, err := bot.Connect(context.Background(), admin, slackbot.ConnectInput{
+			BotToken: "xoxb-preview-0000", AppToken: "xapp-preview-0000", AllowedDomains: []string{"example.com"}}); err != nil {
+			log.Error("preview slack", "err", err)
+		}
+	}
 	if *demo {
 		ts.policy = demoPolicy()
 		seedDemo(svc)
@@ -131,7 +167,7 @@ func main() {
 	checker.Run(context.Background())
 
 	h := &jithttp.Server{
-		Svc: svc, TS: ts, Setup: checker, JITTag: "tag:jit", BaseURL: cmp.Or(*baseURL, "http://"+*listen), Log: log,
+		Svc: svc, TS: ts, Setup: checker, Slack: bot, JITTag: "tag:jit", BaseURL: base, Log: log,
 		Resolver: jit.ResolverFunc(func(ctx context.Context, r *http.Request) (jit.Identity, error) {
 			c, _ := r.Cookie("who")
 			if c != nil {

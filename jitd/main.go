@@ -28,6 +28,7 @@ import (
 	"github.com/atoonk/tailscale-jit/jitd/internal/jit"
 	"github.com/atoonk/tailscale-jit/jitd/internal/jithttp"
 	"github.com/atoonk/tailscale-jit/jitd/internal/setup"
+	"github.com/atoonk/tailscale-jit/jitd/internal/slackbot"
 	"github.com/atoonk/tailscale-jit/jitd/internal/tsapi"
 )
 
@@ -36,7 +37,7 @@ func main() {
 	stateDir := flag.String("state-dir", "tsnet-state", "directory for the tsnet node state (keep it; otherwise the node re-registers)")
 	dataPath := flag.String("data", "jit.db", "SQLite database for approval flows and access requests. Upgrading from an older jitd: name its .json data file, and jitd uses the .db of the same name, filled from the .json the first time (a new jit.db also picks up jit-data.json next to it). The .json is left alone")
 	apiBase := flag.String("ts-api", tsapi.DefaultBaseURL, "Tailscale API base URL")
-	envFile := flag.String("env-file", defaultEnvFile(), "file with the Tailscale API credentials (TS_OAUTH_CLIENT_ID and TS_OAUTH_CLIENT_SECRET, or TS_API_KEY), one KEY=VALUE per line; the environment is used for anything the file lacks")
+	envFile := flag.String("env-file", defaultEnvFile(), "file with the Tailscale API credentials (TS_OAUTH_CLIENT_ID and TS_OAUTH_CLIENT_SECRET, or TS_API_KEY), one KEY=VALUE per line; the environment is used for anything the file lacks. SLACK_BOT_TOKEN and SLACK_APP_TOKEN here set up Slack instead of the Slack page")
 	jitTag := flag.String("tag", "tag:jit", "tag this node runs as (used in the policy snippet)")
 	expiryInterval := flag.Duration("expiry-interval", 30*time.Second, "how often to mark approved requests past their expiry as expired")
 	policySnippet := flag.Bool("policy-snippet", false, "print the policy-file snippet for the current approval flows and exit")
@@ -203,6 +204,12 @@ func main() {
 		Hosts:    append([]string{*hostname, dns, strings.Split(dns, ".")[0]}, ips...),
 		Log:      log,
 	}
+	// Slack, if set up (on the Slack page or in the env file): jitd dials
+	// out to Slack, so nothing here listens for it.
+	bot := &slackbot.Bot{Svc: svc, Log: log, BaseURL: h.BaseURL, EnvFile: *envFile}
+	svc.Notify = bot
+	bot.Start(ctx)
+	h.Slack = bot
 	var ln net.Listener
 	if *https {
 		ln, err = srv.ListenTLS("tcp", ":443")

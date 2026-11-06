@@ -24,7 +24,8 @@ const openAPISpec = `{
     {"name": "me", "description": "Who am I"},
     {"name": "requests", "description": "Access requests"},
     {"name": "workflows", "description": "Approval flows (admins)"},
-    {"name": "policy", "description": "Tailscale policy helpers (admins)"}
+    {"name": "policy", "description": "Tailscale policy helpers (admins)"},
+    {"name": "slack", "description": "The Slack integration (admins). jitd connects out to Slack with Socket Mode; tokens are never returned"}
   ],
   "paths": {
     "/v1/me": {"get": {"tags": ["me"], "summary": "The caller, as identified by Tailscale", "operationId": "me",
@@ -90,6 +91,27 @@ const openAPISpec = `{
     "/v1/devices/{id}/attributes": {"get": {"tags": ["policy"], "summary": "A device's posture attributes, straight from the Tailscale API", "operationId": "deviceAttributes",
       "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string"}, "description": "Tailscale node ID, e.g. nABC123CNTRL"}],
       "responses": {"200": {"description": "OK", "content": {"application/json": {"schema": {"type": "object", "properties": {"attributes": {"type": "object"}, "expiries": {"type": "object"}}}}}}, "502": {"$ref": "#/components/responses/Error"}}}},
+    "/v1/slack": {"get": {"tags": ["slack"], "summary": "The Slack connection, without the tokens", "operationId": "slackStatus",
+      "responses": {"200": {"$ref": "#/components/responses/Slack"}, "403": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"}}}},
+    "/v1/slack/connect": {"post": {"tags": ["slack"], "summary": "Check the tokens with Slack, save them and connect", "operationId": "slackConnect",
+      "description": "Replaces an earlier connection made here. Refused (409) when the tokens come from jitd's env file.",
+      "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "required": ["bot_token", "app_token", "allowed_domains"], "properties": {
+        "bot_token": {"type": "string", "description": "xoxb-…, the Bot User OAuth Token"}, "app_token": {"type": "string", "description": "xapp-…, an app-level token with connections:write"},
+        "allowed_domains": {"type": "array", "items": {"type": "string"}, "example": ["example.com"]}}}}}},
+      "responses": {"200": {"$ref": "#/components/responses/Slack"}, "400": {"$ref": "#/components/responses/Error"}, "409": {"$ref": "#/components/responses/Error"}}}},
+    "/v1/slack/disconnect": {"post": {"tags": ["slack"], "summary": "Revoke the bot token in Slack, forget the tokens and disconnect", "operationId": "slackDisconnect",
+      "responses": {"200": {"$ref": "#/components/responses/Slack"}, "409": {"$ref": "#/components/responses/Error"}}}},
+    "/v1/slack/domains": {"put": {"tags": ["slack"], "summary": "Set the email domains Slack users are matched in", "operationId": "slackDomains",
+      "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "properties": {"allowed_domains": {"type": "array", "items": {"type": "string"}}}}}}},
+      "responses": {"200": {"$ref": "#/components/responses/Slack"}, "400": {"$ref": "#/components/responses/Error"}}}},
+    "/v1/slack/channels": {"get": {"tags": ["slack"], "summary": "Channels the bot can post to (public ones, and private ones it was invited to)", "operationId": "slackChannels",
+      "responses": {"200": {"description": "OK", "content": {"application/json": {"schema": {"type": "object", "properties": {"channels": {"type": "array", "items": {"type": "object", "properties": {
+        "id": {"type": "string", "example": "C0123456789"}, "name": {"type": "string"}, "is_private": {"type": "boolean"}, "is_member": {"type": "boolean"}}}}}}}}}, "502": {"$ref": "#/components/responses/Error"}}}},
+    "/v1/slack/check": {"get": {"tags": ["slack"], "summary": "Per flow: can the bot post to its channel, and which approvers Slack matches to their login", "operationId": "slackCheck",
+      "responses": {"200": {"description": "OK", "content": {"application/json": {"schema": {"type": "object", "properties": {"flows": {"type": "array", "items": {"$ref": "#/components/schemas/SlackFlowCheck"}}}}}}}, "502": {"$ref": "#/components/responses/Error"}}}},
+    "/v1/slack/test": {"post": {"tags": ["slack"], "summary": "Post a test message to a channel", "operationId": "slackTest",
+      "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "required": ["channel"], "properties": {"channel": {"type": "string", "description": "Channel ID"}}}}}},
+      "responses": {"200": {"description": "Sent"}, "400": {"$ref": "#/components/responses/Error"}}}},
     "/v1/changes": {"get": {"tags": ["me"], "summary": "A counter that increases whenever anything changes (pages poll it)", "operationId": "changes",
       "responses": {"200": {"description": "OK", "content": {"application/json": {"schema": {"type": "object", "properties": {"changes": {"type": "integer"}}}}}}}}}
   },
@@ -102,6 +124,7 @@ const openAPISpec = `{
     "responses": {
       "Request": {"description": "The updated request", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/AccessRequest"}}}},
       "Workflow": {"description": "The approval flow", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Workflow"}}}},
+      "Slack": {"description": "The Slack connection", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/SlackStatus"}}}},
       "Error": {"description": "Error", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorBody"}}}},
       "APIFailed": {"description": "The Tailscale API call failed. The action was recorded (approve_failed / revoke_failed) and the request is returned with the error; retry later", "content": {"application/json": {"schema": {"type": "object", "properties": {"error": {"$ref": "#/components/schemas/ErrorBody/properties/error"}, "request": {"$ref": "#/components/schemas/AccessRequest"}}}}}}
     },
@@ -113,13 +136,32 @@ const openAPISpec = `{
         "tag": {"type": "string"},
         "transient": {"type": "boolean", "description": "A check failed for a reason that says nothing about the credential (e.g. network); it stays in use and the check is retried"},
         "checks": {"type": "array", "items": {"type": "object", "properties": {"name": {"type": "string"}, "ok": {"type": "boolean"}, "skipped": {"type": "boolean"}, "detail": {"type": "string"}, "fix": {"type": "string"}}}}}},
+      "SlackStatus": {"type": "object", "properties": {
+        "source": {"type": "string", "enum": ["", "ui", "env"], "description": "Where the tokens come from: saved on the Slack page, or jitd's env file; empty when not set up"},
+        "env_file": {"type": "string"}, "state": {"type": "string", "enum": ["off", "connecting", "connected", "error"]}, "since": {"type": "string", "format": "date-time"}, "last_error": {"type": "string"},
+        "team_name": {"type": "string"}, "team_url": {"type": "string"}, "bot_name": {"type": "string"},
+        "bot_token_hint": {"type": "string", "example": "…a1b2"}, "app_token_hint": {"type": "string"},
+        "allowed_domains": {"type": "array", "items": {"type": "string"}}, "connected_by": {"type": "string"}, "connected_at": {"type": "string", "format": "date-time"},
+        "manifest_url": {"type": "string", "description": "Creates the Slack app with everything jitd needs"}}},
+      "SlackFlowCheck": {"type": "object", "properties": {
+        "workflow_id": {"type": "string"}, "workflow_name": {"type": "string"}, "channel": {"type": "string"}, "channel_name": {"type": "string"},
+        "channel_issue": {"type": "string", "description": "Why the bot cannot post there, if it cannot"}, "dm_approvers": {"type": "boolean"}, "browser_only": {"type": "boolean"},
+        "approvers": {"type": "array", "items": {"type": "object", "properties": {"login": {"type": "string"}, "slack_user": {"type": "string", "example": "@sam"}, "problem": {"type": "string"}}}},
+        "approver_issue": {"type": "string", "description": "Why the approver list may be incomplete (group members could not be read)"},
+        "members": {"type": "boolean", "description": "autogroup:member approves: anyone on the tailnet, from Slack too if their Slack email is their Tailscale login"},
+        "other_approvers": {"type": "array", "items": {"type": "string"}, "description": "tag: approvers; devices decide in the browser or through the API"}}},
+      "WorkflowSlack": {"type": "object", "description": "Where requests through the flow are announced in Slack", "properties": {
+        "channel": {"type": "string", "description": "Channel ID; empty for none", "example": "C0123456789"}, "channel_name": {"type": "string", "example": "sre-oncall"},
+        "dm_approvers": {"type": "boolean", "description": "Also send each approver a direct message"},
+        "browser_only": {"type": "boolean", "description": "No Approve/Decline buttons in Slack; decide in the browser"}}},
       "Status": {"type": "string", "enum": ["pending", "approved", "declined", "expired", "revoked", "cancelled"]},
       "Principal": {"type": "string", "description": "A login (alice@example.com), group:<name> from the policy file, tag:<name>, or autogroup:member", "example": "group:sre"},
       "Duration": {"type": "string", "description": "Go duration (15m, 1h30m), optionally with leading whole days (3d, 1d12h); no signs. Responses use Go's form, e.g. 72h0m0s. A number is taken as nanoseconds", "example": "1h0m0s"},
       "Identity": {"type": "object", "properties": {
         "login": {"type": "string", "example": "alice@example.com"}, "display_name": {"type": "string"},
         "device_id": {"type": "string", "example": "nABC123CNTRL"}, "device_name": {"type": "string", "example": "alice-laptop"},
-        "tags": {"type": "array", "items": {"type": "string"}, "description": "Set for tagged devices; such callers have no login"}}},
+        "tags": {"type": "array", "items": {"type": "string"}, "description": "Set for tagged devices; such callers have no login"},
+        "via": {"type": "string", "enum": ["slack"], "description": "Set when the caller was identified by their Slack account's email rather than by Tailscale"}, "slack_user": {"type": "string", "description": "With via slack: the Slack account, as <team ID>/<user ID>"}}},
       "Me": {"allOf": [{"$ref": "#/components/schemas/Identity"}, {"type": "object", "properties": {"admin": {"type": "boolean"}}}]},
       "Requestable": {"type": "object", "properties": {
         "workflow_id": {"type": "string"}, "workflow_name": {"type": "string"}, "description": {"type": "string"},
@@ -136,14 +178,14 @@ const openAPISpec = `{
         "workflow_id": {"type": "string"},
         "duration": {"$ref": "#/components/schemas/Duration"},
         "reason": {"type": "string", "description": "What you need to do and why; shown to the approver"}}},
-      "Approval": {"type": "object", "properties": {"actor": {"type": "string"}, "device_id": {"type": "string", "description": "The approver's device; tells tagged approvers apart"}, "note": {"type": "string"}, "at": {"type": "string", "format": "date-time"}}},
+      "Approval": {"type": "object", "properties": {"actor": {"type": "string"}, "device_id": {"type": "string", "description": "The approver's device; tells tagged approvers apart"}, "note": {"type": "string"}, "via": {"type": "string", "enum": ["slack"]}, "slack_user": {"type": "string", "description": "With via slack: the Slack account, as <team ID>/<user ID>"}, "at": {"type": "string", "format": "date-time"}}},
       "Enforcement": {"type": "object", "description": "What was verified on the device, separate from what was requested", "properties": {
         "confirmed_at": {"type": "string", "format": "date-time", "description": "The attribute was read back present after approval"},
         "removed_at": {"type": "string", "format": "date-time", "description": "The attribute was read back absent after expiry or revoke"},
         "checked_at": {"type": "string", "format": "date-time"}, "error": {"type": "string"}}},
       "Event": {"type": "object", "properties": {
         "type": {"type": "string", "enum": ["submitted", "approval", "approved", "approve_failed", "declined", "cancelled", "revoked", "revoke_failed", "expired"]},
-        "actor": {"type": "string"}, "note": {"type": "string"}, "at": {"type": "string", "format": "date-time"}}},
+        "actor": {"type": "string"}, "note": {"type": "string"}, "via": {"type": "string", "enum": ["slack"], "description": "The actor acted from Slack"}, "slack_user": {"type": "string", "description": "With via slack: the Slack account, as <team ID>/<user ID>"}, "at": {"type": "string", "format": "date-time"}}},
       "AccessRequest": {"type": "object", "properties": {
         "id": {"type": "string", "example": "req_ec77cc3939cd0d5d"}, "url": {"type": "string", "description": "The approval page; show this to the user"},
         "workflow_id": {"type": "string"}, "workflow_name": {"type": "string"},
@@ -159,6 +201,7 @@ const openAPISpec = `{
         "approved_at": {"type": "string", "format": "date-time"}, "expires_at": {"type": "string", "format": "date-time"},
         "attributes": {"type": "array", "items": {"type": "string"}, "description": "The attribute, once approval set it; empty if access was never granted", "example": ["custom:jit_db_ro"]},
         "policy": {"$ref": "#/components/schemas/PolicyUse"},
+        "slack": {"type": "array", "description": "Slack messages posted about the request", "items": {"type": "object", "properties": {"channel": {"type": "string"}, "ts": {"type": "string"}, "kind": {"type": "string", "enum": ["channel", "dm"]}, "user": {"type": "string"}}}},
         "last_error": {"type": "string"}, "created_at": {"type": "string", "format": "date-time"}, "updated_at": {"type": "string", "format": "date-time"}}},
       "Resource": {"type": "object", "required": ["name"], "properties": {
         "name": {"type": "string", "description": "As it appears in a policy grant: svc:, tag:, a host, a CIDR", "example": "svc:mysql-prod"},
@@ -179,9 +222,10 @@ const openAPISpec = `{
         "max_duration": {"allOf": [{"$ref": "#/components/schemas/Duration"}], "description": "1 minute to 365 days"},
         "default_duration": {"allOf": [{"$ref": "#/components/schemas/Duration"}], "description": "At most max_duration"},
         "approval_timeout": {"allOf": [{"$ref": "#/components/schemas/Duration"}], "description": "1 minute to 365 days; pending requests expire after this"}, "disabled": {"type": "boolean"},
+        "slack": {"$ref": "#/components/schemas/WorkflowSlack"},
         "created_at": {"type": "string", "format": "date-time", "readOnly": true}, "updated_at": {"type": "string", "format": "date-time", "readOnly": true}}},
       "ErrorBody": {"type": "object", "properties": {"error": {"type": "object", "properties": {
-        "code": {"type": "string", "enum": ["bad_request", "forbidden", "not_found", "conflict", "identity_unavailable", "tailscale_api_error", "internal"]},
+        "code": {"type": "string", "enum": ["bad_request", "forbidden", "not_found", "conflict", "identity_unavailable", "tailscale_api_error", "slack_error", "internal"]},
         "message": {"type": "string"}, "request_id": {"type": "string"}, "url": {"type": "string"}}}}}
     }
   }

@@ -101,7 +101,7 @@
       <li class="ev-{{.Event.Type}}">
         <i></i>
         <div>
-          <b>{{.Event.Actor}}</b> {{if eq .Event.Type "submitted"}}requested{{else if eq .Event.Type "approval"}}approved{{else if eq .Event.Type "approve_failed"}}tried to approve{{else if eq .Event.Type "revoke_failed"}}tried to revoke{{else}}{{.Event.Type}}{{end}}
+          <b>{{.Event.Actor}}</b> {{if eq .Event.Type "submitted"}}requested{{else if eq .Event.Type "approval"}}approved{{else if eq .Event.Type "approve_failed"}}tried to approve{{else if eq .Event.Type "revoke_failed"}}tried to revoke{{else}}{{.Event.Type}}{{end}}{{if eq .Event.Via "slack"}} <span class="via">via Slack</span>{{end}}
           <a href="/requests/{{.Request.ID}}">{{.Request.WorkflowName}}</a>{{if ne .Event.Type "submitted"}} for {{.Request.Requester.Actor}}{{end}}
           <span class="meta" title="{{ts .Event.At}}">{{ago .Event.At}}</span>
         </div>

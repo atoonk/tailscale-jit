@@ -27,6 +27,7 @@
   <blockquote>{{$r.Reason}}</blockquote>
   {{if $r.Resources}}<ul class="resources">{{range $r.Resources}}<li><code>{{.Name}}</code>{{with .Description}} <span class="muted">{{.}}</span>{{end}}</li>{{end}}</ul>{{end}}
   {{with $r.LastError}}<div class="error">Last error: {{.}}</div>{{end}}
+  {{with .Data.SlackNote}}<div class="warn small">⚠ {{.}}</div>{{end}}
   {{if or $can.Approve (and $can.Decline (not $self)) $can.Revoke}}
   <div class="actions decide">
     <input id="note" placeholder="{{if $can.Decline}}Note · required to decline{{else}}Add a note (optional){{end}}" class="grow">
@@ -52,7 +53,7 @@
       <li class="ev-{{.Type}}">
         <i></i>
         <div>
-          <b>{{.Actor}}</b> {{if eq .Type "submitted"}}requested access{{else if eq .Type "approval"}}approved{{else if eq .Type "approve_failed"}}tried to approve{{else if eq .Type "revoke_failed"}}tried to revoke{{else}}{{.Type}}{{end}}
+          <b>{{.Actor}}</b> {{if eq .Type "submitted"}}requested access{{else if eq .Type "approval"}}approved{{else if eq .Type "approve_failed"}}tried to approve{{else if eq .Type "revoke_failed"}}tried to revoke{{else}}{{.Type}}{{end}}{{if eq .Via "slack"}} <span class="via" title="Identified by their Slack account's email, not by Tailscale{{with .SlackUser}} · Slack account {{.}}{{end}}">via Slack</span>{{end}}
           <span class="meta" title="{{ts .At}}">{{ago .At}}</span>
           {{with .Note}}<div class="note">{{.}}</div>{{end}}
         </div>
@@ -68,7 +69,7 @@
       <dt>Device</dt><dd>{{$r.Requester.DeviceName}}</dd>
       <dt>Duration</dt><dd>{{human $r.Duration}}</dd>
       {{with $r.ExpiresAt}}<dt>Ends</dt><dd>{{ts .}}</dd>{{end}}
-      {{if gt $r.ApprovalsRequired 1}}<dt>Approvals</dt><dd>{{$r.ApprovalsCounted}} of {{$r.ApprovalsRequired}}{{range $r.Approvals}}<div class="muted small">{{.Actor}} · {{ago .At}}</div>{{end}}</dd>{{end}}
+      {{if gt $r.ApprovalsRequired 1}}<dt>Approvals</dt><dd>{{$r.ApprovalsCounted}} of {{$r.ApprovalsRequired}}{{range $r.Approvals}}<div class="muted small">{{.Actor}}{{if eq .Via "slack"}} (via Slack){{end}} · {{ago .At}}</div>{{end}}</dd>{{end}}
       {{if $.Admin}}<dt>Device attribute</dt><dd><code>{{$r.Attribute}}</code> <a href="/v1/devices/{{$r.TargetDeviceID}}/attributes" class="small">check</a></dd>{{end}}
       <dt>Request ID</dt><dd><code>{{$r.ID}}</code></dd>
     </dl>

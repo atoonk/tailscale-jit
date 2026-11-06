@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1150,5 +1151,115 @@ func TestControlCharactersRefused(t *testing.T) {
 	}
 	if _, err := h.svc.Decline(ctx, bob, r.ID, "no \x1b[2J"); err == nil {
 		t.Error("a note with an escape sequence was accepted")
+	}
+}
+
+// recorder is a Notifier that keeps what it was told.
+type recorder struct {
+	mu  sync.Mutex
+	evs []string
+}
+
+func (r *recorder) RequestChanged(req *AccessRequest, ev Event) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.evs = append(r.evs, req.ID+" "+ev.Type+" "+string(req.Status)+" "+ev.Via)
+}
+
+func (r *recorder) list() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.evs...)
+}
+
+func TestNotifierSeesEveryChange(t *testing.T) {
+	h := newHarness(t)
+	rec := &recorder{}
+	h.svc.Notify = rec
+	w := h.workflow(t, Workflow{Name: "DB", Attribute: "db_ro", Requesters: []Principal{"autogroup:member"}, Approvers: []Principal{"bob@example.com", "group:sre"},
+		MaxDuration: Duration(time.Hour), ApprovalsRequired: 2})
+	r, err := h.svc.Submit(ctx, alice, NewRequest{WorkflowID: w.ID, Duration: Duration(30 * time.Minute), Reason: "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	slackBob := bob
+	slackBob.DeviceID, slackBob.Via = "", ViaSlack
+	if _, err := h.svc.Approve(ctx, slackBob, r.ID, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.svc.Approve(ctx, carol, r.ID, ""); err != nil {
+		t.Fatal(err)
+	}
+	h.now = h.now.Add(31 * time.Minute)
+	h.svc.ExpireDue()
+	// Tailscale drops the attribute; the next tick confirms it gone.
+	delete(h.ts.attrs, "nALICE|custom:jit_db_ro")
+	h.now = h.now.Add(time.Minute)
+	h.svc.ExpireDue()
+
+	r2, _ := h.svc.Submit(ctx, alice, NewRequest{WorkflowID: w.ID, Reason: "y"})
+	h.svc.Decline(ctx, bob, r2.ID, "no")
+	r3, _ := h.svc.Submit(ctx, alice, NewRequest{WorkflowID: w.ID, Reason: "z"})
+	h.svc.Cancel(ctx, alice, r3.ID, "")
+
+	want := []string{
+		r.ID + " submitted pending ",
+		r.ID + " approval pending slack",
+		r.ID + " approved approved ",
+		r.ID + " expired expired ",
+		r.ID + " removed expired ",
+		r2.ID + " submitted pending ",
+		r2.ID + " declined declined ",
+		r3.ID + " submitted pending ",
+		r3.ID + " cancelled cancelled ",
+	}
+	got := rec.list()
+	// The approval's read-back confirms at once with the fake API.
+	for i, g := range got {
+		if g == r.ID+" confirmed approved " {
+			got = append(got[:i], got[i+1:]...)
+			break
+		}
+	}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Errorf("events:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+	// The Slack vote is recorded as such.
+	got1 := h.svc.Request(r.ID)
+	if got1.Approvals[0].Via != ViaSlack || got1.Approvals[1].Via != "" {
+		t.Errorf("approvals = %+v", got1.Approvals)
+	}
+}
+
+func TestRecordSlackMessagesIsQuiet(t *testing.T) {
+	h := newHarness(t)
+	w := h.workflow(t, rdpFlow(false))
+	r, err := h.svc.Submit(ctx, alice, NewRequest{WorkflowID: w.ID, Reason: "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := h.svc.Store.Changes()
+	m := SlackMessage{Channel: "C1", TS: "1.1", Kind: "channel"}
+	h.svc.RecordSlackMessages(r.ID, []SlackMessage{m})
+	h.svc.RecordSlackMessages(r.ID, []SlackMessage{m}) // twice: kept once
+	if got := h.svc.Request(r.ID).Slack; len(got) != 1 || got[0] != m {
+		t.Errorf("slack messages = %+v", got)
+	}
+	if h.svc.Store.Changes() != before {
+		t.Error("recording a Slack message reloads pages")
+	}
+}
+
+func TestWorkflowSlackValidation(t *testing.T) {
+	h := newHarness(t)
+	w := rdpFlow(false)
+	w.Slack = &WorkflowSlack{Channel: "#general"}
+	if _, err := h.svc.CreateWorkflow(w); code(err) != "bad_request" {
+		t.Errorf("channel name accepted: %v", err)
+	}
+	w.Slack = &WorkflowSlack{Channel: "", ChannelName: "x"}
+	out, err := h.svc.CreateWorkflow(w)
+	if err != nil || out.Slack != nil {
+		t.Errorf("empty slack settings kept: %+v %v", out.Slack, err)
 	}
 }

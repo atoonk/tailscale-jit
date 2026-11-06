@@ -83,10 +83,13 @@ it only on its first start.
 **An OAuth client for the Tailscale API.** Go to Settings → Trust credentials
 → **New credential** ([direct link](https://console.tailscale.com/admin/settings/trust-credentials/add)),
 pick **OAuth**, add a description such as `jitd`, then on the **Scopes** step
-give it two scopes:
+give it these scopes:
 
 - **Devices → Posture attributes: Write**, so it can set and remove the
   attributes. This is how an approval turns access on and off.
+- **Devices → Core: Read**, so it can list a person's devices when they
+  request access from Slack (`/jit request`), where it can't tell which
+  device they are on.
 - **Policy file: Read**, so it can resolve `group:` approvers, check each
   flow against the policy, and tell you what to add to it.
 
@@ -316,10 +319,63 @@ access.
 - **My requests:** cancel a pending request, or end your access early.
 - **Approvals** show up on the overview: approve, or decline with a reason.
 - **Manage** (admins): every request, the approval flows, the policy
-  snippet, Setup, and the API docs.
+  snippet, Setup, Slack, and the API docs.
 - **Help** (`/help`) explains all of this inside the app.
 
 Pages update on their own when something changes.
+
+### Slack
+
+jitd can post access requests to Slack and let approvers approve or decline
+from the message. Set it up on **Manage → Slack**; it takes about two
+minutes and no restart:
+
+1. **Create the Slack app.** The button opens Slack's "create app" page
+   already filled in (the bot, Socket Mode, the `/jit` command and the
+   permissions). Pick your workspace and click Create.
+2. **Install it** (Install App → Install to *your workspace*; if it says
+   Request to Install, a workspace admin approves it first), then copy the
+   **Bot User OAuth Token** (`xoxb-…`, under OAuth & Permissions).
+3. **Generate an app-level token** with the `connections:write` scope
+   (`xapp-…`, under Basic Information → App-Level Tokens).
+4. **Paste both** on the Slack page, with the email domains your people use
+   in Slack, and click Connect.
+
+Then pick a channel on each approval flow's page, and optionally have jitd
+send each approver a direct message.
+
+- **Nothing new to expose.** jitd connects out to Slack (Socket Mode) over
+  the host's internet connection, like its Tailscale API calls. Slack never
+  connects to jitd, which stays tailnet-only. The "Open" button on a message
+  links to the request page, which only works on the tailnet.
+- **Same rules.** Approve and Decline in Slack go through the same checks as
+  the browser. Revoking stays in the browser. `/jit` lists what is waiting
+  for you and your own requests.
+- **Requesting from Slack.** `/jit request` opens a form: approval flow,
+  device, duration and reason. In the browser the device is the one you are
+  on; Slack can't know that, so the form lists your own devices (untagged,
+  owned by your login) from the Tailscale API, and jitd checks again on
+  submit that the device is still yours. This uses the API's device list,
+  which needs the **Devices → Core: Read** scope.
+- **Identity is the one difference.** In the browser, Tailscale says who you
+  are. In Slack, jitd takes the clicker's Slack email and uses it as their
+  Tailscale login. Only full members of the connected workspace (no guests,
+  no one from a shared channel's other company) with a confirmed email in an
+  allowed domain are matched, and only if that login owns a device on the
+  tailnet: someone who is in Slack but not (or no longer) on the tailnet
+  can't act, even on flows that `autogroup:member` approves. Every decision
+  made this way shows **via Slack** on the request, with the Slack account
+  that made it. Someone whose Tailscale login is not their Slack email can't
+  decide from Slack; the Slack page lists every approver and whether they
+  match. For flows where that trust is not enough, turn on **Decide in the
+  browser only**: their messages carry no buttons, and jitd refuses any
+  decision from Slack on them.
+- **The tokens** are kept in the database and never shown again; Disconnect
+  revokes the bot token in Slack. To keep them out of the database, set
+  `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN` and `SLACK_ALLOWED_DOMAINS` in the env
+  file instead and restart jitd; they then win over the page.
+- If Slack is down or jitd was, nothing is lost: requests and approvals work
+  in the browser as always, and jitd posts what it missed when it is back.
 
 ### Backups and digging into the history
 
@@ -335,7 +391,8 @@ database. With the systemd setup above:
 cd /var/lib/jitd
 
 # A consistent copy, safe while jitd runs. umask keeps it private:
-# it holds every login, device and reason.
+# it holds every login, device and reason, and the Slack tokens if Slack
+# was connected on the page.
 sudo -u jitd sh -c 'umask 077; sqlite3 -readonly jit.db ".backup jit-backup.db"'
 
 # Who asked for what
@@ -363,8 +420,10 @@ Two things to know:
 
 ## Rules
 
-- Access is always for **the device you're on**. Nobody can request access
-  for someone else's machine.
+- Access is always for **one of your own devices**: the one you're on in the
+  browser or from an agent, or one you pick with `/jit request` in Slack
+  (only your own untagged devices are offered, and jitd checks again when
+  you submit). Nobody can request access for someone else's machine.
 - **One open request per flow and device.** Asking again points you at the
   request you already have.
 - **Approvals follow the flow as it is now.** Edit a flow and its pending
@@ -407,7 +466,7 @@ expired attribute about a minute after the expiry time (we measured about
 | `-admins` | none | who may manage flows and see every request: logins, `group:`, `tag:` (not `autogroup:admin`; use a group such as `group:jit-admins`) |
 | `-state-dir` | `tsnet-state` | the node's identity; keep it |
 | `-data` | `jit.db` | the SQLite database with the approval flows and access requests. Name an older jitd's `.json` file and jitd uses the `.db` of the same name, filled from the `.json` the first time |
-| `-env-file` | `~/.config/jitd/env` (Linux), `~/Library/Application Support/jitd/env` (macOS) | Tailscale API credentials: `TS_OAUTH_CLIENT_ID` and `TS_OAUTH_CLIENT_SECRET`, or `TS_API_KEY` |
+| `-env-file` | `~/.config/jitd/env` (Linux), `~/Library/Application Support/jitd/env` (macOS) | Tailscale API credentials: `TS_OAUTH_CLIENT_ID` and `TS_OAUTH_CLIENT_SECRET`, or `TS_API_KEY`. Optionally `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN` and `SLACK_ALLOWED_DOMAINS` (see Slack) |
 | `-hostname` | `jit` | the machine name on the tailnet |
 | `-tag` | `tag:jit` | the tag jitd runs as, used in the policy snippet |
 | `-https` | off | serve :443 with a Tailscale certificate and redirect :80; needs HTTPS turned on for the tailnet (admin console → DNS) |
@@ -441,6 +500,7 @@ In the API, an approval flow is called a *workflow*.
 | `GET /v1/setup`, `POST /v1/setup/check` | the setup check's result, and run it again (admins) |
 | `GET /v1/policy-snippet?missing=1` | the policy snippet (admins) |
 | `GET /v1/devices/{id}/attributes` | a device's posture attributes (admins) |
+| `GET /v1/slack`, `POST /v1/slack/connect` · `disconnect` · `test`, `PUT /v1/slack/domains`, `GET /v1/slack/channels` · `check` | the Slack connection (admins); tokens are never returned |
 
 Errors look like `{"error": {"code": "...", "message": "..."}}`. Some carry
 `request_id` and `url`, for example when you ask twice and jitd points you
@@ -477,11 +537,15 @@ Code layout:
 jitd/main.go             flags, the tsnet node, startup
 jitd/internal/jit        the model and the rules: flows, requests, approvals, policy check and snippet, SQLite store
 jitd/internal/jithttp    HTTP API, web UI (templates/, static/), OpenAPI spec
-jitd/internal/tsapi      Tailscale API client: posture attributes, policy file
+jitd/internal/tsapi      Tailscale API client: posture attributes, policy file, device list
 jitd/internal/setup      the credential check behind /admin/setup
+jitd/internal/slack      Slack Web API and Socket Mode client, Block Kit helpers, slack.Fake
+jitd/internal/slackbot   the Slack integration: request messages, Approve/Decline, /jit, identity by email
 jitd/preview             the UI preview
 ```
 
 The tests use a fake Tailscale API, a fake WhoIs on a unix socket (through
-the real Tailscale client), and a test resolver for the HTTP layer. One
+the real Tailscale client), a test resolver for the HTTP layer, and
+`slack.Fake` (an in-memory Slack with a Socket Mode connection the test
+drives) for the Slack integration. One
 test fails if a `/v1` route is missing from the OpenAPI spec.
