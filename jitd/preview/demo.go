@@ -64,7 +64,7 @@ func demoFlows() []jit.Workflow {
 func demoPolicy() *tsapi.Policy {
 	p := &tsapi.Policy{
 		Groups:    map[string][]string{"group:sre": {"sam.rivera@example.com", "priya.natarajan@example.com"}},
-		Postures:  map[string][]string{},
+		Postures:  map[string]tsapi.Posture{},
 		TagOwners: map[string][]string{"tag:jit": {"autogroup:admin"}},
 		Grants:    []tsapi.Grant{{Src: []string{"autogroup:member"}, Dst: []string{"tag:jit"}}},
 	}
@@ -73,7 +73,7 @@ func demoPolicy() *tsapi.Policy {
 			continue
 		}
 		w.Normalize()
-		p.Postures[w.Posture()] = []string{w.Attribute + " == true"}
+		p.Postures[w.Posture()] = tsapi.Posture{w.Attribute + " == true"}
 		src := make([]string, len(w.Requesters))
 		for i, r := range w.Requesters {
 			src[i] = string(r)

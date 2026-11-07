@@ -487,7 +487,7 @@ func TestCheckedSnippet(t *testing.T) {
 	h.workflow(t, Workflow{Name: "K8s", Attribute: "k8s_ro", Resources: []Resource{{Name: "svc:k8s"}}, Requesters: []Principal{"autogroup:member"}, Approvers: []Principal{"bob@example.com"}})
 	h.ts.policy = tsapi.Policy{
 		Groups:   h.ts.groups,
-		Postures: map[string][]string{"posture:jit_windows_rdp": {"custom:jit_windows_rdp == true"}},
+		Postures: map[string]tsapi.Posture{"posture:jit_windows_rdp": {"custom:jit_windows_rdp == true"}},
 		Grants:   []tsapi.Grant{{Src: []string{"autogroup:member"}, Dst: []string{"svc:windows-rdp"}, SrcPosture: []string{"posture:jit_windows_rdp"}}},
 	}
 	s, err := h.svc.CheckedSnippet(ctx, "tag:jit", false)
@@ -525,7 +525,7 @@ func TestPolicyUse(t *testing.T) {
 	w := h.workflow(t, rdpFlow(false))
 	h.ts.policy = tsapi.Policy{
 		Groups:   h.ts.groups,
-		Postures: map[string][]string{"posture:jit_windows_rdp": {"custom:jit_windows_rdp  ==  true"}},
+		Postures: map[string]tsapi.Posture{"posture:jit_windows_rdp": {"custom:jit_windows_rdp  ==  true"}},
 		Grants: []tsapi.Grant{
 			{Src: []string{"autogroup:member"}, Dst: []string{"svc:windows-rdp", "tag:rdp-hosts"}, SrcPosture: []string{"posture:jit_windows_rdp"}},
 			{Src: []string{"autogroup:member"}, Dst: []string{"svc:k8-prod"}}, // standing, not gated

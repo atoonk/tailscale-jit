@@ -43,9 +43,32 @@ type Attributes struct {
 // posture unlocks).
 type Policy struct {
 	Groups    map[string][]string `json:"groups"`
-	Postures  map[string][]string `json:"postures"`
+	Postures  map[string]Posture  `json:"postures"`
 	Grants    []Grant             `json:"grants"`
 	TagOwners map[string][]string `json:"tagOwners"`
+}
+
+// Posture is one posture's assertions: the rules a device must satisfy. The
+// policy file writes a posture either as a bare list of assertions, or as an
+// object with "assertions" and an "onFailure" block that shows the user a
+// message when they fail. jitd only compares assertions, so both forms decode
+// to the same list and onFailure is ignored.
+type Posture []string
+
+// UnmarshalJSON accepts both posture forms.
+func (p *Posture) UnmarshalJSON(b []byte) error {
+	b = bytes.TrimSpace(b)
+	if len(b) > 0 && b[0] == '[' {
+		return json.Unmarshal(b, (*[]string)(p))
+	}
+	var obj struct {
+		Assertions []string `json:"assertions"`
+	}
+	if err := json.Unmarshal(b, &obj); err != nil {
+		return err
+	}
+	*p = obj.Assertions
+	return nil
 }
 
 // Grant is the subset of a policy grant jitd looks at.

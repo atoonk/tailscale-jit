@@ -90,7 +90,7 @@ func (f *fakeTS) GetPolicy(ctx context.Context) (tsapi.Policy, error) {
 	// grants more than listed, the rest are unreferenced.
 	return tsapi.Policy{
 		Groups:   map[string][]string{"group:sre": {"carol@example.com"}},
-		Postures: map[string][]string{"posture:jit_db_ro": {"custom:jit_db_ro == true"}, "posture:jit_db_rw": {"custom:jit_db_rw == true"}, "posture:jit_ssh": {"custom:jit_ssh == true"}},
+		Postures: map[string]tsapi.Posture{"posture:jit_db_ro": {"custom:jit_db_ro == true"}, "posture:jit_db_rw": {"custom:jit_db_rw == true"}, "posture:jit_ssh": {"custom:jit_ssh == true"}},
 		Grants: []tsapi.Grant{
 			{Src: []string{"autogroup:member"}, Dst: []string{"svc:mysql-prod", "svc:postgres-analytics", "svc:mysql-staging"}, SrcPosture: []string{"posture:jit_db_ro"}},
 			{Src: []string{"autogroup:member"}, Dst: []string{"svc:mysql-prod"}, SrcPosture: []string{"posture:jit_db_rw"}},
