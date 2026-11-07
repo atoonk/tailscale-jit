@@ -15,11 +15,20 @@
   <p>Behind the scenes an approval sets the flow's device posture attribute (<code>custom:jit_&lt;name&gt;</code>) with an expiry through the Tailscale API, and a grant in the tailnet policy gated on that posture is what gives the access. The list under <i>Gives access to</i> is the admin's description of that grant, for choosing what to request. Each request page shows whether that attribute was read back from the device (<i>confirmed</i>) and, after it ends, whether it was seen gone again.</p>
 </section>
 
-<section class="card prose">
-  <h2>From Claude Code or scripts</h2>
-  <p>Install the <b>tailscale-pam</b> plugin (<code>/plugin marketplace add atoonk/tailscale-jit</code>, then <code>/plugin install tailscale-pam@tailscale-jit</code>). Claude then sees what you can reach, lists what you can request, files a request and prints the approval link for you to click.</p>
+<section class="card prose" id="mcp">
+  <h2>For agents: the MCP server</h2>
+  <p>jitd is an MCP server at <code>{{.Data.MCPURL}}</code>. Any MCP client on the tailnet can use it, with no login or token: jitd knows who you are from the connection, as it does for this page, and the agent acts as you, on the device it runs on. It can ask for access and wait for the answer; it cannot approve. Reasons, notes and descriptions written by other people reach it quoted, as data.</p>
+  <table class="plain">
+    <tr><td><code>list_requestable</code></td><td>the flows you may request through, what each gives access to, and any request you have open</td></tr>
+    <tr><td><code>request_access</code></td><td>file a request: flow, reason, duration; returns the approval link</td></tr>
+    <tr><td><code>wait_for_access</code></td><td>wait until it is decided and the access is in place (30 seconds per call by default, up to four minutes; the agent calls it again)</td></tr>
+    <tr><td><code>get_access_request</code></td><td>the status of a request</td></tr>
+    <tr><td><code>cancel_access_request</code></td><td>withdraw a pending request, or end approved access early</td></tr>
+  </table>
+  <p><b>Claude Code.</b> Install the <b>tailscale-pam</b> plugin: <code>/plugin marketplace add atoonk/tailscale-jit</code>, then <code>/plugin install tailscale-pam@tailscale-jit</code>. It points Claude at this server and adds a skill with the rules: ask for what the task needs, show you the approval link, connect without credentials. Or without the plugin: <code>claude mcp add --transport http jit {{.Data.MCPURL}}</code>.</p>
   {{with .Data.PluginURL}}<p>The plugin looks for jitd at <code>http://jit</code>, but this server is at <code>{{.}}</code>. Tell the plugin once: run <code>/plugin configure tailscale-pam@tailscale-jit</code> in Claude Code, set <b>jitd URL</b> to <code>{{.}}</code>, and restart Claude Code.</p>{{end}}
-  <p>Claude only asks for what a task needs, and never for longer than the flow allows. You stay in control: the approval link always comes to you.</p>
+  <p><b>VS Code, Goose and other hosts</b> that speak Streamable HTTP: add the URL as a remote server (VS Code: <code>{"servers": {"jit": {"type": "http", "url": "{{.Data.MCPURL}}"}}}</code> in <code>.vscode/mcp.json</code>). Hosts that render <a href="https://modelcontextprotocol.io/extensions/apps/overview">MCP Apps</a> show each request as a card that follows the approval, with a form to pick a flow; the others get the same as text. <b>Claude Desktop</b> only runs local servers: give it <code>pamagent bridge</code> as the command (<a href="https://github.com/atoonk/tailscale-jit/tree/main/pamagent">how</a>).</p>
+  <p>What your device can reach right now is not jitd's to say: the agent runs <code>tailscale service list --json</code> for that. Scripts can use the <a href="/api/docs">JSON API</a> instead of MCP.</p>
 </section>
 
 {{if .Admin}}
@@ -45,6 +54,7 @@
   <table class="plain">
     <tr><td><a href="/requests/new">Request access</a></td></tr>
     <tr><td><a href="/requests?scope=mine">My requests</a></td></tr>
+    <tr><td><a href="#mcp">MCP server for agents</a> · <code>{{.Data.MCPURL}}</code></td></tr>
     {{if .Admin}}<tr><td><a href="/admin">Admin overview</a></td></tr>
     <tr><td><a href="/api/docs">API documentation</a></td></tr>{{end}}
     <tr><td><a href="https://github.com/atoonk/tailscale-jit">Source, plugin and README</a></td></tr>

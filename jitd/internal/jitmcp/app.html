@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>JIT access</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: var(--color-background-primary, light-dark(#ffffff, #1e1e22));
+    --bg2: var(--color-background-secondary, light-dark(#f5f5f7, #28282e));
+    --fg: var(--color-text-primary, light-dark(#1b1b1f, #ececf1));
+    --fg2: var(--color-text-secondary, light-dark(#5f6168, #a0a3ad));
+    --line: var(--color-border-primary, light-dark(#e2e3e8, #3a3b43));
+    --ok: var(--color-text-success, light-dark(#1a7f4b, #5fd39a));
+    --okbg: var(--color-background-success, light-dark(#e6f6ec, #173526));
+    --warn: var(--color-text-warning, light-dark(#8a5a00, #f3c35b));
+    --warnbg: var(--color-background-warning, light-dark(#fff4d6, #3a2f12));
+    --bad: var(--color-text-danger, light-dark(#b42318, #ff8a80));
+    --badbg: var(--color-background-danger, light-dark(#fdecea, #3b1d1b));
+    --sans: var(--font-sans, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif);
+    --mono: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+    --r: var(--border-radius-md, 10px);
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.45 var(--sans); }
+  body { padding: 14px 16px; }
+  h1 { font-size: 15px; margin: 0; font-weight: 600; }
+  h2 { font-size: 14px; margin: 0; font-weight: 600; }
+  .head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .pill { font-size: 12px; font-weight: 600; padding: 2px 9px; border-radius: 999px; background: var(--bg2); color: var(--fg2); white-space: nowrap; }
+  .pill.pending { background: var(--warnbg); color: var(--warn); }
+  .pill.approved { background: var(--okbg); color: var(--ok); }
+  .pill.declined, .pill.revoked, .pill.expired, .pill.cancelled { background: var(--badbg); color: var(--bad); }
+  .muted { color: var(--fg2); }
+  .small { font-size: 12.5px; }
+  .rows { display: grid; grid-template-columns: max-content 1fr; gap: 6px 14px; margin: 12px 0; }
+  .rows > dt { color: var(--fg2); }
+  .rows > dd { margin: 0; }
+  code { font: 12.5px var(--mono); background: var(--bg2); padding: 1px 5px; border-radius: 5px; }
+  .res { display: block; }
+  .res + .res { margin-top: 2px; }
+  .reason { white-space: pre-wrap; }
+  .actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 12px; }
+  button { font: inherit; font-weight: 600; padding: 6px 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg2); color: var(--fg); cursor: pointer; }
+  button.primary { background: var(--fg); color: var(--bg); border-color: var(--fg); }
+  button.danger { color: var(--bad); }
+  button:disabled { opacity: .55; cursor: default; }
+  .note { margin-top: 10px; padding: 8px 10px; border-radius: 8px; background: var(--bg2); }
+  .note.ok { background: var(--okbg); color: var(--ok); }
+  .note.bad { background: var(--badbg); color: var(--bad); }
+  .note.warn { background: var(--warnbg); color: var(--warn); }
+  .spin { display: inline-block; width: 11px; height: 11px; border: 2px solid var(--line); border-top-color: var(--fg2); border-radius: 50%; animation: spin .9s linear infinite; vertical-align: -1px; margin-right: 6px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .flow { border: 1px solid var(--line); border-radius: var(--r); padding: 12px 14px; margin-top: 10px; }
+  .flow .rows { margin: 8px 0 0; }
+  form { display: grid; gap: 8px; margin-top: 10px; }
+  label { display: grid; gap: 4px; font-size: 12.5px; color: var(--fg2); }
+  select, textarea { font: inherit; color: var(--fg); background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; }
+  textarea { min-height: 56px; resize: vertical; }
+  .bar { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+  a { color: inherit; }
+</style>
+</head>
+<body>
+<div id="app"><span class="spin"></span><span class="muted">Loading…</span></div>
+<script>
+(() => {
+  'use strict';
+
+  // ---- JSON-RPC over postMessage with the host -------------------------------
+  const rpc = (() => {
+    let next = 1;
+    const pending = new Map();
+    const handlers = {};
+    const post = m => window.parent.postMessage(m, '*');
+    window.addEventListener('message', e => {
+      const m = e.data;
+      if (!m || m.jsonrpc !== '2.0') return;
+      if (m.id !== undefined && m.method === undefined) {
+        const p = pending.get(m.id);
+        if (!p) return;
+        pending.delete(m.id);
+        m.error ? p.reject(new Error(m.error.message || 'request failed')) : p.resolve(m.result);
+        return;
+      }
+      if (!m.method) return;
+      const h = handlers[m.method];
+      if (m.id === undefined) { if (h) h(m.params || {}); return; }
+      if (!h) { post({ jsonrpc: '2.0', id: m.id, error: { code: -32601, message: 'method not found' } }); return; }
+      Promise.resolve().then(() => h(m.params || {}))
+        .then(result => post({ jsonrpc: '2.0', id: m.id, result: result || {} }),
+              err => post({ jsonrpc: '2.0', id: m.id, error: { code: -32000, message: String(err && err.message || err) } }));
+    });
+    return {
+      request: (method, params) => new Promise((resolve, reject) => {
+        const id = next++;
+        pending.set(id, { resolve, reject });
+        post({ jsonrpc: '2.0', id, method, params: params || {} });
+      }),
+      notify: (method, params) => post({ jsonrpc: '2.0', method, params: params || {} }),
+      on: (method, f) => { handlers[method] = f; },
+    };
+  })();
+
+  const callTool = async (name, args) => {
+    const r = await rpc.request('tools/call', { name, arguments: args || {} });
+    if (r && r.isError) throw new Error(textOf(r) || 'the tool failed');
+    return r;
+  };
+  const textOf = r => ((r && r.content) || []).filter(c => c.type === 'text').map(c => c.text).join('\n');
+  const openLink = url => rpc.request('ui/open-link', { url }).catch(() => window.open(url, '_blank', 'noopener'));
+  const tellModel = text => rpc.request('ui/update-model-context', { content: [{ type: 'text', text }] }).catch(() => {});
+
+  // ---- helpers ------------------------------------------------------------------
+  const app = document.getElementById('app');
+  const el = (tag, attrs, ...kids) => {
+    const n = document.createElement(tag);
+    for (const [k, v] of Object.entries(attrs || {})) {
+      if (k === 'class') n.className = v;
+      else if (k.startsWith('on')) n.addEventListener(k.slice(2), v);
+      else if (v !== undefined && v !== null && v !== false) n.setAttribute(k, v === true ? '' : v);
+    }
+    for (const k of kids.flat()) if (k !== null && k !== undefined && k !== false) n.append(k.nodeType ? k : document.createTextNode(String(k)));
+    return n;
+  };
+  // jitd quotes text written by people before it reaches the model; show it plain.
+  const unq = s => { if (typeof s === 'string' && s.length >= 2 && s[0] === '"' && s[s.length - 1] === '"') { try { return JSON.parse(s); } catch (e) {} } return s || ''; };
+  const parseDur = s => { // "1h30m0s", "2h", "3d" -> seconds
+    let t = 0; const re = /(\d+(?:\.\d+)?)([dhms])/g; let m;
+    while ((m = re.exec(s || ''))) t += parseFloat(m[1]) * { d: 86400, h: 3600, m: 60, s: 1 }[m[2]];
+    return t;
+  };
+  const fmtDur = sec => {
+    sec = Math.max(0, Math.round(sec));
+    const d = Math.floor(sec / 86400), h = Math.floor(sec % 86400 / 3600), m = Math.floor(sec % 3600 / 60), s = sec % 60;
+    if (d) return d + 'd' + (h ? ' ' + h + 'h' : '');
+    if (h) return h + 'h' + (m ? ' ' + m + 'm' : '');
+    if (m) return m + 'm' + (!h && s && m < 5 ? ' ' + s + 's' : '');
+    return s + 's';
+  };
+  const fmtTime = iso => { const t = new Date(iso); return isNaN(t) ? iso : t.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); };
+  const who = id => (id.tags && id.tags.length ? id.tags.join(',') : id.login) || '?';
+
+  // ---- host context ---------------------------------------------------------------
+  let ctx = {};
+  const applyContext = c => {
+    ctx = Object.assign(ctx, c || {});
+    if (ctx.theme) document.documentElement.style.colorScheme = ctx.theme;
+    const vars = ctx.styles && ctx.styles.variables || {};
+    for (const [k, v] of Object.entries(vars)) if (v) document.documentElement.style.setProperty(k, v);
+    if (ctx.styles && ctx.styles.css && ctx.styles.css.fonts && !document.getElementById('hostfonts')) {
+      const st = document.createElement('style'); st.id = 'hostfonts'; st.textContent = ctx.styles.css.fonts; document.head.append(st);
+    }
+    const dim = ctx.containerDimensions || {};
+    document.documentElement.style.height = 'height' in dim ? '100vh' : '';
+    document.documentElement.style.maxHeight = dim.maxHeight ? dim.maxHeight + 'px' : '';
+  };
+  new ResizeObserver(() => rpc.notify('ui/notifications/size-changed', { height: document.documentElement.scrollHeight }))
+    .observe(document.body);
+
+  // ---- the request card -----------------------------------------------------------
+  let watching = null;   // {id, timer, status, confirmed}
+  let tick = null;
+
+  const stopWatching = () => { if (watching) { clearTimeout(watching.timer); watching = null; } if (tick) { clearInterval(tick); tick = null; } };
+
+  const render = r => { app.replaceChildren(card(r)); };
+
+  const card = r => {
+    const status = r.status || '?';
+    const approved = status === 'approved';
+    const confirmed = !!(r.enforcement && r.enforcement.confirmed_at);
+    const live = status === 'pending' || (approved && !confirmed);
+    const root = el('div');
+    root.append(el('div', { class: 'head' },
+      el('h1', {}, 'Access request · ', unq(r.workflow_name)),
+      el('span', { class: 'pill ' + status }, status)));
+
+    const dl = el('dl', { class: 'rows' });
+    const row = (k, ...v) => dl.append(el('dt', {}, k), el('dd', {}, ...v));
+    if (r.resources && r.resources.length) {
+      row('Gives access to', r.resources.map(x => el('span', { class: 'res' }, el('code', {}, x.name), x.description ? el('span', { class: 'muted' }, ' ', unq(x.description)) : null)));
+    }
+    row('For', r.duration, approved && r.expires_at ? el('span', { class: 'muted', id: 'until' }, ' · until ' + fmtTime(r.expires_at)) : null);
+    if (r.reason) row('Reason', el('span', { class: 'reason' }, unq(r.reason)));
+    row('Requester', who(r.requester || {}), r.requester && r.requester.device_name ? el('span', { class: 'muted' }, ' on ' + r.requester.device_name) : null);
+    if (r.approvals_required > 1 || (r.approvals && r.approvals.length)) {
+      const names = (r.approvals || []).map(a => a.actor).join(', ');
+      row('Approvals', r.approvals_required > 1 ? (r.approvals_counted || 0) + ' of ' + r.approvals_required : names || '—', r.approvals_required > 1 && names ? el('span', { class: 'muted' }, ' (' + names + ')') : null);
+    }
+    root.append(dl);
+
+    if (status === 'pending') {
+      root.append(el('div', { class: 'note warn' }, el('span', { class: 'spin' }), 'Waiting for approval', r.approvals_required > 1 ? ' (' + (r.approvals_counted || 0) + ' of ' + r.approvals_required + ')' : '', '. This card updates on its own.'));
+    } else if (approved && !confirmed) {
+      root.append(el('div', { class: 'note warn' }, el('span', { class: 'spin' }), 'Approved. Waiting for the access to show up on the device…'));
+    } else if (approved) {
+      root.append(el('div', { class: 'note ok' }, '✓ Access is in place', el('span', { id: 'left' }, left(r))));
+    } else {
+      const last = (r.timeline || []).slice(-1)[0];
+      root.append(el('div', { class: 'note bad' }, status[0].toUpperCase() + status.slice(1),
+        last && last.actor && last.actor !== 'system' ? ' by ' + last.actor : '',
+        last && last.note ? ': ' + unq(last.note) : '', '. You do not have this access.'));
+    }
+    if (r.last_error) root.append(el('div', { class: 'note bad small' }, 'Last error: ', unq(r.last_error)));
+
+    const actions = el('div', { class: 'actions' }, el('button', { onclick: () => openLink(r.url) }, 'Open in jitd'));
+    if (status === 'pending' || approved) {
+      const label = status === 'pending' ? 'Cancel request' : 'End access now';
+      const b = el('button', { class: 'danger' }, label);
+      b.addEventListener('click', async () => {
+        if (b.dataset.armed !== '1') { b.dataset.armed = '1'; b.textContent = status === 'pending' ? 'Really cancel?' : 'Really end it?'; setTimeout(() => { b.dataset.armed = ''; b.textContent = label; }, 4000); return; }
+        b.disabled = true;
+        try {
+          const res = await callTool('cancel_access_request', { request_id: r.id, note: status === 'pending' ? 'cancelled from the JIT panel' : 'ended from the JIT panel' });
+          stopWatching();
+          show(res);
+          tellModel('The user ' + (status === 'pending' ? 'cancelled' : 'ended') + ' access request ' + r.id + ' (' + unq(r.workflow_name) + ') from the JIT panel. ' + r.url);
+        } catch (e) { b.disabled = false; root.append(el('div', { class: 'note bad' }, String(e.message || e))); }
+      });
+      actions.append(b);
+    }
+    actions.append(el('span', { class: 'muted small' }, r.id));
+    root.append(actions);
+
+    if (live) watch(r, status, confirmed); else stopWatching();
+    if (approved && confirmed) { if (tick) clearInterval(tick); tick = setInterval(() => { const n = document.getElementById('left'); if (n) n.textContent = left(r); }, 15000); }
+    return root;
+  };
+
+  const left = r => {
+    if (!r.expires_at) return '';
+    const s = (new Date(r.expires_at) - Date.now()) / 1000;
+    return s > 0 ? ' · ' + fmtDur(s) + ' left' : ' · expired';
+  };
+
+  // watch re-reads the request every few seconds while something is about
+  // to change, and tells the model when it does.
+  const watch = (r, status, confirmed) => {
+    if (watching && watching.id === r.id) { watching.status = status; watching.confirmed = confirmed; return; }
+    stopWatching();
+    const w = watching = { id: r.id, status, confirmed, since: Date.now() };
+    const poll = async () => {
+      if (watching !== w) return;
+      try {
+        const res = await callTool('get_access_request', { request_id: r.id });
+        if (watching !== w) return;
+        const nr = res.structuredContent || {};
+        const nconf = !!(nr.enforcement && nr.enforcement.confirmed_at);
+        if (nr.status !== w.status || nconf !== w.confirmed) {
+          if (nr.status !== w.status) {
+            tellModel('Access request ' + nr.id + ' (' + unq(nr.workflow_name) + ') is now ' + String(nr.status).toUpperCase() +
+              (nr.status === 'approved' && nr.expires_at ? ', until ' + nr.expires_at : '') + '. ' + nr.url +
+              (nr.status === 'approved' ? ' Run `tailscale service list --json` to confirm the service is listed before using it.' : ' You do not have this access.'));
+          }
+          render(nr);
+          return;
+        }
+      } catch (e) { /* try again */ }
+      if (Date.now() - w.since < 2 * 3600 * 1000) w.timer = setTimeout(poll, 3000); // give up after two hours
+    };
+    w.timer = setTimeout(poll, 3000);
+  };
+
+  // ---- the flow picker ------------------------------------------------------------
+  const picker = out => {
+    const flows = out.requestable || [];
+    const root = el('div');
+    root.append(el('div', { class: 'bar' }, el('h1', {}, 'Request access'),
+      el('span', { class: 'muted small' }, who(out.identity || {}), out.identity && out.identity.device_name ? ' on ' + out.identity.device_name : '')));
+    if (!flows.length) {
+      root.append(el('div', { class: 'note' }, 'Nothing to request: no approval flow lists you as a requester.'));
+      return root;
+    }
+    for (const f of flows) root.append(flowCard(f));
+    return root;
+  };
+
+  const flowCard = f => {
+    const box = el('div', { class: 'flow' });
+    box.append(el('div', { class: 'bar' }, el('h2', {}, unq(f.workflow_name)),
+      el('span', { class: 'muted small' }, 'up to ' + fmtDur(parseDur(f.max_duration)), f.approvals_required > 1 ? ' · ' + f.approvals_required + ' approvals' : '')));
+    if (f.description) box.append(el('div', { class: 'muted small' }, unq(f.description)));
+    const dl = el('dl', { class: 'rows small' });
+    if (f.resources && f.resources.length) {
+      dl.append(el('dt', {}, 'Gives access to'), el('dd', {}, f.resources.map(x => el('span', { class: 'res' }, el('code', {}, x.name), x.description ? el('span', { class: 'muted' }, ' ', unq(x.description)) : null))));
+    }
+    dl.append(el('dt', {}, 'Approvers'), el('dd', {}, (f.approvers || []).join(', ') || '—'));
+    box.append(dl);
+    const p = f.policy;
+    if (p && !p.error && (p.unreferenced || !p.defined)) {
+      box.append(el('div', { class: 'note warn small' }, '⚠ The tailnet policy does not use this flow yet, so approval would unlock nothing. Ask an admin to add it.'));
+    }
+    const actions = el('div', { class: 'actions' });
+    if (f.active_request_id) {
+      actions.append(el('button', { class: 'primary', onclick: async () => { try { show(await callTool('get_access_request', { request_id: f.active_request_id })); } catch (e) { box.append(el('div', { class: 'note bad' }, String(e.message || e))); } } },
+        'Open your ' + f.active_status + ' request'));
+    } else {
+      const b = el('button', { class: 'primary', onclick: () => { b.disabled = true; box.append(requestForm(f, box)); } }, 'Request…');
+      actions.append(b);
+    }
+    box.append(actions);
+    return box;
+  };
+
+  const requestForm = (f, box) => {
+    const maxS = parseDur(f.max_duration) || 86400;
+    const defS = parseDur(f.default_duration) || maxS;
+    const steps = [900, 1800, 3600, 7200, 14400, 28800, 86400].filter(s => s <= maxS);
+    if (!steps.includes(defS)) steps.push(defS);
+    if (!steps.includes(maxS)) steps.push(maxS);
+    steps.sort((a, b) => a - b);
+    const sel = el('select', { name: 'duration' }, steps.map(s => el('option', { value: s, selected: s === defS }, fmtDur(s))));
+    const reason = el('textarea', { name: 'reason', required: true, placeholder: 'What you will do, and on what. The approver reads this.' });
+    const submit = el('button', { class: 'primary', type: 'submit' }, 'Send request');
+    const form = el('form', {}, el('label', {}, 'Duration', sel), el('label', {}, 'Reason', reason), el('div', { class: 'actions' }, submit));
+    form.addEventListener('submit', async e => {
+      e.preventDefault();
+      if (!reason.value.trim()) { reason.focus(); return; }
+      submit.disabled = true; submit.textContent = 'Sending…';
+      try {
+        const dur = fmtDur(parseInt(sel.value, 10)).replace(/ /g, '');
+        const res = await callTool('request_access', { workflow_id: f.workflow_id, duration: dur, reason: reason.value.trim() });
+        const r = res.structuredContent || {};
+        show(res);
+        tellModel('The user submitted access request ' + r.id + ' for "' + unq(r.workflow_name) + '" from the JIT panel (' + r.duration + ', reason: ' + unq(r.reason) + '). It is pending approval: ' + r.url + ' Call wait_for_access with request_id ' + r.id + ' to wait for the decision.');
+      } catch (err) {
+        submit.disabled = false; submit.textContent = 'Send request';
+        box.append(el('div', { class: 'note bad' }, String(err.message || err)));
+      }
+    });
+    setTimeout(() => reason.focus(), 0);
+    return form;
+  };
+
+  // ---- dispatch -------------------------------------------------------------------
+  const show = res => {
+    const sc = res && res.structuredContent;
+    if (sc && Array.isArray(sc.requestable)) { stopWatching(); app.replaceChildren(picker(sc)); return; }
+    if (sc && sc.id && sc.status) { render(sc); return; }
+    stopWatching();
+    const t = textOf(res);
+    app.replaceChildren(el('div', { class: res && res.isError ? 'note bad' : 'note', style: 'white-space: pre-wrap' }, t || 'Nothing to show.'));
+  };
+
+  rpc.on('ping', () => ({}));
+  rpc.on('ui/notifications/tool-input', () => {});
+  rpc.on('ui/notifications/tool-input-partial', () => {});
+  rpc.on('ui/notifications/tool-result', show);
+  rpc.on('ui/notifications/tool-cancelled', p => { app.replaceChildren(el('div', { class: 'note' }, 'Cancelled', p && p.reason ? ': ' + p.reason : '')); });
+  rpc.on('ui/notifications/host-context-changed', applyContext);
+  rpc.on('ui/resource-teardown', () => { stopWatching(); return {}; });
+
+  rpc.request('ui/initialize', { appCapabilities: {}, clientInfo: { name: 'jitd', version: '1' }, protocolVersion: '2026-01-26' })
+    .then(res => { applyContext(res && res.hostContext); rpc.notify('ui/notifications/initialized', {}); })
+    .catch(() => { app.replaceChildren(el('div', { class: 'note' }, 'This view needs an MCP Apps host.')); });
+})();
+</script>
+</body>
+</html>

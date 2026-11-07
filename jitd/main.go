@@ -27,6 +27,7 @@ import (
 
 	"github.com/atoonk/tailscale-jit/jitd/internal/jit"
 	"github.com/atoonk/tailscale-jit/jitd/internal/jithttp"
+	"github.com/atoonk/tailscale-jit/jitd/internal/jitmcp"
 	"github.com/atoonk/tailscale-jit/jitd/internal/setup"
 	"github.com/atoonk/tailscale-jit/jitd/internal/slackbot"
 	"github.com/atoonk/tailscale-jit/jitd/internal/tsapi"
@@ -210,6 +211,7 @@ func main() {
 	svc.Notify = bot
 	bot.Start(ctx)
 	h.Slack = bot
+	h.MCP = (&jitmcp.Server{Svc: svc, Resolver: h.Resolver, BaseURL: h.BaseURL, Log: log}).Handler()
 	var ln net.Listener
 	if *https {
 		ln, err = srv.ListenTLS("tcp", ":443")

@@ -8,8 +8,10 @@ package main
 import (
 	"cmp"
 	"context"
+	_ "embed"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -21,6 +23,7 @@ import (
 
 	"github.com/atoonk/tailscale-jit/jitd/internal/jit"
 	"github.com/atoonk/tailscale-jit/jitd/internal/jithttp"
+	"github.com/atoonk/tailscale-jit/jitd/internal/jitmcp"
 	"github.com/atoonk/tailscale-jit/jitd/internal/setup"
 	"github.com/atoonk/tailscale-jit/jitd/internal/slack"
 	"github.com/atoonk/tailscale-jit/jitd/internal/slackbot"
@@ -181,6 +184,7 @@ func main() {
 			return jit.Identity{}, &jit.Error{Code: "identity_unavailable", Status: 401, Message: "pick who you are at /as/alice (alice, bob, carol, dave, root)"}
 		}),
 	}
+	h.MCP = (&jitmcp.Server{Svc: svc, Resolver: h.Resolver, BaseURL: base, Log: log}).Handler()
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /as/{who}", func(w http.ResponseWriter, r *http.Request) {
 		who := r.PathValue("who")
@@ -194,6 +198,12 @@ func main() {
 			next = "/"
 		}
 		http.Redirect(w, r, next, http.StatusFound)
+	})
+	// /mcp-host plays an MCP Apps host against this preview's /mcp, to see
+	// the ui://jit/app view in a browser without a host that renders it.
+	mux.HandleFunc("GET /mcp-host", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		io.WriteString(w, mcpHostPage)
 	})
 	mux.Handle("/", h.Handler())
 	names := make([]string, 0, len(people))
@@ -275,3 +285,6 @@ func seed(svc *jit.Service) {
 	r = submit("bob", dbRW, time.Hour, "Fix a typo in a product name")
 	svc.Decline(ctx, people["root"], r.ID, "Use the admin tool for that, no raw SQL needed")
 }
+
+//go:embed mcphost.html
+var mcpHostPage string

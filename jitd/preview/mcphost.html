@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>MCP Apps host · jitd preview</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { margin: 0; font: 14px/1.45 system-ui, sans-serif; background: light-dark(#f4f4f6, #141417); color: light-dark(#111, #eee); }
+  header { padding: 12px 20px; border-bottom: 1px solid light-dark(#ddd, #333); display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+  header b { font-size: 15px; }
+  main { display: grid; grid-template-columns: 340px 1fr; gap: 20px; padding: 20px; }
+  .panel { border: 1px solid light-dark(#ddd, #333); border-radius: 10px; padding: 14px; background: light-dark(#fff, #1c1c20); }
+  label { display: block; font-size: 12.5px; color: light-dark(#666, #aaa); margin-top: 10px; }
+  select, textarea, button { font: inherit; }
+  select, textarea { width: 100%; box-sizing: border-box; margin-top: 4px; padding: 6px 8px; border-radius: 8px; border: 1px solid light-dark(#ccc, #444); background: light-dark(#fff, #111); color: inherit; }
+  textarea { min-height: 70px; font-family: ui-monospace, monospace; font-size: 12.5px; }
+  button { margin-top: 12px; padding: 7px 14px; border-radius: 8px; border: 1px solid light-dark(#ccc, #444); background: light-dark(#111, #eee); color: light-dark(#fff, #111); font-weight: 600; cursor: pointer; }
+  button.alt { background: transparent; color: inherit; }
+  iframe { width: 100%; border: 1px solid light-dark(#ddd, #333); border-radius: 12px; background: transparent; height: 120px; display: block; }
+  .chat { max-width: 720px; }
+  .bubble { background: light-dark(#e9e9ee, #26262c); border-radius: 14px; padding: 10px 14px; margin: 10px 0; display: inline-block; }
+  .tool { color: light-dark(#666, #aaa); font-size: 13px; margin: 14px 0 6px; }
+  pre { white-space: pre-wrap; font-size: 12px; background: light-dark(#f0f0f3, #111); padding: 10px; border-radius: 8px; max-height: 240px; overflow: auto; }
+  .log { font-size: 12.5px; color: light-dark(#444, #bbb); }
+  .log div { padding: 3px 0; border-top: 1px dashed light-dark(#e3e3e3, #333); }
+  .ok { color: #2a8f5a; } .bad { color: #c0392b; }
+</style>
+</head>
+<body>
+<header><b>MCP Apps host</b> <span class="log" id="who">…</span>
+  <span style="margin-left:auto" class="log">Plays the host's part of the MCP Apps protocol against this preview's <code>/mcp</code>: the card below is the real <code>ui://jit/app</code> page in a sandboxed iframe.</span></header>
+<main>
+  <div class="panel">
+    <label>Tool <select id="tool"></select></label>
+    <label>Arguments (JSON) <textarea id="args">{}</textarea></label>
+    <button id="call">Call tool and render the view</button>
+    <button class="alt" id="theme">Toggle theme</button>
+    <label>Text the model would see</label>
+    <pre id="text">—</pre>
+    <label>Host log</label>
+    <div class="log" id="log"></div>
+  </div>
+  <div class="chat">
+    <div class="bubble" id="prompt">Pick a tool on the left and call it.</div>
+    <div class="tool" id="toolline"></div>
+    <iframe id="view" sandbox="allow-scripts allow-forms" title="MCP App view"></iframe>
+  </div>
+</main>
+<script>
+(() => {
+  'use strict';
+  const $ = id => document.getElementById(id);
+  const log = (msg, cls) => { const d = document.createElement('div'); d.textContent = new Date().toLocaleTimeString() + '  ' + msg; if (cls) d.className = cls; $('log').prepend(d); };
+  let theme = matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  let rpcID = 1;
+
+  // ---- MCP client to the preview's /mcp (same origin, so WhoIs-style identity applies) ----
+  async function mcp(method, params) {
+    const res = await fetch('/mcp', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Accept': 'application/json, text/event-stream' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: rpcID++, method, params: params || {} }) });
+    if (!res.ok) throw new Error('HTTP ' + res.status + ': ' + (await res.text()).slice(0, 200));
+    const ct = res.headers.get('content-type') || '';
+    let msg;
+    if (ct.startsWith('text/event-stream')) {
+      const txt = await res.text();
+      for (const block of txt.split('\n\n')) {
+        const data = block.split('\n').filter(l => l.startsWith('data:')).map(l => l.slice(5).trim()).join('\n');
+        if (!data) continue;
+        const m = JSON.parse(data);
+        if (m.method === 'notifications/progress') { log('progress: ' + (m.params && m.params.message)); continue; }
+        if (m.id !== undefined) msg = m;
+      }
+    } else {
+      msg = await res.json();
+    }
+    if (!msg) throw new Error('no response in stream');
+    if (msg.error) throw new Error(msg.error.message || JSON.stringify(msg.error));
+    return msg.result;
+  }
+
+  // ---- the host side of the MCP Apps protocol ----
+  const frame = $('view');
+  let session = null; // {args, result, initialized}
+  const send = m => frame.contentWindow && frame.contentWindow.postMessage(m, '*');
+  const reply = (id, result) => send({ jsonrpc: '2.0', id, result });
+  const fail = (id, message) => send({ jsonrpc: '2.0', id, error: { code: -32000, message } });
+  const hostContext = () => ({ theme, displayMode: 'inline', availableDisplayModes: ['inline'], containerDimensions: { maxHeight: 900 },
+    styles: { variables: { '--font-sans': 'system-ui, sans-serif' } } });
+
+  window.addEventListener('message', async e => {
+    if (e.source !== frame.contentWindow) return;
+    const m = e.data;
+    if (!m || m.jsonrpc !== '2.0') return;
+    if (m.method === undefined) return; // a response to something we sent
+    const p = m.params || {};
+    switch (m.method) {
+      case 'ui/initialize':
+        log('view: ui/initialize (' + JSON.stringify(p.clientInfo) + ', ' + p.protocolVersion + ')', 'ok');
+        reply(m.id, { protocolVersion: '2026-01-26', hostInfo: { name: 'jitd-preview-host', version: '1' },
+          hostCapabilities: { serverTools: {}, openLinks: {}, logging: {} }, hostContext: hostContext() });
+        break;
+      case 'ui/notifications/initialized':
+        log('view: initialized; sending tool-input and tool-result', 'ok');
+        if (session) {
+          send({ jsonrpc: '2.0', method: 'ui/notifications/tool-input', params: { arguments: session.args } });
+          send({ jsonrpc: '2.0', method: 'ui/notifications/tool-result', params: session.result });
+        }
+        break;
+      case 'ui/notifications/size-changed':
+        if (p.height) frame.style.height = Math.min(900, Math.ceil(p.height) + 2) + 'px';
+        break;
+      case 'tools/call':
+        log('view → tools/call ' + p.name + ' ' + JSON.stringify(p.arguments || {}));
+        try { reply(m.id, await mcp('tools/call', { name: p.name, arguments: p.arguments || {} })); }
+        catch (err) { log('tools/call failed: ' + err.message, 'bad'); fail(m.id, err.message); }
+        break;
+      case 'ui/open-link':
+        log('view → open-link ' + p.url); window.open(p.url, '_blank', 'noopener'); reply(m.id, {});
+        break;
+      case 'ui/update-model-context':
+        log('view → model context: ' + ((p.content || []).map(c => c.text).join(' ') || JSON.stringify(p)), 'ok'); reply(m.id, {});
+        break;
+      case 'ui/message':
+        log('view → message to chat: ' + JSON.stringify(p.content)); reply(m.id, {});
+        break;
+      case 'ping':
+        reply(m.id, {}); break;
+      case 'notifications/message':
+        log('view log: ' + JSON.stringify(p.data)); break;
+      default:
+        if (m.id !== undefined) { log('view → ' + m.method + ' (not supported here)', 'bad'); send({ jsonrpc: '2.0', id: m.id, error: { code: -32601, message: 'method not found' } }); }
+        else log('view → ' + m.method);
+    }
+  });
+
+  async function render(toolName, args) {
+    $('prompt').textContent = 'Call ' + toolName + ' ' + JSON.stringify(args);
+    $('toolline').textContent = 'Calling ' + toolName + '…';
+    const tool = tools.find(t => t.name === toolName);
+    const uri = tool && tool._meta && ((tool._meta.ui && tool._meta.ui.resourceUri) || tool._meta['ui/resourceUri']);
+    if (!uri) { log('tool has no _meta.ui.resourceUri: nothing to render', 'bad'); return; }
+    let result;
+    try { result = await mcp('tools/call', { name: toolName, arguments: args }); }
+    catch (err) { $('toolline').textContent = 'Tool failed: ' + err.message; log(err.message, 'bad'); return; }
+    $('text').textContent = (result.content || []).filter(c => c.type === 'text').map(c => c.text).join('\n');
+    $('toolline').textContent = 'Called ' + toolName + (result.isError ? ' (error)' : '');
+    log('resources/read ' + uri);
+    const rr = await mcp('resources/read', { uri });
+    const c = rr.contents && rr.contents[0];
+    if (!c || c.mimeType !== 'text/html;profile=mcp-app') { log('unexpected resource: ' + JSON.stringify(c && c.mimeType), 'bad'); return; }
+    log('resource _meta: ' + JSON.stringify(c._meta || null));
+    session = { args, result, initialized: false };
+    frame.style.height = '120px';
+    frame.srcdoc = c.text; // a fresh document; it will send ui/initialize
+  }
+
+  let tools = [];
+  const examples = { list_requestable: {}, request_access: { workflow_id: '', reason: 'check a slow query', duration: '30m' },
+    get_access_request: { request_id: '' }, wait_for_access: { request_id: '', timeout_seconds: 20 }, cancel_access_request: { request_id: '' } };
+  (async () => {
+    try {
+      const me = await fetch('/v1/me').then(r => r.json());
+      $('who').textContent = 'as ' + me.login + ' on ' + me.device_name + ' (change at /as/<name>)';
+      const r = await mcp('tools/list'); tools = r.tools || [];
+      for (const t of tools) { const o = document.createElement('option'); o.value = t.name; o.textContent = t.name + (t._meta && t._meta.ui ? '  ·  has a view' : ''); $('tool').append(o); }
+      const first = tools[0] && tools[0].name;
+      const req = await mcp('tools/call', { name: 'list_requestable', arguments: {} });
+      const flows = (req.structuredContent && req.structuredContent.requestable) || [];
+      if (flows[0]) { examples.request_access.workflow_id = flows[0].workflow_id; if (flows[0].active_request_id) for (const k of ['get_access_request', 'wait_for_access', 'cancel_access_request']) examples[k].request_id = flows[0].active_request_id; }
+      $('tool').value = 'list_requestable';
+      $('args').value = JSON.stringify(examples.list_requestable, null, 1);
+      $('tool').addEventListener('change', () => { $('args').value = JSON.stringify(examples[$('tool').value] || {}, null, 1); });
+      log('connected: ' + tools.length + ' tools', 'ok');
+    } catch (err) { log('connecting to /mcp: ' + err.message, 'bad'); }
+  })();
+  $('call').addEventListener('click', () => { let a; try { a = JSON.parse($('args').value || '{}'); } catch (e) { log('arguments are not JSON', 'bad'); return; } render($('tool').value, a); });
+  $('theme').addEventListener('click', () => { theme = theme === 'dark' ? 'light' : 'dark'; document.documentElement.style.colorScheme = theme; send({ jsonrpc: '2.0', method: 'ui/notifications/host-context-changed', params: { theme } }); log('theme → ' + theme); });
+})();
+</script>
+</body>
+</html>

@@ -27,6 +27,7 @@ type Server struct {
 	TS       tsapi.Client   // for the attribute passthrough endpoint
 	Setup    *setup.Checker // the setup check behind /admin/setup; nil hides it
 	Slack    *slackbot.Bot  // the Slack integration behind /admin/slack; nil hides it
+	MCP      http.Handler   // the MCP server at /mcp (jitmcp); nil leaves it out
 	JITTag   string         // tag used in the policy snippet, e.g. "tag:jit"
 	BaseURL  string         // e.g. "http://jit"; used for approval links in responses
 	// Hosts are the names and addresses jitd answers to (Host header,
@@ -42,6 +43,12 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, "ok\n") })
+
+	// The MCP server identifies its callers itself; sameSite and knownHost
+	// still apply, so a page in a browser can't drive it.
+	if s.MCP != nil {
+		mux.Handle("POST /mcp", s.MCP)
+	}
 
 	mux.HandleFunc("GET /v1/me", s.withID(func(w http.ResponseWriter, r *http.Request, id jit.Identity) {
 		writeJSON(w, http.StatusOK, map[string]any{

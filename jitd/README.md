@@ -480,6 +480,23 @@ handy in a container. `TS_AUTHKEY` is only needed on the first start. An API
 access token (`TS_API_KEY=tskey-api-...`) works instead of an OAuth client,
 but it expires within 90 days.
 
+## MCP
+
+jitd is an MCP server at `http://jit/mcp` (Streamable HTTP). Any MCP client
+on the tailnet can use it, with no login: jitd knows who is calling from the
+Tailscale connection, as for every other request, and the tools act as that
+person on that device. The tools are `list_requestable`, `request_access`,
+`wait_for_access`, `get_access_request` and `cancel_access_request`; there is
+no approve tool, on purpose. The Claude Code plugin is just this endpoint
+plus a skill.
+
+Hosts that render [MCP Apps](https://modelcontextprotocol.io/extensions/apps/overview)
+(VS Code, Goose, Claude Desktop) get a view with the tools: a card that shows
+the request and follows the approval, and a form to pick a flow, a duration
+and a reason. Hosts that don't get the same information as text. Claude
+Desktop only runs local servers; `pamagent bridge` (see
+[pamagent](../pamagent/README.md)) forwards stdio to `/mcp`.
+
 ## API
 
 JSON over HTTP on the tailnet. jitd knows who is calling from Tailscale, so
@@ -523,13 +540,12 @@ To try the MCP tools against the preview, without a jitd on your tailnet:
 
 ```sh
 go run ./jitd/preview -demo -default maya &
-go build -o bin/pamagent ./pamagent
-claude mcp add --transport stdio pamagent-preview -- "$PWD/bin/pamagent" -jit-url http://127.0.0.1:8099
+claude mcp add --transport http jitd-preview http://127.0.0.1:8099/mcp
 ```
 
 Claude's requests then count as Maya's, and you approve them in the browser
-at http://127.0.0.1:8099/as/sam. `list_services` still asks the local
-tailscaled, so it shows your real tailnet (or an error without one).
+at http://127.0.0.1:8099/as/sam. To see the MCP Apps view, point an
+MCP Apps host (for example `ext-apps/examples/basic-host`) at the same URL.
 
 Code layout:
 
@@ -537,6 +553,7 @@ Code layout:
 jitd/main.go             flags, the tsnet node, startup
 jitd/internal/jit        the model and the rules: flows, requests, approvals, policy check and snippet, SQLite store
 jitd/internal/jithttp    HTTP API, web UI (templates/, static/), OpenAPI spec
+jitd/internal/jitmcp     the MCP server at /mcp: the request tools and the MCP Apps view (app.html)
 jitd/internal/tsapi      Tailscale API client: posture attributes, policy file, device list
 jitd/internal/setup      the credential check behind /admin/setup
 jitd/internal/slack      Slack Web API and Socket Mode client, Block Kit helpers, slack.Fake
