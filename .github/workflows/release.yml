@@ -1,0 +1,82 @@
+name: Release
+
+# Tag a commit to cut a release:
+#   git tag v0.6.0 && git push origin v0.6.0
+# A tag with a suffix (v0.6.0-rc1) is published as a prerelease. Running this
+# by hand from the Actions tab builds the same binaries and leaves them as a
+# workflow artifact, so the build can be checked without cutting a tag.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the release and upload the binaries to it
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      # A release that does not pass its own tests is worse than no release.
+      - name: Test
+        run: go test ./...
+
+      - name: Build
+        id: build
+        env:
+          # jitd's SQLite driver (modernc.org/sqlite) is pure Go, so both
+          # binaries cross-compile to every target from this one runner.
+          CGO_ENABLED: "0"
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            version="${GITHUB_REF_NAME#v}"
+          else
+            version="0.0.0-dev.$(git rev-parse --short HEAD)"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+          mkdir -p dist
+          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do
+            GOOS="${target%/*}" GOARCH="${target#*/}"
+            export GOOS GOARCH
+            go build -trimpath -ldflags "-s -w" \
+              -o "dist/jitd-$GOOS-$GOARCH" ./jitd
+            # pamagent reports its version over MCP, so stamp it from the tag.
+            go build -trimpath -ldflags "-s -w -X main.version=$version" \
+              -o "dist/pamagent-$GOOS-$GOARCH" ./pamagent
+            echo "built $GOOS-$GOARCH"
+          done
+
+          # Not "sha256sum *": the redirect creates SHA256SUMS before the
+          # glob expands, which would hash the empty file into itself.
+          (cd dist && sha256sum jitd-* pamagent-* > SHA256SUMS)
+          ls -l dist
+
+      - name: Upload the build (manual runs)
+        if: github.ref_type != 'tag'
+        uses: actions/upload-artifact@v4
+        with:
+          name: binaries-${{ steps.build.outputs.version }}
+          path: dist/
+
+      - name: Publish the release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          flags=(--title "$GITHUB_REF_NAME" --generate-notes)
+          case "$GITHUB_REF_NAME" in *-*) flags+=(--prerelease) ;; esac
+          gh release create "$GITHUB_REF_NAME" dist/* "${flags[@]}"

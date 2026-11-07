@@ -3,6 +3,7 @@
 /jitd/jitd
 /jitd/preview/preview
 /bin/
+/dist/
 
 # jitd runtime state: never commit
 tsnet-state/
