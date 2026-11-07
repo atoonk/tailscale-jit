@@ -1,6 +1,7 @@
 {{define "content"}}
 <h1>Help</h1>
 <p class="sub">Just-in-time access to Tailscale Services: ask for what you need, a person approves, the access turns itself off.</p>
+{{with .Me}}<p class="sub">You are <b>{{if .Tagged}}{{join .Tags}}{{else}}{{.Login}}{{end}}</b> on <b>{{.DeviceName}}</b>. There is no login here: jitd knows this because your request arrived over Tailscale from your device, and that is what decides what you see and what you can request.{{if not $.Admin}} The <i>Manage</i> pages are for jitd's admins, usually a group in the tailnet policy such as <code>group:jit-admins</code>; ask an admin to add you if you need them.{{end}}</p>{{end}}
 
 <div class="grid2 wide-left">
 <div>

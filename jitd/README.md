@@ -106,6 +106,13 @@ go build -o bin/jitd ./jitd
 Or run `go install github.com/atoonk/tailscale-jit/jitd@latest`, which puts
 `jitd` in `~/go/bin`.
 
+Or skip the build: every tagged release on
+[GitHub](https://github.com/atoonk/tailscale-jit/releases) has `jitd` and
+`pamagent` for Linux and macOS, amd64 and arm64, with a `SHA256SUMS` file.
+Compiling jitd needs roughly 2 GB of free memory, more than the smallest
+cloud VMs have; on one of those, download a release or build on your laptop
+and copy the binary over.
+
 ### 4. Run it
 
 The quickest way to try it is from your own shell. Put the OAuth client in
@@ -207,6 +214,14 @@ If you already started jitd by hand, skip the key: move its `tsnet-state`
 directory and its data (`jit.db`, or an older `jit-data.json`) into
 `/var/lib/jitd` instead, owned by `jitd`.
 
+**Where to run it.** jitd is one small process with one SQLite file. Run
+it on any always-on machine in the tailnet; it doesn't need to be where the
+services are, and it doesn't need to be reachable from outside the tailnet.
+One instance is enough: while it is down nobody can request or approve, but
+access already granted keeps working and still ends on time, because the
+expiry lives in the attribute Tailscale holds. Don't run two instances
+against the same database file.
+
 ### 5. Check the setup
 
 As an admin, open **http://jit/admin/setup**. It tests the credential the
@@ -241,6 +256,13 @@ The fields:
 - **How many approvals**, whether people may **approve their own** requests,
   the **default and maximum duration**, and how long a request may wait for
   a decision.
+
+Make a flow per *kind* of access, not per service. A flow is one posture
+attribute and one grant, and a grant can list as many destinations as you
+like, so "read-only databases", "read-write databases" and "SSH to the ops
+hosts" are three flows, however many databases and hosts there are. Fewer
+flows means fewer attributes to add to the policy, and gives people and
+agents a short list of clearly different things to choose between.
 
 ### 7. Add the flow to the policy
 
@@ -279,6 +301,14 @@ The PAM block is the part you add yourself:
 
 For a read-write flow, use `"permissions": {"database": {}}` instead. Both
 were tested live against MySQL: the read-only grant refused `UPDATE`.
+
+A posture can also be written as an object, `{"assertions": [...],
+"onFailure": {...}}`, where `onFailure` badges or warns devices that fail
+it; the admin console's editor may write your postures that way. jitd reads
+both forms and its snippet uses the list. Don't add `onFailure` to a JIT
+posture: every device without a current approval fails it by design, and
+Tailscale warns every device that a grant requiring the posture targets, so
+every member would carry a permanent warning.
 
 Two things that quietly undo the gate:
 
@@ -463,7 +493,7 @@ expired attribute about a minute after the expiry time (we measured about
 
 | Flag | Default | |
 |---|---|---|
-| `-admins` | none | who may manage flows and see every request: logins, `group:`, `tag:` (not `autogroup:admin`; use a group such as `group:jit-admins`) |
+| `-admins` | none | who may manage flows and see every request: logins, `group:`, `tag:` (not `autogroup:admin`; use a group such as `group:jit-admins`). With a group, adding an admin is a policy edit that takes effect within a minute, no restart |
 | `-state-dir` | `tsnet-state` | the node's identity; keep it |
 | `-data` | `jit.db` | the SQLite database with the approval flows and access requests. Name an older jitd's `.json` file and jitd uses the `.db` of the same name, filled from the `.json` the first time |
 | `-env-file` | `~/.config/jitd/env` (Linux), `~/Library/Application Support/jitd/env` (macOS) | Tailscale API credentials: `TS_OAUTH_CLIENT_ID` and `TS_OAUTH_CLIENT_SECRET`, or `TS_API_KEY`. Optionally `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN` and `SLACK_ALLOWED_DOMAINS` (see Slack) |

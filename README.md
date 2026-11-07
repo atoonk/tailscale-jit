@@ -157,6 +157,10 @@ them, get the same as text.
   writes.
 - **Access is per device.** The attribute goes on the device that asked, so
   everyone and everything on that device has the access while it lasts.
+- **jitd is only reachable from its tailnet.** `http://jit` resolves on
+  devices logged in to the tailnet that runs it and nowhere else, so from
+  another network, or another tailnet, it simply looks down. If you have
+  more than one tailnet, check which one the device is on.
 - **Agents ask; people approve.** The plugin has no approve button.
   However, the agent runs as you. On a flow that lets people approve their
   own requests, only its instructions stop it from approving with `curl`.
@@ -177,6 +181,13 @@ provide `pamagent wait` and the stdio bridge. After changing
 `pamagent/`, bump the version in both
 `plugins/tailscale-pam/.claude-plugin/plugin.json` and `pamagent/main.go`,
 then run `scripts/build.sh` to rebuild them.
+
+Compiling needs roughly 2 GB of free memory. To publish binaries, push a
+tag such as `v0.6.0`: the Release workflow runs the tests, builds `jitd`
+and `pamagent` for Linux and macOS (amd64 and arm64) and attaches them,
+with checksums, to a GitHub release. A tag with a suffix (`v0.7.0-rc1`)
+becomes a prerelease; running the workflow by hand from the Actions tab
+builds the same binaries as a workflow artifact without releasing.
 
 ## License
 
