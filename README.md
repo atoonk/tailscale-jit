@@ -41,7 +41,7 @@ There are two parts:
 | | What it is | Who sets it up |
 |---|---|---|
 | **[jitd](jitd/README.md)** | The approval desk: approval flows, a web page to ask and approve, and an API. It runs as its own machine on your tailnet, at `http://jit`. | A tailnet admin, once |
-| **[The tailscale-pam plugin](plugins/tailscale-pam)** | A Claude Code plugin. Its MCP server, [pamagent](pamagent/README.md), lets Claude see what it can reach, see what it could ask for, ask, and wait for the answer. | Everyone who uses Claude Code |
+| **[The tailscale-pam plugin](plugins/tailscale-pam)** | A Claude Code plugin. It points Claude at jitd's MCP server (`http://jit/mcp`): Claude sees what it could ask for, asks, and waits for the answer. Nothing runs on your machine; [pamagent](pamagent/README.md) is only a small helper for other hosts. | Everyone who uses Claude Code |
 
 People can use jitd from the browser without the plugin.
 
@@ -93,8 +93,10 @@ claude plugin install tailscale-pam@tailscale-jit
 ```
 
 Then run `/mcp`. You should see `tailscale-pam` connected, with five tools:
-`list_services`, `list_requestable`, `request_access`, `get_access_request`
-and `cancel_access_request`.
+`list_requestable`, `request_access`, `wait_for_access`, `get_access_request`
+and `cancel_access_request`. The server is jitd itself, over the tailnet: it
+knows who you are from your Tailscale connection, so there is nothing to log
+into.
 
 Try asking: *"What's in the orders database? I don't think I have access
 yet."*
@@ -120,7 +122,33 @@ A few tips:
   don't show up twice: `claude mcp remove pamagent` (add `-s user` if you
   added it with that scope).
 - **Curious what this machine can reach?** Run `tailscale service list`
-  (add `--json`). It shows the same services Claude sees.
+  (add `--json`). Claude runs the same command.
+- **Not Claude Code?** Any MCP client on the tailnet can use
+  `http://jit/mcp` (Streamable HTTP, no login). Hosts that render
+  [MCP Apps](https://modelcontextprotocol.io/extensions/apps/overview), such
+  as VS Code and Goose, show each request as a card that follows the
+  approval, with a form to pick a flow and ask. Claude Desktop only runs
+  local servers: give it `pamagent bridge` as the command (see
+  [pamagent](pamagent/README.md)).
+
+### Other MCP clients
+
+The plugin is a pointer to jitd's MCP server, `http://jit/mcp`, plus a
+skill. Any MCP client on the tailnet can use the server directly; there is
+no login, jitd knows who you are from the connection. The tools are
+`list_requestable`, `request_access`, `wait_for_access`,
+`get_access_request` and `cancel_access_request`; there is no approve tool.
+
+- **Claude Code without the plugin:** `claude mcp add --transport http jit http://jit/mcp`.
+- **VS Code** (`.vscode/mcp.json`): `{"servers": {"jit": {"type": "http", "url": "http://jit/mcp"}}}`.
+- **Claude Desktop** only runs local servers. Point it at the `pamagent`
+  binary from the plugin with the arguments `bridge -jit-url http://jit`;
+  it forwards stdin/stdout to `/mcp`. See [pamagent](pamagent/README.md).
+
+Hosts that render [MCP Apps](https://modelcontextprotocol.io/extensions/apps/overview)
+(VS Code, Goose, Claude Desktop) show each request as a card that follows
+the approval, and a form to pick a flow and ask. Others, Claude Code among
+them, get the same as text.
 
 ## Good to know
 
@@ -144,7 +172,8 @@ go build -o bin/jitd ./jitd
 go run ./jitd/preview       # the jitd UI with made-up people, no tailnet needed
 ```
 
-The plugin runs prebuilt binaries, not the source. After changing
+The plugin's MCP server is jitd; its prebuilt `pamagent` binaries only
+provide `pamagent wait` and the stdio bridge. After changing
 `pamagent/`, bump the version in both
 `plugins/tailscale-pam/.claude-plugin/plugin.json` and `pamagent/main.go`,
 then run `scripts/build.sh` to rebuild them.

@@ -15,7 +15,7 @@ Requirements and tips are in the [main README](../../README.md#2-install-the-plu
 | File | |
 |---|---|
 | `.claude-plugin/plugin.json` | manifest and version |
-| `.mcp.json` | starts the MCP server: `bin/pamagent -jit-url http://jit` (change the URL here) |
-| `bin/pamagent` | picks the prebuilt binary for this OS and CPU |
+| `.mcp.json` | points Claude at jitd's MCP server, `<jitd URL>/mcp` (the URL is the plugin's **jitd URL** setting, default `http://jit`) |
+| `bin/pamagent` | picks the prebuilt binary for this OS and CPU; `pamagent wait` waits for a decision from a shell |
 | `libexec/<os>-<arch>/pamagent` | prebuilt [pamagent](../../pamagent/README.md) binaries, built by `scripts/build.sh` |
 | `skills/jit-access/SKILL.md` | tells Claude how to use the tools: request the narrowest access, show the approval link, wait, connect without credentials |
