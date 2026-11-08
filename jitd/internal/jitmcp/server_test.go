@@ -334,7 +334,7 @@ func TestViewerText(t *testing.T) {
 
 	res, _ := call(t, sam, "get_access_request", map[string]any{"request_id": id})
 	txt := textOf(res)
-	if !strings.Contains(txt, "by maya@example.com on maya-laptop") || !strings.Contains(txt, "This is not your request") || strings.Contains(txt, "Tell the user you submitted") || strings.Contains(txt, "wait_for_access") {
+	if !strings.Contains(txt, "by maya@example.com on maya-laptop") || !strings.Contains(txt, "This is not your request") || strings.Contains(txt, "Your reply must contain this approval link") || strings.Contains(txt, "wait_for_access") {
 		t.Errorf("sam reading maya's pending request:\n%s", txt)
 	}
 	if _, err := e.svc.Approve(context.Background(), people["sam"], id, ""); err != nil {

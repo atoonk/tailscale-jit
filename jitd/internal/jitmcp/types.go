@@ -109,7 +109,7 @@ type enforcement struct {
 
 type accessRequest struct {
 	ID             string     `json:"id"`
-	URL            string     `json:"url" jsonschema:"approval page; always show it to the user"`
+	URL            string     `json:"url" jsonschema:"approval page; the user cannot see tool results, so put it in your reply"`
 	WorkflowID     string     `json:"workflow_id"`
 	WorkflowName   string     `json:"workflow_name"`
 	Attribute      string     `json:"attribute"`
@@ -339,7 +339,7 @@ func summarizeRequest(r accessRequest, viewer identity) string {
 			fmt.Fprintf(&b, "This is not your request: %s asked for it, for their own device. You can read it but not decide it; decisions are made in the browser:\n%s\n", r.Requester.who(), r.URL)
 			break
 		}
-		fmt.Fprintf(&b, "Tell the user you submitted an access request and show this approval link on its own line:\n%s\n", r.URL)
+		fmt.Fprintf(&b, "The user cannot see this result. Your reply must contain this approval link on its own line, or they have nothing to click:\n%s\n", r.URL)
 		if r.StillWaiting {
 			b.WriteString("Offer to keep waiting (call wait_for_access again) rather than polling yourself. ")
 		} else {

@@ -194,7 +194,7 @@ func (s *Server) addTools(srv *mcp.Server, id jit.Identity) {
 		Title: "Request just-in-time access",
 		Description: "Submit a just-in-time access request through a jitd approval flow (workflow_id from list_requestable) for the device you are on. " +
 			"Request the flow that fits the current step of the task, not the broadest one, for the time the work needs. " +
-			"A human must approve it. The result contains the approval URL: always show it to the user on its own line. " +
+			"A human must approve it. The result contains the approval URL; the user cannot see tool results, so write it in your reply on its own line. " +
 			"Then call wait_for_access before using the service.",
 		Annotations: &mcp.ToolAnnotations{DestructiveHint: new(false), OpenWorldHint: new(false)},
 		Meta:        appMeta(),
@@ -427,6 +427,7 @@ Choosing what to request: ask for the access the task needs, not the most you co
 Then call request_access.
 
 Access requests:
+- Tool results are not shown to the user. Anything they need from one, above all the approval link, goes in your own message.
 - Whenever you submit an access request on the user's behalf, tell the user right away, in plain words, ` +
 		`that you submitted an access request and are waiting for approval. Then print the approval link ` +
 		`from the result's "url" field on its own line so they can click it, for example:
