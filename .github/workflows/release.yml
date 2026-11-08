@@ -1,8 +1,8 @@
 name: Release
 
 # Tag a commit to cut a release:
-#   git tag v0.6.0 && git push origin v0.6.0
-# A tag with a suffix (v0.6.0-rc1) is published as a prerelease. Running this
+#   git tag v0.7.0 && git push origin v0.7.0
+# A tag with a suffix (v0.7.0-rc1) is published as a prerelease. Running this
 # by hand from the Actions tab builds the same binaries and leaves them as a
 # workflow artifact, so the build can be checked without cutting a tag.
 on:
