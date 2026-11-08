@@ -1,5 +1,3 @@
-# Built binaries (the plugin's prebuilt ones under plugins/*/libexec are committed)
-/pamagent/pamagent
 /jitd/jitd
 /jitd/preview/preview
 /bin/

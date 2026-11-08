@@ -1,14 +1,20 @@
 {
   "name": "tailscale-pam",
-  "version": "0.6.1",
-  "description": "Connect to infrastructure over Tailscale PAM (SSH, MySQL, PostgreSQL, MongoDB, MS SQL, Elasticsearch, Kubernetes, RDP, and more): request just-in-time access through jitd and connect once it is approved. Credentials are injected by Tailscale PAM. The MCP server is jitd itself, on your tailnet: nothing runs locally.",
+  "version": "0.7.0",
+  "description": "Retired: jitd's MCP server (http://jit/mcp) needs no plugin. Run `claude mcp add --transport http --scope user jit http://jit/mcp` instead. This last release is only a pointer to that server, kept so existing installs keep working.",
   "author": {
     "name": "Andree Toonk"
   },
   "homepage": "https://github.com/atoonk/tailscale-jit",
   "repository": "https://github.com/atoonk/tailscale-jit",
   "license": "Apache-2.0",
-  "keywords": ["tailscale", "pam", "jit", "access-requests", "mcp"],
+  "keywords": [
+    "tailscale",
+    "pam",
+    "jit",
+    "access-requests",
+    "mcp"
+  ],
   "userConfig": {
     "jit_url": {
       "type": "string",

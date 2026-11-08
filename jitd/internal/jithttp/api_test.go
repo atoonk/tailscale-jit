@@ -437,29 +437,18 @@ func TestUnknownHostRefused(t *testing.T) {
 	}
 }
 
-func TestPluginURL(t *testing.T) {
-	for base, want := range map[string]string{
-		"http://jit.example.ts.net/":    "",
-		"http://jit":                    "",
-		"http://jit-1.example.ts.net":   "http://jit-1",
-		"http://access.example.ts.net/": "http://access",
-		"https://jit.example.ts.net":    "https://jit.example.ts.net",
-		"http://100.64.0.1":             "http://100.64.0.1",
-	} {
-		if got := (&Server{BaseURL: base}).pluginURL(); got != want {
-			t.Errorf("pluginURL(%q) = %q, want %q", base, got, want)
-		}
+func TestHelpTellsMCPURL(t *testing.T) {
+	srv, _, _ := newTestServerWith(t, func(s *Server) { s.BaseURL = "http://jit-1.example.ts.net" })
+	_, body := getPage(t, srv, "alice", "/help")
+	if !strings.Contains(body, "claude mcp add --transport http --scope user jit http://jit-1.example.ts.net/mcp") {
+		t.Error("help does not give the claude mcp add command with this server's URL")
 	}
-}
-
-func TestHelpTellsPluginURL(t *testing.T) {
-	srv, _ := newTestServer(t)
-	if _, body := getPage(t, srv, "alice", "/help"); strings.Contains(body, "/plugin configure") {
-		t.Error("help mentions configuring the plugin although jitd is at http://jit")
+	if !strings.Contains(body, `"http://jit-1.example.ts.net/mcp", "--transport", "http-only", "--allow-http"`) {
+		t.Error("help does not give the mcp-remote arguments for Claude Desktop with this server's URL")
 	}
-	srv, _, _ = newTestServerWith(t, func(s *Server) { s.BaseURL = "http://jit-1.example.ts.net" })
-	if _, body := getPage(t, srv, "alice", "/help"); !strings.Contains(body, "<code>http://jit-1</code>") {
-		t.Error("help does not tell people to set the plugin's jitd URL to http://jit-1")
+	srv, _, _ = newTestServerWith(t, func(s *Server) { s.BaseURL = "https://jit.example.ts.net" })
+	if _, body := getPage(t, srv, "alice", "/help"); strings.Contains(body, "--allow-http") {
+		t.Error("help passes --allow-http to mcp-remote although jitd serves HTTPS")
 	}
 }
 

@@ -1,6 +1,6 @@
 {
   "name": "tailscale-jit",
-  "description": "Experimental: just-in-time access to Tailscale PAM services from Claude Code",
+  "description": "Retired: connect Claude Code to jitd with `claude mcp add --transport http --scope user jit http://jit/mcp` instead of this plugin",
   "owner": {
     "name": "Andree Toonk"
   },
@@ -9,7 +9,7 @@
       "name": "tailscale-pam",
       "source": "./plugins/tailscale-pam",
       "homepage": "https://github.com/atoonk/tailscale-jit",
-      "description": "Connect to infrastructure over Tailscale PAM (SSH, databases, Kubernetes, RDP, ...) and request just-in-time access through jitd"
+      "description": "Retired pointer to jitd's MCP server (http://jit/mcp); use `claude mcp add --transport http --scope user jit http://jit/mcp` instead"
     }
   ]
 }

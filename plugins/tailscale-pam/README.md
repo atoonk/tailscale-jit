@@ -1,21 +1,22 @@
-# tailscale-pam: the Claude Code plugin
+# tailscale-pam: the retired Claude Code plugin
 
-This plugin lets Claude Code connect to infrastructure through Tailscale PAM,
-and request just-in-time access through [jitd](../../jitd/README.md) when it
-doesn't have access yet.
+jitd is an MCP server at `http://jit/mcp`, and it tells Claude how to use its
+tools itself, so Claude Code needs no plugin to use it. Connect with one
+command, once per machine:
 
+```sh
+claude mcp add --transport http --scope user jit http://jit/mcp
 ```
-/plugin marketplace add atoonk/tailscale-jit
-/plugin install tailscale-pam@tailscale-jit
-```
 
-Requirements and tips are in the [main README](../../README.md#2-install-the-plugin-everyone-using-claude-code). It needs a
-[jitd](../../jitd/README.md) on your tailnet to request access through.
+See the [main README](../../README.md#2-connect-claude-code-everyone-once-per-machine).
 
-| File | |
-|---|---|
-| `.claude-plugin/plugin.json` | manifest and version |
-| `.mcp.json` | points Claude at jitd's MCP server, `<jitd URL>/mcp` (the URL is the plugin's **jitd URL** setting, default `http://jit`) |
-| `bin/pamagent` | picks the prebuilt binary for this OS and CPU; `pamagent wait` waits for a decision from a shell |
-| `libexec/<os>-<arch>/pamagent` | prebuilt [pamagent](../../pamagent/README.md) binaries, built by `scripts/build.sh` |
-| `skills/jit-access/SKILL.md` | tells Claude how to use the tools: request the narrowest access, show the approval link, wait, connect without credentials |
+This plugin was the earlier way to do that. Version 0.7.0 is its last
+release: a pointer to the same server (`.mcp.json`, with the jitd URL as a
+setting) and a skill that tells people to switch. It is kept so existing
+installs keep working. If you have it installed, run the command above and
+then `claude plugin uninstall tailscale-pam@tailscale-jit`.
+
+Earlier versions shipped `pamagent`, a local helper with a shell `wait`
+command and a stdio bridge for Claude Desktop. Both are gone: `wait_for_access`
+waits from any MCP client, and [mcp-remote](https://github.com/geelen/mcp-remote)
+bridges Claude Desktop.

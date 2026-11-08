@@ -107,8 +107,8 @@ Or run `go install github.com/atoonk/tailscale-jit/jitd@latest`, which puts
 `jitd` in `~/go/bin`.
 
 Or skip the build: every tagged release on
-[GitHub](https://github.com/atoonk/tailscale-jit/releases) has `jitd` and
-`pamagent` for Linux and macOS, amd64 and arm64, with a `SHA256SUMS` file.
+[GitHub](https://github.com/atoonk/tailscale-jit/releases) has `jitd` for
+Linux and macOS, amd64 and arm64, with a `SHA256SUMS` file.
 Compiling jitd needs roughly 2 GB of free memory, more than the smallest
 cloud VMs have; on one of those, download a release or build on your laptop
 and copy the binary over.
@@ -162,10 +162,8 @@ Things to know:
 - **The name is taken?** If a machine called `jit` already exists, the new
   node becomes `jit-1`. Remove the old machine in the admin console and
   rename the node to `jit`, or keep the other name (or pick one with
-  `-hostname`). The Claude Code plugin looks for `http://jit`, so with
-  another name everyone using it sets the plugin's **jitd URL** once, for
-  example to `http://jit-1`, with `/plugin configure tailscale-pam@tailscale-jit`. jitd's
-  Help page tells people the exact value.
+  `-hostname`). People then connect their MCP client to that name instead
+  of `http://jit`; jitd's Help page prints the exact command.
 - **No auth key?** Then jitd logs a login URL instead. Open it and approve
   the machine, then tag it `tag:jit` in the admin console.
 
@@ -336,7 +334,8 @@ The request page should say **Active · confirmed on the device**, and the
 service shows up in `tailscale service list` within a few seconds. In 15
 minutes it disappears again.
 
-To try it with Claude Code, install the plugin (see the
+To try it with Claude Code, run
+`claude mcp add --transport http --scope user jit http://jit/mcp` (see the
 [main README](../README.md)) and ask Claude for something that needs the
 access.
 
@@ -519,17 +518,19 @@ person on that device. The tools are `list_requestable`, `request_access`,
 `wait_for_access`, `get_access_request` and `cancel_access_request`; there is
 no approve tool, on purpose. A request through a flow the tailnet policy
 does not use yet is refused with a message to pass on to the user, since
-approving it would unlock nothing. The Claude Code plugin is just this
-endpoint plus a skill.
+approving it would unlock nothing. The server's instructions tell the agent
+how to use the tools and how to connect to a service once it is granted, so
+there is nothing to install on the client side: Claude Code connects with
+`claude mcp add --transport http --scope user jit http://jit/mcp`.
 
 Hosts that render [MCP Apps](https://modelcontextprotocol.io/extensions/apps/overview)
 get a view with the tools: a card that shows the request and follows the
 approval, and a form to pick a flow, a duration and a reason. So far that is
 verified only with the preview's own test host (`go run ./jitd/preview`,
 then `/mcp-host`), not yet in VS Code, Goose or Claude Desktop. Hosts that
-don't render it get the same information as text. Claude Desktop only runs
-local servers; `pamagent bridge` (see [pamagent](../pamagent/README.md))
-forwards stdio to `/mcp`.
+don't render it get the same information as text. Claude Desktop only starts
+local servers; [mcp-remote](https://github.com/geelen/mcp-remote) bridges its
+stdio to `/mcp` (the main README has the config line).
 
 ## API
 

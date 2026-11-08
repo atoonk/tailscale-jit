@@ -361,7 +361,7 @@ func (s *Server) webRoutes(mux *http.ServeMux) {
 		s.render(w, r, "request", "Access request", nav, map[string]any{"R": req, "Can": s.Svc.Permissions(r.Context(), id, req), "SlackNote": s.slackNote(req)})
 	})
 	mux.HandleFunc("GET /help", func(w http.ResponseWriter, r *http.Request) {
-		s.render(w, r, "help", "Help", "help", map[string]any{"PluginURL": s.pluginURL(), "MCPURL": s.base() + "/mcp"})
+		s.render(w, r, "help", "Help", "help", map[string]any{"MCPURL": s.base() + "/mcp", "AllowHTTP": strings.HasPrefix(s.base(), "http://")})
 	})
 }
 

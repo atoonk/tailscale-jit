@@ -379,9 +379,10 @@ func text(t string) *mcp.CallToolResult {
 	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: t}}, Meta: appMeta()}
 }
 
-// instructions tell the agent how to use the tools and the tailnet. They
-// replace the plugin's old local MCP server, so they also say how to see
-// which services this device can reach: tailscaled knows, jitd does not.
+// instructions tell the agent how to use the tools and the tailnet. They are
+// the only guidance a client gets (there is no skill to install), so they also
+// say how to see which services this device can reach: tailscaled knows, jitd
+// does not.
 func instructions(jitURL string) string {
 	return `Use jitd whenever you need to connect to infrastructure over Tailscale: SSH hosts, databases ` +
 		`(MySQL, PostgreSQL, MongoDB, MS SQL, CockroachDB, Elasticsearch), Kubernetes, RDP, VNC, HTTP, TCP or AWS S3. ` +
@@ -432,12 +433,14 @@ Access requests:
     I've submitted an access request for "Database access (read-only)" (15m, reason: ...). It needs approval here:
     ` + jitURL + `/requests/req_...
 - Then call wait_for_access with the request_id. It returns when the request is decided and the access is in place, ` +
-		`or after 30 seconds (timeout_seconds, up to 240) with the request still pending. While the user is waiting for this ` +
+		`or after 30 seconds (timeout_seconds, up to 240) with the request still pending. If your host lets a tool call run ` +
+		`for minutes (Claude Code does), pass timeout_seconds: 120 to make fewer calls. While the user is waiting for this ` +
 		`access, call it again rather than polling get_access_request; after about ten minutes, or when the user has moved on, ` +
 		`report that it is still pending, repeat the link, and offer to keep waiting.
 - If the user no longer needs the access, or asks to end it early, call cancel_access_request: it withdraws a pending ` +
 		`request or ends approved access now. Do not end access on your own initiative while the user may still use it.
 - Repeat the link whenever you report that a request is still pending.
-- While a request is pending or was declined, do not try to reach the service another way.
+- While a request is pending, declined or expired, do not try to reach the service another way.
+- Never approve or decline a request yourself, by any means, not even on a flow that allows self-approval: people decide, you ask.
 - After approval, run the service list again to confirm the service is there (it appears within seconds) before using it.`
 }

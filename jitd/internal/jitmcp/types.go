@@ -11,8 +11,8 @@ import (
 	"github.com/atoonk/tailscale-jit/jitd/internal/jit"
 )
 
-// The output types mirror jitd's HTTP API JSON (the same shapes the plugin's
-// local MCP server returned), so an agent that learned one keeps working.
+// The output types mirror jitd's HTTP API JSON, so an agent that learned one
+// keeps working with the other.
 // Durations and times are strings, as the API sends them. Anything a person
 // wrote (notes, reasons, descriptions) is quoted and shortened by scrub
 // before it reaches the model.
