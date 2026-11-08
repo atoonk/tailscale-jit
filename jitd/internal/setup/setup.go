@@ -7,6 +7,7 @@ package setup
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -385,6 +386,11 @@ func fixFor(err error, scope, fileHint string) string {
 	}
 	if credentialRejected(err) {
 		return "The OAuth client ID or secret is wrong, or the client was revoked. " + fileHint
+	}
+	var ute *json.UnmarshalTypeError
+	var se *json.SyntaxError
+	if errors.As(err, &ute) || errors.As(err, &se) {
+		return "The credential works and the Tailscale API answered, but jitd could not read the response: it uses syntax this version of jitd does not know. Nothing is wrong with your credential or this host; please report this as a jitd bug."
 	}
 	return "Could not reach the Tailscale API, or it failed for a moment. jitd keeps the credential and retries; check this host's internet access if it persists."
 }

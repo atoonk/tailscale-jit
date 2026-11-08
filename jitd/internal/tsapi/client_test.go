@@ -116,6 +116,45 @@ func TestGetPolicy(t *testing.T) {
 	}
 }
 
+// A posture is written either as a list of assertions or as an object with
+// "assertions" and "onFailure". Both must decode, and one object form must not
+// cost us the rest of the policy.
+func TestGetPolicyPostureForms(t *testing.T) {
+	srv, _ := fakeAPI(t, 200, `{
+		"groups": {"group:sre": ["a@example.com"]},
+		"postures": {
+			"posture:jitProd": ["custom:jitProd == true"],
+			"posture:devicePostureWarning": {
+				"assertions": ["node:tsVersion > '2.0'"],
+				"onFailure": {
+					"showAlerts": ["badge-in-console", "notify-in-client"],
+					"endUserMessage": "Your device does not meet IT's security requirements."
+				}
+			},
+			"posture:empty": {"onFailure": {"showAlerts": ["warn-in-client"]}}
+		},
+		"grants": [{"src": ["autogroup:member"], "dst": ["svc:prod"], "srcPosture": ["posture:jitProd"]}]
+	}`)
+	c := &HTTP{BaseURL: srv.URL, HC: srv.Client()}
+	p, err := c.GetPolicy(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := p.Postures["posture:jitProd"]; len(got) != 1 || got[0] != "custom:jitProd == true" {
+		t.Errorf("list form = %v", got)
+	}
+	if got := p.Postures["posture:devicePostureWarning"]; len(got) != 1 || got[0] != "node:tsVersion > '2.0'" {
+		t.Errorf("object form = %v", got)
+	}
+	if got := p.Postures["posture:empty"]; len(got) != 0 {
+		t.Errorf("object form without assertions = %v", got)
+	}
+	// The rest of the policy still arrived.
+	if p.Groups["group:sre"][0] != "a@example.com" || len(p.Grants) != 1 {
+		t.Errorf("groups = %v, grants = %v", p.Groups, p.Grants)
+	}
+}
+
 func TestAPIError(t *testing.T) {
 	srv, _ := fakeAPI(t, 404, `{"message":"not found"}`)
 	c := &HTTP{BaseURL: srv.URL, HC: srv.Client()}
