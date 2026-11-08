@@ -517,15 +517,19 @@ on the tailnet can use it, with no login: jitd knows who is calling from the
 Tailscale connection, as for every other request, and the tools act as that
 person on that device. The tools are `list_requestable`, `request_access`,
 `wait_for_access`, `get_access_request` and `cancel_access_request`; there is
-no approve tool, on purpose. The Claude Code plugin is just this endpoint
-plus a skill.
+no approve tool, on purpose. A request through a flow the tailnet policy
+does not use yet is refused with a message to pass on to the user, since
+approving it would unlock nothing. The Claude Code plugin is just this
+endpoint plus a skill.
 
 Hosts that render [MCP Apps](https://modelcontextprotocol.io/extensions/apps/overview)
-(VS Code, Goose, Claude Desktop) get a view with the tools: a card that shows
-the request and follows the approval, and a form to pick a flow, a duration
-and a reason. Hosts that don't get the same information as text. Claude
-Desktop only runs local servers; `pamagent bridge` (see
-[pamagent](../pamagent/README.md)) forwards stdio to `/mcp`.
+get a view with the tools: a card that shows the request and follows the
+approval, and a form to pick a flow, a duration and a reason. So far that is
+verified only with the preview's own test host (`go run ./jitd/preview`,
+then `/mcp-host`), not yet in VS Code, Goose or Claude Desktop. Hosts that
+don't render it get the same information as text. Claude Desktop only runs
+local servers; `pamagent bridge` (see [pamagent](../pamagent/README.md))
+forwards stdio to `/mcp`.
 
 ## API
 

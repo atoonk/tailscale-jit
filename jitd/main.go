@@ -33,6 +33,10 @@ import (
 	"github.com/atoonk/tailscale-jit/jitd/internal/tsapi"
 )
 
+// version is what MCP clients see as serverInfo.version. The release
+// workflow stamps it from the tag (-X main.version=...).
+var version = "dev"
+
 func main() {
 	hostname := flag.String("hostname", "jit", "tailnet hostname for this node")
 	stateDir := flag.String("state-dir", "tsnet-state", "directory for the tsnet node state (keep it; otherwise the node re-registers)")
@@ -211,7 +215,7 @@ func main() {
 	svc.Notify = bot
 	bot.Start(ctx)
 	h.Slack = bot
-	h.MCP = (&jitmcp.Server{Svc: svc, Resolver: h.Resolver, BaseURL: h.BaseURL, Log: log}).Handler()
+	h.MCP = (&jitmcp.Server{Svc: svc, Resolver: h.Resolver, BaseURL: h.BaseURL, Version: version, Log: log}).Handler()
 	var ln net.Listener
 	if *https {
 		ln, err = srv.ListenTLS("tcp", ":443")

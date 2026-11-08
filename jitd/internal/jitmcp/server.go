@@ -14,6 +14,7 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -38,6 +39,16 @@ type Server struct {
 
 type idKey struct{}
 
+// httpDoneKey carries the HTTP request's Done channel to the tools. The MCP
+// SDK gives tool handlers a context that does not end when the client goes
+// away (it only does so for clients on protocol versions from 2026-07-28,
+// which none are yet), so wait_for_access watches this channel as well.
+type httpDoneKey struct{}
+
+// maxBody is the largest message /mcp accepts. Reasons and notes are capped
+// at 2,000 characters, so a real message is a few KB.
+const maxBody = 1 << 20
+
 // Handler returns the HTTP handler for /mcp. Every request is identified
 // first; one that can't be is refused with jitd's usual JSON error, before
 // the MCP layer sees it. Sessions are stateless: each request stands alone,
@@ -49,34 +60,48 @@ func (s *Server) Handler() http.Handler {
 			return nil
 		}
 		return s.newServer(id)
-	}, &mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true, Logger: s.Log})
+	}, &mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true, PropagateRequestCancellation: true, Logger: s.Log})
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		id, err := s.Resolver.Resolve(r.Context(), r)
 		if err != nil {
-			e := jit.AsError(err)
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(e.Status)
-			json.NewEncoder(w).Encode(map[string]any{"error": map[string]any{"code": e.Code, "message": e.Message}})
+			writeError(w, jit.AsError(err))
 			return
 		}
-		s.logMessage(r, id)
-		h.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), idKey{}, id)))
+		if s.logMessage(w, r, id) {
+			return
+		}
+		ctx := context.WithValue(r.Context(), idKey{}, id)
+		ctx = context.WithValue(ctx, httpDoneKey{}, r.Context().Done())
+		h.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+// writeError answers with jitd's JSON error shape, as the HTTP API does.
+func writeError(w http.ResponseWriter, e *jit.Error) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(e.Status)
+	json.NewEncoder(w).Encode(map[string]any{"error": map[string]any{"code": e.Code, "message": e.Message}})
 }
 
 // logMessage records every request a client sends (not notifications or
 // responses): which method, which tool, and for initialize, who the client
-// is and whether it can render the MCP Apps view. The body is read and
-// put back.
-func (s *Server) logMessage(r *http.Request, id jit.Identity) {
+// is and whether it can render the MCP Apps view. The body is read and put
+// back; one over maxBody is refused with 413 here, and logMessage reports
+// that it already answered.
+func (s *Server) logMessage(w http.ResponseWriter, r *http.Request, id jit.Identity) (answered bool) {
 	if r.Body == nil || r.Method != http.MethodPost {
-		return
+		return false
 	}
-	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxBody+1))
 	r.Body.Close()
+	if len(body) > maxBody {
+		writeError(w, &jit.Error{Code: "too_large", Status: http.StatusRequestEntityTooLarge,
+			Message: fmt.Sprintf("the message is over %d bytes; reasons and notes are limited to 2,000 characters", maxBody)})
+		return true
+	}
 	r.Body = io.NopCloser(bytes.NewReader(body))
 	if err != nil {
-		return
+		return false
 	}
 	var m struct {
 		ID     json.RawMessage `json:"id"`
@@ -92,15 +117,16 @@ func (s *Server) logMessage(r *http.Request, id jit.Identity) {
 		} `json:"params"`
 	}
 	if json.Unmarshal(body, &m) != nil || m.Method == "" || len(m.ID) == 0 {
-		return
+		return false
 	}
 	if m.Method == "initialize" {
 		_, apps := m.Params.Capabilities.Extensions["io.modelcontextprotocol/ui"]
 		s.Log.Info("mcp: client connected", "client", m.Params.ClientInfo.Name, "client_version", m.Params.ClientInfo.Version,
 			"protocol", m.Params.ProtocolVersion, "apps", apps, "login", id.Login, "device", id.DeviceName)
-		return
+		return false
 	}
 	s.Log.Info("mcp: request", "method", m.Method, "name", cmp.Or(m.Params.Name, m.Params.URI), "login", id.Login, "device", id.DeviceName)
+	return false
 }
 
 func (s *Server) base() string { return strings.TrimRight(s.BaseURL, "/") }
@@ -173,6 +199,16 @@ func (s *Server) addTools(srv *mcp.Server, id jit.Identity) {
 		Annotations: &mcp.ToolAnnotations{DestructiveHint: new(false), OpenWorldHint: new(false)},
 		Meta:        appMeta(),
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in requestAccessInput) (*mcp.CallToolResult, accessRequest, error) {
+		// A flow the policy does not use yet grants nothing when approved.
+		// list_requestable says so; refusing here stops an approver being
+		// asked for something that does not work.
+		for _, f := range s.Svc.Requestable(ctx, id) {
+			if f.WorkflowID == in.WorkflowID && f.Policy.NoEffect() {
+				return nil, accessRequest{}, &jit.Error{Code: "policy_no_effect", Status: http.StatusConflict,
+					Message: fmt.Sprintf("not submitted: approving %q would unlock nothing, because %s. Tell the user: an admin has to add the flow's posture and grant to the tailnet policy first (the flow's page in jitd shows what is missing).",
+						f.WorkflowName, noEffectReason(f.Policy.Unreferenced))}
+			}
+		}
 		nr := jit.NewRequest{WorkflowID: in.WorkflowID, Reason: in.Reason}
 		if in.Duration != "" {
 			d, err := jit.ParseDuration(in.Duration)
@@ -186,7 +222,7 @@ func (s *Server) addTools(srv *mcp.Server, id jit.Identity) {
 			return nil, accessRequest{}, s.withURL(err)
 		}
 		s.Log.Info("mcp: access request submitted", "id", r.ID, "workflow", r.WorkflowName, "login", id.Login, "device", id.DeviceID)
-		return s.result(ctx, r, false)
+		return s.result(ctx, id, r, false)
 	})
 
 	mcp.AddTool(srv, &mcp.Tool{
@@ -200,7 +236,7 @@ func (s *Server) addTools(srv *mcp.Server, id jit.Identity) {
 		if err != nil {
 			return nil, accessRequest{}, err
 		}
-		return s.result(ctx, r, false)
+		return s.result(ctx, id, r, false)
 	})
 
 	mcp.AddTool(srv, &mcp.Tool{
@@ -211,8 +247,8 @@ func (s *Server) addTools(srv *mcp.Server, id jit.Identity) {
 			"is waiting for this access (up to about ten minutes in total); when you report instead, say it is still pending, repeat the approval link, and offer to keep waiting.",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true, IdempotentHint: true, OpenWorldHint: new(false)},
 		Meta:        appMeta(),
-	}, func(ctx context.Context, req *mcp.CallToolRequest, in waitForAccessInput) (*mcp.CallToolResult, accessRequest, error) {
-		return s.wait(ctx, req, id, in)
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, in waitForAccessInput) (*mcp.CallToolResult, accessRequest, error) {
+		return s.wait(ctx, id, in)
 	})
 
 	mcp.AddTool(srv, &mcp.Tool{
@@ -235,14 +271,14 @@ func (s *Server) addTools(srv *mcp.Server, id jit.Identity) {
 			act = s.Svc.Revoke
 		default:
 			// Already over: say so rather than fail.
-			return s.result(ctx, cur, false)
+			return s.result(ctx, id, cur, false)
 		}
 		r, err := act(ctx, id, in.RequestID, in.Note)
 		if err != nil {
 			return nil, accessRequest{}, s.withURL(err)
 		}
 		s.Log.Info("mcp: access request ended", "id", r.ID, "status", r.Status, "login", id.Login)
-		return s.result(ctx, r, false)
+		return s.result(ctx, id, r, false)
 	})
 }
 
@@ -265,16 +301,21 @@ func unconfirmed(r *jit.AccessRequest) bool {
 }
 
 // wait blocks until the request is decided, the access is seen on the
-// device, or the timeout passes. It checks every two seconds in-process.
+// device, the timeout passes, or the client goes away. It checks every two
+// seconds in-process.
 //
 // One call is short by default (30s) and the instructions tell the model to
 // call again: a long-blocking tool call is what proxies and hosts with tool
 // timeouts give up on, and the response is one JSON object, so nothing is
 // streamed while waiting. Clients that cope with long calls ask for more.
-func (s *Server) wait(ctx context.Context, _ *mcp.CallToolRequest, id jit.Identity, in waitForAccessInput) (*mcp.CallToolResult, accessRequest, error) {
+// The SDK's ctx does not end when the HTTP client disconnects (see
+// httpDoneKey), so the request's own Done channel is watched too; without
+// it an abandoned call would keep polling for its whole timeout.
+func (s *Server) wait(ctx context.Context, id jit.Identity, in waitForAccessInput) (*mcp.CallToolResult, accessRequest, error) {
 	timeout := time.Duration(cmp.Or(in.TimeoutSeconds, 30)) * time.Second
 	timeout = max(5*time.Second, min(timeout, 240*time.Second))
 	deadline := time.Now().Add(timeout)
+	httpDone, _ := ctx.Value(httpDoneKey{}).(<-chan struct{})
 	var approvedSeen time.Time
 	for {
 		r, err := s.lookup(ctx, id, in.RequestID)
@@ -291,21 +332,25 @@ func (s *Server) wait(ctx context.Context, _ *mcp.CallToolRequest, id jit.Identi
 			done = time.Since(approvedSeen) > 30*time.Second
 		}
 		if done {
-			return s.result(ctx, r, false)
+			return s.result(ctx, id, r, false)
 		}
-		if time.Now().After(deadline) {
-			return s.result(ctx, r, r.Status == jit.StatusPending)
+		if !time.Now().Before(deadline) {
+			return s.result(ctx, id, r, r.Status == jit.StatusPending)
 		}
 		select {
 		case <-ctx.Done():
 			return nil, accessRequest{}, ctx.Err()
-		case <-time.After(2 * time.Second):
+		case <-httpDone:
+			return nil, accessRequest{}, context.Canceled
+		case <-time.After(min(2*time.Second, max(time.Until(deadline), 50*time.Millisecond))):
 		}
 	}
 }
 
 // result renders a request for the model (text) and the view (structured).
-func (s *Server) result(ctx context.Context, r *jit.AccessRequest, stillWaiting bool) (*mcp.CallToolResult, accessRequest, error) {
+// The text is written for the viewer: the requester gets instructions, an
+// approver or admin reading someone else's request gets the facts.
+func (s *Server) result(ctx context.Context, id jit.Identity, r *jit.AccessRequest, stillWaiting bool) (*mcp.CallToolResult, accessRequest, error) {
 	r.URL = s.requestURL(r.ID)
 	r.Policy = s.Svc.RequestPolicy(ctx, r)
 	s.Svc.CountVotes(ctx, r)
@@ -315,7 +360,7 @@ func (s *Server) result(ctx context.Context, r *jit.AccessRequest, stillWaiting 
 	}
 	out.scrub()
 	out.StillWaiting = stillWaiting
-	return text(summarizeRequest(out)), out, nil
+	return text(summarizeRequest(out, identity{Login: id.Login, DeviceID: id.DeviceID, DeviceName: id.DeviceName, Tags: id.Tags})), out, nil
 }
 
 // withURL adds the approval link to an error that points at a request (a

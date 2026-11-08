@@ -125,10 +125,11 @@ A few tips:
   (add `--json`). Claude runs the same command.
 - **Not Claude Code?** Any MCP client on the tailnet can use
   `http://jit/mcp` (Streamable HTTP, no login). Hosts that render
-  [MCP Apps](https://modelcontextprotocol.io/extensions/apps/overview), such
-  as VS Code and Goose, show each request as a card that follows the
-  approval, with a form to pick a flow and ask. Claude Desktop only runs
-  local servers: give it `pamagent bridge` as the command (see
+  [MCP Apps](https://modelcontextprotocol.io/extensions/apps/overview) get
+  each request as a card that follows the approval, with a form to pick a
+  flow and ask; so far that is verified only with jitd's own test host in
+  the preview, not yet in VS Code, Goose or Claude Desktop. Claude Desktop
+  only runs local servers: give it `pamagent bridge` as the command (see
   [pamagent](pamagent/README.md)).
 
 ### Other MCP clients
@@ -146,9 +147,11 @@ no login, jitd knows who you are from the connection. The tools are
   it forwards stdin/stdout to `/mcp`. See [pamagent](pamagent/README.md).
 
 Hosts that render [MCP Apps](https://modelcontextprotocol.io/extensions/apps/overview)
-(VS Code, Goose, Claude Desktop) show each request as a card that follows
-the approval, and a form to pick a flow and ask. Others, Claude Code among
-them, get the same as text.
+get each request as a card that follows the approval, and a form to pick a
+flow and ask. That is verified so far only with jitd's own test host in the
+preview (`/mcp-host`); VS Code, Goose and Claude Desktop announce the
+extension but have not been seen rendering it yet. Everyone else, Claude
+Code included, gets the same as text.
 
 ## Good to know
 

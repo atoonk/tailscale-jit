@@ -51,9 +51,10 @@ jobs:
           for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do
             GOOS="${target%/*}" GOARCH="${target#*/}"
             export GOOS GOARCH
-            go build -trimpath -ldflags "-s -w" \
+            # Both report their version: jitd to MCP clients as
+            # serverInfo.version, pamagent in its log. Stamp it from the tag.
+            go build -trimpath -ldflags "-s -w -X main.version=$version" \
               -o "dist/jitd-$GOOS-$GOARCH" ./jitd
-            # pamagent reports its version over MCP, so stamp it from the tag.
             go build -trimpath -ldflags "-s -w -X main.version=$version" \
               -o "dist/pamagent-$GOOS-$GOARCH" ./pamagent
             echo "built $GOOS-$GOARCH"

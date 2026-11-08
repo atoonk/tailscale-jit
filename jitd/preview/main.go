@@ -184,7 +184,7 @@ func main() {
 			return jit.Identity{}, &jit.Error{Code: "identity_unavailable", Status: 401, Message: "pick who you are at /as/alice (alice, bob, carol, dave, root)"}
 		}),
 	}
-	h.MCP = (&jitmcp.Server{Svc: svc, Resolver: h.Resolver, BaseURL: base, Log: log}).Handler()
+	h.MCP = (&jitmcp.Server{Svc: svc, Resolver: h.Resolver, BaseURL: base, Version: "preview", Log: log}).Handler()
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /as/{who}", func(w http.ResponseWriter, r *http.Request) {
 		who := r.PathValue("who")

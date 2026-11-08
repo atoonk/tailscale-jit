@@ -462,3 +462,44 @@ func TestHelpTellsPluginURL(t *testing.T) {
 		t.Error("help does not tell people to set the plugin's jitd URL to http://jit-1")
 	}
 }
+
+// POST /mcp changes state (request_access, cancel_access_request) on the
+// strength of WhoIs alone, so it must sit behind the same browser checks as
+// /v1: a web page in a member's browser must not be able to drive it, and a
+// rebound DNS name must not reach it.
+func TestMCPBrowserRefused(t *testing.T) {
+	srv, _, _ := newTestServerWith(t, func(s *Server) {
+		s.Hosts = []string{"jit"}
+		s.MCP = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, "reached") })
+	})
+	post := func(host string, hdr map[string]string) (int, string) {
+		req, _ := http.NewRequest("POST", srv.URL+"/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
+		req.Host = host
+		req.Header.Set("Content-Type", "application/json")
+		for k, v := range hdr {
+			req.Header.Set(k, v)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, string(b)
+	}
+	if code, body := post("jit", nil); code != 200 || body != "reached" {
+		t.Errorf("plain MCP client: %d %s", code, body)
+	}
+	if code, body := post("jit", map[string]string{"Sec-Fetch-Site": "cross-site"}); code != 403 || !strings.Contains(body, "forbidden") {
+		t.Errorf("cross-site browser POST: %d %s", code, body)
+	}
+	if code, _ := post("jit", map[string]string{"Origin": "http://evil.example"}); code != 403 {
+		t.Errorf("foreign Origin: %d", code)
+	}
+	if code, body := post("evil.example", nil); code != 421 || !strings.Contains(body, "unknown_host") {
+		t.Errorf("rebound host: %d %s", code, body)
+	}
+	if code, _ := post("jit", map[string]string{"Sec-Fetch-Site": "cross-site", "X-Test-User": "alice"}); code != 403 {
+		t.Errorf("identified cross-site POST: %d", code)
+	}
+}
