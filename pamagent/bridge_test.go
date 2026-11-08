@@ -14,9 +14,11 @@ import (
 	"time"
 )
 
-// fakeMCP answers like jitd's stateless /mcp: JSON for one call, an event
-// stream with a progress notification for another, 202 for notifications,
-// and refuses a caller it does not know.
+// fakeMCP answers like jitd's stateless /mcp: JSON for one call, 202 for
+// notifications, a refusal for a caller it does not know, and (unlike jitd
+// today, which answers plain JSON) an event stream for another call, to
+// keep the pass-through path tested. "slow" answers after 5 s unless the
+// client goes away first.
 func fakeMCP(t *testing.T) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -45,6 +47,14 @@ func fakeMCP(t *testing.T) *httptest.Server {
 			time.Sleep(50 * time.Millisecond)
 			io.WriteString(w, "data: {\"jsonrpc\":\"2.0\",\"id\":"+string(m.ID)+",\n")
 			io.WriteString(w, "data: \"result\":{\"content\":[{\"type\":\"text\",\"text\":\"APPROVED\"}]}}\n\n")
+		case m.Method == "tools/call" && m.Params.Name == "slow":
+			select {
+			case <-r.Context().Done():
+				return
+			case <-time.After(5 * time.Second):
+			}
+			w.Header().Set("Content-Type", "application/json")
+			io.WriteString(w, `{"jsonrpc":"2.0","id":`+string(m.ID)+`,"result":{"content":[]}}`)
 		case m.Method == "tools/call":
 			w.WriteHeader(http.StatusUnauthorized)
 			io.WriteString(w, `{"error":{"code":"identity_unavailable","message":"unknown caller"}}`)
@@ -124,8 +134,48 @@ func TestBridge(t *testing.T) {
 	if !strings.Contains(byID["2"], `"text":"APPROVED"`) {
 		t.Errorf("wait reply: %s", byID["2"])
 	}
-	if !strings.Contains(byID["3"], `"error"`) || !strings.Contains(byID["3"], "HTTP 401") || !strings.Contains(byID["3"], "identity_unavailable") {
+	// jitd's JSON error envelope is unwrapped into a sentence with a next step.
+	if !strings.Contains(byID["3"], `"error"`) || !strings.Contains(byID["3"], "could not identify this machine") || !strings.Contains(byID["3"], "unknown caller") || strings.Contains(byID["3"], `{\"error\"`) {
 		t.Errorf("refused call: %s", byID["3"])
+	}
+}
+
+// Closing stdin stops the bridge after a short grace, cancelling a long tool
+// call in flight rather than finishing it for a host that has gone.
+func TestBridgeStopsOnEOF(t *testing.T) {
+	srv := fakeMCP(t)
+	out := &lines{}
+	b := &bridge{endpoint: srv.URL + "/mcp", hc: srv.Client(), log: slog.New(slog.NewTextHandler(io.Discard, nil)), out: out}
+	start := time.Now()
+	if err := b.run(context.Background(), strings.NewReader(`{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"slow"}}`+"\n")); err != nil {
+		t.Fatal(err)
+	}
+	if d := time.Since(start); d > eofGrace+1500*time.Millisecond {
+		t.Errorf("run took %s after stdin closed; want about %s", d, eofGrace)
+	}
+}
+
+func TestEndpointFor(t *testing.T) {
+	for in, want := range map[string]string{
+		"http://jit": "http://jit/mcp", "http://jit/": "http://jit/mcp",
+		"http://jit/mcp": "http://jit/mcp", "http://jit/mcp/": "http://jit/mcp",
+		"http://jit.example.ts.net:8080": "http://jit.example.ts.net:8080/mcp",
+	} {
+		if got := endpointFor(in); got != want {
+			t.Errorf("endpointFor(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestExplain(t *testing.T) {
+	if got := explain(404, []byte("404 page not found"), "http://jit/mcp/mcp"); !strings.Contains(got, "-jit-url is jitd's base URL") {
+		t.Errorf("404: %s", got)
+	}
+	if got := explain(401, []byte(`{"error":{"code":"identity_unavailable","message":"could not identify caller 100.1.2.3:4 via Tailscale WhoIs: no node"}}`), ""); !strings.HasPrefix(got, "jitd could not identify this machine") || !strings.Contains(got, "no node") || strings.Contains(got, "{") {
+		t.Errorf("401: %s", got)
+	}
+	if got := explain(500, []byte("boom"), ""); got != "jitd answered HTTP 500: boom" {
+		t.Errorf("500: %s", got)
 	}
 }
 

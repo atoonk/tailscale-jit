@@ -5,7 +5,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -90,7 +89,7 @@ func TestWaitForRequest(t *testing.T) {
 	} {
 		f := &fakeJITD{statuses: tc.statuses}
 		srv := f.start(t)
-		c := &jitClient{base: srv.URL, hc: srv.Client(), log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+		c := &jitClient{base: srv.URL, hc: srv.Client()}
 		ctx, cancel := context.WithTimeout(context.Background(), tc.timeout)
 		var out bytes.Buffer
 		got := waitForRequest(ctx, context.Background(), c, &fakeServices{visible: visible}, tc.id, nil, func(time.Duration) time.Duration { return 10 * time.Millisecond }, time.Second, &out)
@@ -110,7 +109,7 @@ func TestJITUnavailable(t *testing.T) {
 	srv := httptest.NewServer(http.NotFoundHandler())
 	url := srv.URL
 	srv.Close()
-	c := &jitClient{base: url, hc: &http.Client{Timeout: time.Second}, log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	c := &jitClient{base: url, hc: &http.Client{Timeout: time.Second}}
 	_, err := c.getRequest(context.Background(), "req_1")
 	if err == nil || !strings.HasPrefix(err.Error(), "jitd_unavailable") {
 		t.Errorf("unreachable jitd: %v", err)
@@ -144,7 +143,7 @@ func TestRequestServices(t *testing.T) {
 	if got := fmt.Sprint(r.services()); got != "[svc:listed]" {
 		t.Errorf("without policy: %s", got)
 	}
-	r.Policy = &policyUse{Defined: true, Grants: []string{"svc:granted", "tag:y"}}
+	r.Policy = &policyUse{Grants: []string{"svc:granted", "tag:y"}}
 	if got := fmt.Sprint(r.services()); got != "[svc:granted]" {
 		t.Errorf("with policy: %s", got)
 	}
@@ -159,7 +158,7 @@ func TestRequestServices(t *testing.T) {
 func TestWaitVisibilityOutlivesTimeout(t *testing.T) {
 	f := &fakeJITD{statuses: []string{"approved"}}
 	srv := f.start(t)
-	c := &jitClient{base: srv.URL, hc: srv.Client(), log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	c := &jitClient{base: srv.URL, hc: srv.Client()}
 	src := &fakeServices{}
 	go func() {
 		time.Sleep(150 * time.Millisecond) // after ctx below has expired

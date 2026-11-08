@@ -16,7 +16,6 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -28,7 +27,7 @@ import (
 	"tailscale.com/client/local"
 )
 
-var version = "0.6.0"
+var version = "0.6.1"
 
 // defaultJITURL is where jitd answers on a tailnet with MagicDNS.
 const defaultJITURL = "http://jit"
@@ -102,7 +101,7 @@ func runWait(args []string) int {
 	defer stop()
 	ctx, cancel := context.WithTimeout(sig, *timeout)
 	defer cancel()
-	c := &jitClient{base: *jitURL, hc: &http.Client{Timeout: 15 * time.Second}, log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	c := &jitClient{base: *jitURL, hc: &http.Client{Timeout: 15 * time.Second}}
 	sched := backoff
 	if *interval > 0 {
 		sched = func(time.Duration) time.Duration { return *interval }

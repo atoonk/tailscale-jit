@@ -64,13 +64,20 @@ can use jitd through the bridge. In `claude_desktop_config.json`:
 }
 ```
 
+`pamagent` is the binary from the plugin (`<plugin dir>/bin/pamagent`, or
+`libexec/<os>-<arch>/pamagent`) or from a GitHub release. `-jit-url` is
+jitd's base URL; `http://jit/mcp` is accepted too.
+
 The bridge interprets nothing. Each message from the host becomes one HTTP
 POST to `/mcp` (jitd's MCP server is stateless, so no session is kept), and
 the reply, one JSON object, goes back out on stdout (an event stream would
-be passed through too, should jitd ever send one). The host and jitd negotiate everything between
-themselves, including the MCP Apps view, which the bridge passes through
-like any other message. A host that can't reach jitd gets a JSON-RPC error
-per request instead of a hang. Logs go to stderr.
+be passed through too, should jitd ever send one). The host and jitd
+negotiate everything between themselves, including the MCP Apps view, which
+the bridge passes through like any other message. A host that can't reach
+jitd, or that jitd cannot identify, gets a JSON-RPC error per request that
+says so in plain words instead of a hang. When the host closes stdin, calls
+already in flight get two seconds to finish and are then cancelled, so a
+`wait_for_access` never keeps the process alive. Logs go to stderr.
 
 ## Tests
 

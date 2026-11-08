@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
@@ -20,7 +19,6 @@ import (
 type jitClient struct {
 	base string
 	hc   *http.Client
-	log  *slog.Logger
 }
 
 // source is the subset of *local.Client used here, so tests can substitute it.
@@ -32,15 +30,13 @@ type source interface {
 // The types mirror the parts of jitd's request JSON that wait reads.
 
 type resource struct {
-	Name        string `json:"name"`
-	Description string `json:"description,omitempty"`
+	Name string `json:"name"`
 }
 
 // policyUse is jitd's check of a flow's attribute against the tailnet policy.
 type policyUse struct {
-	Defined bool     `json:"defined"`
-	Grants  []string `json:"grants"`
-	Error   string   `json:"error,omitempty"`
+	Grants []string `json:"grants"`
+	Error  string   `json:"error,omitempty"`
 }
 
 // known reports whether the policy was read.

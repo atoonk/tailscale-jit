@@ -1,6 +1,6 @@
 {
   "name": "tailscale-pam",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "Connect to infrastructure over Tailscale PAM (SSH, MySQL, PostgreSQL, MongoDB, MS SQL, Elasticsearch, Kubernetes, RDP, and more): request just-in-time access through jitd and connect once it is approved. Credentials are injected by Tailscale PAM. The MCP server is jitd itself, on your tailnet: nothing runs locally.",
   "author": {
     "name": "Andree Toonk"
