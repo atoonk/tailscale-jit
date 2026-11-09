@@ -192,6 +192,22 @@ func TestRequestWaitApprove(t *testing.T) {
 		t.Errorf("request_access text:\n%s", txt)
 	}
 
+	// An approver's agent waiting on Maya's request waits normally and does
+	// not use up her first wait.
+	_, ssc := call(t, e.connect(t, "sam"), "wait_for_access", map[string]any{"request_id": id, "timeout_seconds": 5})
+	if ssc["show_link_first"] == true || ssc["still_waiting"] != true {
+		t.Errorf("approver wait = %v", ssc)
+	}
+
+	// The requester's first wait for a pending request returns at once and
+	// tells the model to end its turn with the link.
+	start0 := time.Now()
+	res, sc = call(t, cs, "wait_for_access", map[string]any{"request_id": id, "timeout_seconds": 50})
+	if sc["status"] != "pending" || sc["show_link_first"] != true || time.Since(start0) > 3*time.Second ||
+		!strings.Contains(textOf(res), "End your turn") || !strings.Contains(textOf(res), "http://jit/requests/"+id) {
+		t.Errorf("first wait = %v after %s\n%s", sc, time.Since(start0), textOf(res))
+	}
+
 	// Waiting with a short timeout returns the request still pending.
 	res, sc = call(t, cs, "wait_for_access", map[string]any{"request_id": id, "timeout_seconds": 5})
 	if sc["status"] != "pending" || sc["still_waiting"] != true || !strings.Contains(textOf(res), "nobody has decided yet") {

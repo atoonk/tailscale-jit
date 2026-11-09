@@ -134,6 +134,9 @@ type accessRequest struct {
 	// StillWaiting is set by wait_for_access when it gave up before a
 	// decision: the request is still pending.
 	StillWaiting bool `json:"still_waiting,omitempty"`
+	// ShowLinkFirst is set on the requester's first wait_for_access for a
+	// pending request, which returns at once so the user gets the link first.
+	ShowLinkFirst bool `json:"show_link_first,omitempty" jsonschema:"set when wait_for_access returned at once without waiting, so the user can be given the approval link first: end the turn with the link, then call wait_for_access again"`
 }
 
 // remarshal converts between the service's types and these mirrors through
@@ -342,8 +345,10 @@ func summarizeRequest(r accessRequest, viewer identity) string {
 		fmt.Fprintf(&b, "The user cannot see this result. Your reply must contain this approval link on its own line, or they have nothing to click:\n%s\n", r.URL)
 		if r.StillWaiting {
 			b.WriteString("Offer to keep waiting (call wait_for_access again) rather than polling yourself. ")
+		} else if r.ShowLinkFirst {
+			b.WriteString("Not waiting yet. End your turn now with a reply that contains this link (again, if you already gave it), and ask the user to tell you when it is approved. Call wait_for_access again once they reply. ")
 		} else {
-			b.WriteString("Write that message to the user now, before any other tool call; then call wait_for_access with this request_id to wait for the decision. ")
+			b.WriteString("Write that message to the user now and end your turn; call wait_for_access with this request_id once they reply (they approved it, or want you to wait). ")
 		}
 		b.WriteString("Do not try to reach these services another way while it is pending.\n")
 	case string(jit.StatusApproved):

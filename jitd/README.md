@@ -516,7 +516,12 @@ on the tailnet can use it, with no login: jitd knows who is calling from the
 Tailscale connection, as for every other request, and the tools act as that
 person on that device. The tools are `list_requestable`, `request_access`,
 `wait_for_access`, `get_access_request` and `cancel_access_request`; there is
-no approve tool, on purpose. A request through a flow the tailnet policy
+no approve tool, on purpose. After `request_access`, the agent shows the
+approval link and ends its turn; it waits (`wait_for_access`, up to 50
+seconds a call) once you say the request is approved or ask it to wait. The
+first `wait_for_access` for a pending request returns at once, so an agent
+that skips the link still has to show it before anything blocks: hosts such
+as Claude Code show nothing while a tool call runs. A request through a flow the tailnet policy
 does not use yet is refused with a message to pass on to the user, since
 approving it would unlock nothing. The server's instructions tell the agent
 how to use the tools and how to connect to a service once it is granted, so

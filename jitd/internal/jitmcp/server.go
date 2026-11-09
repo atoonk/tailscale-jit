@@ -19,6 +19,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/atoonk/tailscale-jit/jitd/internal/jit"
@@ -35,6 +36,10 @@ type Server struct {
 	BaseURL  string // e.g. "http://jit"; approval links are built on it
 	Version  string
 	Log      *slog.Logger
+
+	// waited records the pending requests whose requester's agent has
+	// already called wait_for_access once (see firstWait).
+	waited sync.Map
 }
 
 type idKey struct{}
@@ -194,8 +199,8 @@ func (s *Server) addTools(srv *mcp.Server, id jit.Identity) {
 		Title: "Request just-in-time access",
 		Description: "Submit a just-in-time access request through a jitd approval flow (workflow_id from list_requestable) for the device you are on. " +
 			"Request the flow that fits the current step of the task, not the broadest one, for the time the work needs. " +
-			"A human must approve it. The result contains the approval URL; the user cannot see tool results, so write it in your reply on its own line. " +
-			"Then call wait_for_access before using the service.",
+			"A human must approve it. The result contains the approval URL; the user cannot see tool results, so write it in your reply on its own line and end your turn. " +
+			"Call wait_for_access once the user replies (they approved it, or want you to wait), before using the service.",
 		Annotations: &mcp.ToolAnnotations{DestructiveHint: new(false), OpenWorldHint: new(false)},
 		Meta:        appMeta(),
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in requestAccessInput) (*mcp.CallToolResult, accessRequest, error) {
@@ -222,7 +227,7 @@ func (s *Server) addTools(srv *mcp.Server, id jit.Identity) {
 			return nil, accessRequest{}, s.withURL(err)
 		}
 		s.Log.Info("mcp: access request submitted", "id", r.ID, "workflow", r.WorkflowName, "login", id.Login, "device", id.DeviceID)
-		return s.result(ctx, id, r, false)
+		return s.result(ctx, id, r, false, false)
 	})
 
 	mcp.AddTool(srv, &mcp.Tool{
@@ -236,14 +241,15 @@ func (s *Server) addTools(srv *mcp.Server, id jit.Identity) {
 		if err != nil {
 			return nil, accessRequest{}, err
 		}
-		return s.result(ctx, id, r, false)
+		return s.result(ctx, id, r, false, false)
 	})
 
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:  "wait_for_access",
 		Title: "Wait for an access request to be decided",
-		Description: "Wait until a jitd access request is approved (and the access is in place on the device) or declined, for up to timeout_seconds (default 30, at most 50). Show the user the approval link before the first call. " +
-			"Call it right after request_access instead of polling get_access_request. If it returns with the request still pending, call it again while the user " +
+		Description: "Wait until a jitd access request is approved (and the access is in place on the device) or declined, for up to timeout_seconds (default 30, at most 50). The first call for a pending request returns at once, without waiting: " +
+			"end your turn with the approval link, and call it again when the user replies. " +
+			"Use it instead of polling get_access_request. If it returns with the request still pending, call it again while the user " +
 			"is waiting for this access (up to about ten minutes in total); when you report instead, say it is still pending, repeat the approval link, and offer to keep waiting.",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true, IdempotentHint: true, OpenWorldHint: new(false)},
 		Meta:        appMeta(),
@@ -271,14 +277,14 @@ func (s *Server) addTools(srv *mcp.Server, id jit.Identity) {
 			act = s.Svc.Revoke
 		default:
 			// Already over: say so rather than fail.
-			return s.result(ctx, id, cur, false)
+			return s.result(ctx, id, cur, false, false)
 		}
 		r, err := act(ctx, id, in.RequestID, in.Note)
 		if err != nil {
 			return nil, accessRequest{}, s.withURL(err)
 		}
 		s.Log.Info("mcp: access request ended", "id", r.ID, "status", r.Status, "login", id.Login)
-		return s.result(ctx, id, r, false)
+		return s.result(ctx, id, r, false, false)
 	})
 }
 
@@ -300,6 +306,33 @@ func unconfirmed(r *jit.AccessRequest) bool {
 	return r.Unconfirmed(time.Now())
 }
 
+// maxWait caps one wait_for_access call. It stays under 60s, the default
+// request timeout of the MCP TypeScript SDK that Claude Code and most hosts
+// use: a 120s wait from Claude Code fails with "The operation timed out."
+const maxWait = 50 * time.Second
+
+// firstWait reports whether this is the requester's first wait_for_access
+// for a request that is still pending, on the device it was filed from, and
+// records it; it returns the request it read. Hosts such as Claude Code
+// show nothing while a tool call runs and do not show tool results, and
+// models often wait before replying, so the user would be left without the
+// link they have to click. The first call therefore returns at once and
+// tells the model to end its turn with the link. Only the requester's own
+// agent uses it up: an approver or admin reading someone else's request
+// waits normally. The entry is removed when a wait sees the request
+// decided; one whose agent never waits again stays until jitd restarts
+// (a few bytes per request), and a restart only means one more early
+// return.
+func (s *Server) firstWait(ctx context.Context, id jit.Identity, reqID string) (*jit.AccessRequest, bool) {
+	r, err := s.lookup(ctx, id, reqID)
+	if err != nil || r.Status != jit.StatusPending ||
+		r.Requester.Login != id.Login || r.TargetDeviceID != id.DeviceID {
+		return nil, false
+	}
+	_, again := s.waited.LoadOrStore(r.ID, true)
+	return r, !again
+}
+
 // wait blocks until the request is decided, the access is seen on the
 // device, the timeout passes, or the client goes away. It checks every two
 // seconds in-process.
@@ -307,15 +340,15 @@ func unconfirmed(r *jit.AccessRequest) bool {
 // One call is short by default (30s) and the instructions tell the model to
 // call again: a long-blocking tool call is what proxies and hosts with tool
 // timeouts give up on, and the response is one JSON object, so nothing is
-// streamed while waiting. The cap stays under 60s, the default request
-// timeout of the MCP TypeScript SDK that Claude Code and most hosts use: a
-// 120s wait from Claude Code fails with "The operation timed out."
-// The SDK's ctx does not end when the HTTP client disconnects (see
-// httpDoneKey), so the request's own Done channel is watched too; without
-// it an abandoned call would keep polling for its whole timeout.
-const maxWait = 50 * time.Second
-
+// streamed while waiting; maxWait caps it. The first call for a pending
+// request returns at once (see firstWait). The SDK's ctx does not end when
+// the HTTP client disconnects (see httpDoneKey), so the request's own Done
+// channel is watched too; without it an abandoned call would keep polling
+// for its whole timeout.
 func (s *Server) wait(ctx context.Context, id jit.Identity, in waitForAccessInput) (*mcp.CallToolResult, accessRequest, error) {
+	if r, first := s.firstWait(ctx, id, in.RequestID); first {
+		return s.result(ctx, id, r, false, true)
+	}
 	timeout := time.Duration(cmp.Or(in.TimeoutSeconds, 30)) * time.Second
 	timeout = max(5*time.Second, min(timeout, maxWait))
 	deadline := time.Now().Add(timeout)
@@ -336,10 +369,11 @@ func (s *Server) wait(ctx context.Context, id jit.Identity, in waitForAccessInpu
 			done = time.Since(approvedSeen) > 30*time.Second
 		}
 		if done {
-			return s.result(ctx, id, r, false)
+			s.waited.Delete(r.ID)
+			return s.result(ctx, id, r, false, false)
 		}
 		if !time.Now().Before(deadline) {
-			return s.result(ctx, id, r, r.Status == jit.StatusPending)
+			return s.result(ctx, id, r, r.Status == jit.StatusPending, false)
 		}
 		select {
 		case <-ctx.Done():
@@ -354,7 +388,7 @@ func (s *Server) wait(ctx context.Context, id jit.Identity, in waitForAccessInpu
 // result renders a request for the model (text) and the view (structured).
 // The text is written for the viewer: the requester gets instructions, an
 // approver or admin reading someone else's request gets the facts.
-func (s *Server) result(ctx context.Context, id jit.Identity, r *jit.AccessRequest, stillWaiting bool) (*mcp.CallToolResult, accessRequest, error) {
+func (s *Server) result(ctx context.Context, id jit.Identity, r *jit.AccessRequest, stillWaiting, showLinkFirst bool) (*mcp.CallToolResult, accessRequest, error) {
 	r.URL = s.requestURL(r.ID)
 	r.Policy = s.Svc.RequestPolicy(ctx, r)
 	s.Svc.CountVotes(ctx, r)
@@ -364,6 +398,7 @@ func (s *Server) result(ctx context.Context, id jit.Identity, r *jit.AccessReque
 	}
 	out.scrub()
 	out.StillWaiting = stillWaiting
+	out.ShowLinkFirst = showLinkFirst
 	return text(summarizeRequest(out, identity{Login: id.Login, DeviceID: id.DeviceID, DeviceName: id.DeviceName, Tags: id.Tags})), out, nil
 }
 
@@ -438,7 +473,9 @@ Access requests:
 		`not after waiting: the user has to approve before any wait can succeed. For example:
     I've submitted an access request for "Database access (read-only)" (15m, reason: ...). It needs approval here:
     ` + jitURL + `/requests/req_...
-- Then call wait_for_access with the request_id. It returns when the request is decided and the access is in place, ` +
+- Then end your turn with that message. When the user replies (they approved it, or ask you to wait), call wait_for_access ` +
+		`with the request_id. If you call it before that, its first call for a pending request returns at once and tells you to ` +
+		`end your turn with the link. Later calls return when the request is decided and the access is in place, ` +
 		`or after 30 seconds (timeout_seconds, up to 50) with the request still pending. While the user is waiting for this ` +
 		`access, call it again rather than polling get_access_request; after about ten minutes, or when the user has moved on, ` +
 		`report that it is still pending, repeat the link, and offer to keep waiting.

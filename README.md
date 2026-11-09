@@ -86,8 +86,8 @@ see `jit` connected, with five tools: `list_requestable`, `request_access`,
 `wait_for_access`, `get_access_request` and `cancel_access_request`. The
 server is jitd itself, over the tailnet: it knows who you are from your
 Tailscale connection, and it sends Claude the instructions on how to use
-the tools (ask for the narrowest access, show you the approval link, wait,
-connect without credentials).
+the tools (ask for the narrowest access, show you the approval link and
+wait for you to approve it, connect without credentials).
 
 Try asking: *"What's in the orders database? I don't think I have access
 yet."*
