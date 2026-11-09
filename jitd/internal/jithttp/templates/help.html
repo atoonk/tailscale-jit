@@ -22,7 +22,7 @@
   <table class="plain">
     <tr><td><code>list_requestable</code></td><td>the flows you may request through, what each gives access to, and any request you have open</td></tr>
     <tr><td><code>request_access</code></td><td>file a request: flow, reason, duration; returns the approval link</td></tr>
-    <tr><td><code>wait_for_access</code></td><td>wait until it is decided and the access is in place (30 seconds per call by default, up to four minutes; the agent calls it again)</td></tr>
+    <tr><td><code>wait_for_access</code></td><td>wait until it is decided and the access is in place (30 seconds per call by default, at most 50, under the 60-second limit most MCP clients set; the agent calls it again)</td></tr>
     <tr><td><code>get_access_request</code></td><td>the status of a request</td></tr>
     <tr><td><code>cancel_access_request</code></td><td>withdraw a pending request, or end approved access early</td></tr>
   </table>

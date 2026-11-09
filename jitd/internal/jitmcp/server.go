@@ -155,7 +155,7 @@ type getAccessRequestInput struct {
 
 type waitForAccessInput struct {
 	RequestID      string `json:"request_id" jsonschema:"id returned by request_access"`
-	TimeoutSeconds int    `json:"timeout_seconds,omitempty" jsonschema:"how long one call waits before returning the request as still pending, 5-240; default 30. Call again to keep waiting"`
+	TimeoutSeconds int    `json:"timeout_seconds,omitempty" jsonschema:"how long one call waits before returning the request as still pending, 5-50; default 30. Call again to keep waiting"`
 }
 
 type cancelAccessRequestInput struct {
@@ -242,7 +242,7 @@ func (s *Server) addTools(srv *mcp.Server, id jit.Identity) {
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:  "wait_for_access",
 		Title: "Wait for an access request to be decided",
-		Description: "Wait until a jitd access request is approved (and the access is in place on the device) or declined, for up to timeout_seconds (default 30). " +
+		Description: "Wait until a jitd access request is approved (and the access is in place on the device) or declined, for up to timeout_seconds (default 30, at most 50). Show the user the approval link before the first call. " +
 			"Call it right after request_access instead of polling get_access_request. If it returns with the request still pending, call it again while the user " +
 			"is waiting for this access (up to about ten minutes in total); when you report instead, say it is still pending, repeat the approval link, and offer to keep waiting.",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true, IdempotentHint: true, OpenWorldHint: new(false)},
@@ -307,13 +307,17 @@ func unconfirmed(r *jit.AccessRequest) bool {
 // One call is short by default (30s) and the instructions tell the model to
 // call again: a long-blocking tool call is what proxies and hosts with tool
 // timeouts give up on, and the response is one JSON object, so nothing is
-// streamed while waiting. Clients that cope with long calls ask for more.
+// streamed while waiting. The cap stays under 60s, the default request
+// timeout of the MCP TypeScript SDK that Claude Code and most hosts use: a
+// 120s wait from Claude Code fails with "The operation timed out."
 // The SDK's ctx does not end when the HTTP client disconnects (see
 // httpDoneKey), so the request's own Done channel is watched too; without
 // it an abandoned call would keep polling for its whole timeout.
+const maxWait = 50 * time.Second
+
 func (s *Server) wait(ctx context.Context, id jit.Identity, in waitForAccessInput) (*mcp.CallToolResult, accessRequest, error) {
 	timeout := time.Duration(cmp.Or(in.TimeoutSeconds, 30)) * time.Second
-	timeout = max(5*time.Second, min(timeout, 240*time.Second))
+	timeout = max(5*time.Second, min(timeout, maxWait))
 	deadline := time.Now().Add(timeout)
 	httpDone, _ := ctx.Value(httpDoneKey{}).(<-chan struct{})
 	var approvedSeen time.Time
@@ -430,12 +434,12 @@ Access requests:
 - Tool results are not shown to the user. Anything they need from one, above all the approval link, goes in your own message.
 - Whenever you submit an access request on the user's behalf, tell the user right away, in plain words, ` +
 		`that you submitted an access request and are waiting for approval. Then print the approval link ` +
-		`from the result's "url" field on its own line so they can click it, for example:
+		`from the result's "url" field on its own line so they can click it. Send this message before your next tool call, ` +
+		`not after waiting: the user has to approve before any wait can succeed. For example:
     I've submitted an access request for "Database access (read-only)" (15m, reason: ...). It needs approval here:
     ` + jitURL + `/requests/req_...
 - Then call wait_for_access with the request_id. It returns when the request is decided and the access is in place, ` +
-		`or after 30 seconds (timeout_seconds, up to 240) with the request still pending. If your host lets a tool call run ` +
-		`for minutes (Claude Code does), pass timeout_seconds: 120 to make fewer calls. While the user is waiting for this ` +
+		`or after 30 seconds (timeout_seconds, up to 50) with the request still pending. While the user is waiting for this ` +
 		`access, call it again rather than polling get_access_request; after about ten minutes, or when the user has moved on, ` +
 		`report that it is still pending, repeat the link, and offer to keep waiting.
 - If the user no longer needs the access, or asks to end it early, call cancel_access_request: it withdraws a pending ` +

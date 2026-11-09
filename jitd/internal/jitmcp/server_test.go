@@ -365,7 +365,7 @@ func TestWaitOutlivesClient(t *testing.T) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	body := fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"wait_for_access","arguments":{"request_id":%q,"timeout_seconds":240}}}`, id)
+	body := fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"wait_for_access","arguments":{"request_id":%q,"timeout_seconds":50}}}`, id)
 	req, _ := http.NewRequestWithContext(ctx, "POST", e.url, strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")

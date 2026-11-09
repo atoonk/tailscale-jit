@@ -343,7 +343,7 @@ func summarizeRequest(r accessRequest, viewer identity) string {
 		if r.StillWaiting {
 			b.WriteString("Offer to keep waiting (call wait_for_access again) rather than polling yourself. ")
 		} else {
-			b.WriteString("To wait for the decision, call wait_for_access with this request_id. ")
+			b.WriteString("Write that message to the user now, before any other tool call; then call wait_for_access with this request_id to wait for the decision. ")
 		}
 		b.WriteString("Do not try to reach these services another way while it is pending.\n")
 	case string(jit.StatusApproved):
