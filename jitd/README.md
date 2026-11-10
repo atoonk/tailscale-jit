@@ -73,11 +73,12 @@ reach it:
 },
 "grants": [
   // Everyone may open the jitd UI and API.
-  { "src": ["autogroup:member"], "dst": ["tag:jit"], "ip": ["tcp:80"] }
+  { "src": ["autogroup:member"], "dst": ["tag:jit"], "ip": ["tcp:80", "tcp:443"] }
 ]
 ```
 
-If you'll run with `-https`, allow `tcp:443` too.
+Port 80 is what jitd serves by default; 443 is for `-https`, so allowing
+both now means the policy still fits if you turn HTTPS on later.
 
 Use a group of logins for the admins: jitd can't use `autogroup:admin` (it
 can't see Tailscale roles), and a group can't contain an autogroup. Adding or
