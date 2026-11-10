@@ -59,11 +59,20 @@ Follow **[jitd/README.md](jitd/README.md)**. It takes you through it step by
 step:
 
 1. Add a `group:jit-admins` group and let people reach `tag:jit` in the policy.
-2. Create an auth key and an OAuth client.
-3. Build and start jitd.
+2. Create an auth key (tagged `tag:jit`) and an OAuth client.
+3. Run jitd: on a Mac to try it out, or on a small EC2 instance as a
+   systemd service to keep it.
 4. Check that it works at http://jit/admin/setup.
 5. Create an approval flow.
 6. Paste the policy snippet jitd gives you.
+
+jitd is a single self-contained binary, with the web UI built into it:
+download it from the
+[releases page](https://github.com/atoonk/tailscale-jit/releases) and run
+it. There is nothing to clone and no Go needed, unless you want to work on
+jitd itself. Moving to a later release is replacing that one file and
+restarting — see
+[Upgrading to a new release](jitd/README.md#upgrading-to-a-new-release).
 
 ### 2. Connect Claude Code (everyone, once per machine)
 
@@ -150,6 +159,9 @@ Code included, gets the same as text.
 
 ## Working on it
 
+This is for changing jitd. To *run* it, take a release binary as above; the
+repository isn't needed for that.
+
 jitd is one Go program. You need Go 1.26.6 or newer:
 
 ```sh
@@ -157,6 +169,19 @@ go test ./...
 go build -o bin/jitd ./jitd
 go run ./jitd/preview       # the jitd UI with made-up people, no tailnet needed
 ```
+
+`bin/` is ignored by git, so it is also where a released binary can go when
+you want to run one without compiling (pick your platform's file, and
+`darwin` in place of `linux` on a Mac):
+
+```sh
+mkdir -p bin
+curl -fsSLo bin/jitd https://github.com/atoonk/tailscale-jit/releases/latest/download/jitd-linux-arm64
+chmod +x bin/jitd
+```
+
+Start it as [jitd/README.md](jitd/README.md) describes: the credentials and
+the auth key are the same either way.
 
 Compiling needs roughly 2 GB of free memory. To publish binaries, push a
 tag such as `v0.7.0`: the Release workflow runs the tests, builds `jitd`
