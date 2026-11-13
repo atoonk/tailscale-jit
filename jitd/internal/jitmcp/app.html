@@ -54,7 +54,7 @@
   @keyframes spin { to { transform: rotate(360deg); } }
   .flow { border: 1px solid var(--line); border-radius: var(--r); padding: 12px 14px; margin-top: 10px; }
   .flow .rows { margin: 8px 0 0; }
-  form { display: grid; gap: 8px; margin-top: 10px; }
+  .form { display: grid; gap: 8px; margin-top: 10px; }
   label { display: grid; gap: 4px; font-size: 12.5px; color: var(--fg2); }
   select, textarea { font: inherit; color: var(--fg); background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; }
   textarea { min-height: 56px; resize: vertical; }
@@ -316,10 +316,11 @@
     steps.sort((a, b) => a - b);
     const sel = el('select', { name: 'duration' }, steps.map(s => el('option', { value: s, selected: s === defS }, fmtDur(s))));
     const reason = el('textarea', { name: 'reason', required: true, placeholder: 'What you will do, and on what. The approver reads this.' });
-    const submit = el('button', { class: 'primary', type: 'submit' }, 'Send request');
-    const form = el('form', {}, el('label', {}, 'Duration', sel), el('label', {}, 'Reason', reason), el('div', { class: 'actions' }, submit));
-    form.addEventListener('submit', async e => {
-      e.preventDefault();
+    // No <form>: hosts sandbox the view without allow-forms (Aperture does),
+    // and the browser then blocks the submission before any submit handler runs.
+    const submit = el('button', { class: 'primary', type: 'button' }, 'Send request');
+    const form = el('div', { class: 'form' }, el('label', {}, 'Duration', sel), el('label', {}, 'Reason', reason), el('div', { class: 'actions' }, submit));
+    submit.addEventListener('click', async () => {
       if (!reason.value.trim()) { reason.focus(); return; }
       submit.disabled = true; submit.textContent = 'Sending…';
       try {
