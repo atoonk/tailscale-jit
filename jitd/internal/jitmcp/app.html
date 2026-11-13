@@ -355,7 +355,9 @@
   rpc.on('ui/notifications/host-context-changed', applyContext);
   rpc.on('ui/resource-teardown', () => { stopWatching(); return {}; });
 
-  rpc.request('ui/initialize', { appCapabilities: {}, clientInfo: { name: 'jitd', version: '1' }, protocolVersion: '2026-01-26' })
+  // appInfo, not clientInfo: hosts built on the MCP Apps SDK (Aperture) validate
+  // the params and reject the handshake without it.
+  rpc.request('ui/initialize', { appCapabilities: {}, appInfo: { name: 'jitd', version: '1' }, protocolVersion: '2026-01-26' })
     .then(res => { applyContext(res && res.hostContext); rpc.notify('ui/notifications/initialized', {}); })
     .catch(() => { app.replaceChildren(el('div', { class: 'note' }, 'This view needs an MCP Apps host.')); });
 })();

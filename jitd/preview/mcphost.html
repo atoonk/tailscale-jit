@@ -95,7 +95,14 @@
     const p = m.params || {};
     switch (m.method) {
       case 'ui/initialize':
-        log('view: ui/initialize (' + JSON.stringify(p.clientInfo) + ', ' + p.protocolVersion + ')', 'ok');
+        // As strict as the MCP Apps SDK, which hosts such as Aperture use:
+        // appInfo (name, version), appCapabilities and protocolVersion are required.
+        if (!p.appInfo || typeof p.appInfo.name !== 'string' || typeof p.appInfo.version !== 'string' || !p.appCapabilities || typeof p.protocolVersion !== 'string') {
+          log('view: ui/initialize without appInfo, appCapabilities or protocolVersion; an SDK host rejects this', 'bad');
+          fail(m.id, 'invalid ui/initialize params');
+          break;
+        }
+        log('view: ui/initialize (' + JSON.stringify(p.appInfo) + ', ' + p.protocolVersion + ')', 'ok');
         reply(m.id, { protocolVersion: '2026-01-26', hostInfo: { name: 'jitd-preview-host', version: '1' },
           hostCapabilities: { serverTools: {}, openLinks: {}, logging: {} }, hostContext: hostContext() });
         break;
