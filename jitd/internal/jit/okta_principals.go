@@ -3,6 +3,7 @@ package jit
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"time"
@@ -105,6 +106,9 @@ func (s *Service) oktaGroupMemberKeys(ctx context.Context, ref string) ([]string
 	defer cancel()
 	var keys []string
 	g, err := s.Okta.FindGroup(ctx, ref)
+	if err == nil && !s.readAllowed(g.ID, g.Name()) {
+		err = fmt.Errorf("Okta group %q is not on jitd's read allowlist (%s)", ref, EnvOktaReadAllowlist)
+	}
 	if err == nil {
 		var us []okta.User
 		us, err = s.Okta.GroupMembers(ctx, g.ID)
@@ -144,6 +148,10 @@ func (s *Service) matchesOkta(ctx context.Context, p Principal, id Identity) boo
 	ref := p.OktaRef()
 	for _, g := range groups {
 		if g.Matches(ref) {
+			if !s.readAllowed(g.ID, g.Name()) {
+				s.Log.Warn("okta: principal names a group outside the read allowlist; it matches nobody", "group", ref)
+				return false
+			}
 			return true
 		}
 	}
@@ -168,10 +176,14 @@ func (s *Service) checkOktaPrincipals(ctx context.Context, w *Workflow) error {
 	actx, cancel := apiContext(ctx)
 	defer cancel()
 	for _, ref := range refs {
-		if _, err := s.Okta.FindGroup(actx, ref); errors.Is(err, okta.ErrNotFound) {
+		g, err := s.Okta.FindGroup(actx, ref)
+		switch {
+		case errors.Is(err, okta.ErrNotFound):
 			return badRequest("Okta group %q not found (okta: takes the exact group name or its ID)", ref)
-		} else if err != nil {
+		case err != nil:
 			return apiFailed("looking up Okta group %q: %v", ref, err)
+		case !s.readAllowed(g.ID, g.Name()):
+			return forbidden("Okta group %q is not on jitd's read allowlist (%s)", ref, EnvOktaReadAllowlist)
 		}
 	}
 	return nil
