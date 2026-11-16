@@ -410,6 +410,13 @@ The fields:
 - **How many approvals**, whether people may **approve their own** requests,
   the **default and maximum duration**, and how long a request may wait for
   a decision.
+- **Approve requests automatically** (optional): every request is granted
+  as soon as it is made, with no approver. Use it for low-risk access that
+  should still be time-limited and recorded: the request, its reason and
+  its expiry are kept, and the requester, an approver or an admin can revoke
+  it. Approvers are optional on such a flow; any you list can revoke. If the
+  grant fails (an Okta or Tailscale API error), the request is cancelled
+  with the error in its timeline, and the requester can submit it again.
 
 Make a flow per *kind* of access, not per service. A flow is one posture
 attribute and one grant, and a grant can list as many destinations as you

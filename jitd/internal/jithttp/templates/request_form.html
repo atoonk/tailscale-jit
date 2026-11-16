@@ -31,7 +31,7 @@
         {{with $w.Description}}<div class="desc">{{.}}</div>{{end}}
         {{if $w.Policy.NoEffect}}<div class="small warn">⚠ Not set up in the tailnet policy yet: approving this unlocks nothing. Ask an admin.</div>{{end}}
         {{if $w.Resources}}<ul class="resources">{{range $w.Resources}}<li><code>{{.Name}}</code>{{with .Description}} <span class="muted">{{.}}</span>{{end}}</li>{{end}}</ul>{{end}}
-        <div class="meta">Up to {{human $w.MaxDuration}} · {{if $w.AllowSelfApproval}}you can approve it yourself{{else}}approved by {{principals $w.Approvers}}{{end}}{{if gt $w.ApprovalsRequired 1}} · {{$w.ApprovalsRequired}} approvals{{end}}</div>
+        <div class="meta">Up to {{human $w.MaxDuration}} · {{if $w.AutoApprove}}approved automatically{{else}}{{if $w.AllowSelfApproval}}you can approve it yourself{{else}}approved by {{principals $w.Approvers}}{{end}}{{if gt $w.ApprovalsRequired 1}} · {{$w.ApprovalsRequired}} approvals{{end}}{{end}}</div>
       </div>
     </label>
     {{end}}

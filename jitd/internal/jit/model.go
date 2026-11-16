@@ -150,7 +150,11 @@ type Workflow struct {
 	Requesters        []Principal `json:"requesters"`
 	Approvers         []Principal `json:"approvers"`
 	AllowSelfApproval bool        `json:"allow_self_approval"`
-	MaxDuration       Duration    `json:"max_duration"`
+	// AutoApprove grants every request at once, with no approver: the
+	// request is still recorded, with its reason, and still expires and can
+	// be revoked. Approvers are optional then; any listed may still revoke.
+	AutoApprove bool     `json:"auto_approve,omitempty"`
+	MaxDuration Duration `json:"max_duration"`
 	// ApprovalTimeout is how long a request may stay pending before it
 	// expires undecided. Zero means DefaultApprovalTimeout.
 	ApprovalTimeout Duration `json:"approval_timeout,omitempty"`
@@ -540,8 +544,8 @@ func (w *Workflow) Validate() error {
 	if len(w.Requesters) == 0 {
 		return badRequest("at least one requester is required")
 	}
-	if len(w.Approvers) == 0 {
-		return badRequest("at least one approver is required")
+	if len(w.Approvers) == 0 && !w.AutoApprove {
+		return badRequest("at least one approver is required (or approve requests automatically)")
 	}
 	for _, p := range append(append([]Principal{}, w.Requesters...), w.Approvers...) {
 		if err := ValidatePrincipal(p); err != nil {
@@ -578,7 +582,7 @@ func (w *Workflow) Validate() error {
 			named++
 		}
 	}
-	if named == len(w.Approvers) && named < w.ApprovalsRequired {
+	if !w.AutoApprove && named == len(w.Approvers) && named < w.ApprovalsRequired {
 		return badRequest("approvals_required is %d but only %d approvers are listed", w.ApprovalsRequired, named)
 	}
 	if w.Slack != nil && w.Slack.Channel != "" && !slackChannelRE.MatchString(w.Slack.Channel) {
