@@ -45,6 +45,7 @@ type requestableFlow struct {
 	Approvers         []string    `json:"approvers"`
 	AllowSelfApproval bool        `json:"allow_self_approval"`
 	ApprovalsRequired int         `json:"approvals_required,omitempty" jsonschema:"how many approvers must approve"`
+	AutoApprove       bool        `json:"auto_approve,omitempty" jsonschema:"requests through this flow are granted at once, with no approver"`
 	ActiveRequestID   string      `json:"active_request_id,omitempty" jsonschema:"your open (pending or approved) request through this flow, if any"`
 	ActiveRequestURL  string      `json:"active_request_url,omitempty"`
 	ActiveStatus      string      `json:"active_status,omitempty"`
@@ -305,6 +306,13 @@ func summarizeRequestable(o listRequestableOutput) string {
 		fmt.Fprintf(&b, "  max duration %s", f.MaxDuration)
 		if f.DefaultDuration != "" && f.DefaultDuration != f.MaxDuration {
 			fmt.Fprintf(&b, " (default %s)", f.DefaultDuration)
+		}
+		if f.AutoApprove {
+			b.WriteString("; approved automatically (granted as soon as it is requested)\n")
+			if f.ActiveRequestID != "" {
+				fmt.Fprintf(&b, "  you already have a request (%s): %s\n  %s\n", f.ActiveStatus, f.ActiveRequestID, f.ActiveRequestURL)
+			}
+			continue
 		}
 		fmt.Fprintf(&b, "; approvers: %s", strings.Join(f.Approvers, ", "))
 		if f.ApprovalsRequired > 1 {

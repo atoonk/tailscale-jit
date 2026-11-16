@@ -73,6 +73,7 @@ function workflowBody(f) {
     requesters: list(f.requesters.value),
     approvers: list(f.approvers.value),
     allow_self_approval: f.allow_self_approval.checked,
+    auto_approve: f.auto_approve.checked,
     max_duration: dur(f, "max_duration"),
     default_duration: dur(f, "default_duration"),
     approval_timeout: dur(f, "approval_timeout"),

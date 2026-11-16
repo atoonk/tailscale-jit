@@ -251,6 +251,7 @@ type Requestable struct {
 	Approvers         []Principal `json:"approvers"`
 	AllowSelfApproval bool        `json:"allow_self_approval"`
 	ApprovalsRequired int         `json:"approvals_required"`
+	AutoApprove       bool        `json:"auto_approve,omitempty"` // granted on submit, with no approver
 	// The caller's newest pending or approved request through this flow for
 	// their own device, if any.
 	ActiveRequestID  string     `json:"active_request_id,omitempty"`
@@ -265,14 +266,14 @@ func (s *Service) Requestable(ctx context.Context, id Identity) []Requestable {
 	now := s.now()
 	var out []Requestable
 	for _, w := range s.ListWorkflows() {
-		if w.Disabled || !s.matches(ctx, w.Requesters, id) || !s.quorumReachable(ctx, w, id) {
+		if w.Disabled || !s.matches(ctx, w.Requesters, id) || (!w.AutoApprove && !s.quorumReachable(ctx, w, id)) {
 			continue
 		}
 		out = append(out, Requestable{
 			WorkflowID: w.ID, WorkflowName: w.Name, Description: w.Description,
 			Attribute: w.Attribute, OktaGroups: w.OktaGroups, Resources: OrEmpty(w.Resources), Policy: s.PolicyUse(ctx, w),
-			MaxDuration: w.MaxDuration, DefaultDuration: w.DefaultDuration, Approvers: w.Approvers,
-			AllowSelfApproval: w.AllowSelfApproval, ApprovalsRequired: w.ApprovalsRequired,
+			MaxDuration: w.MaxDuration, DefaultDuration: w.DefaultDuration, Approvers: OrEmpty(w.Approvers),
+			AllowSelfApproval: w.AllowSelfApproval, ApprovalsRequired: w.ApprovalsRequired, AutoApprove: w.AutoApprove,
 		})
 	}
 	s.Store.View(func(d *Data) {
@@ -534,7 +535,7 @@ func (s *Service) Submit(ctx context.Context, caller Identity, in NewRequest) (*
 	if reason == "" {
 		return nil, badRequest("reason is required")
 	}
-	if !s.quorumReachable(ctx, w, caller) {
+	if !w.AutoApprove && !s.quorumReachable(ctx, w, caller) {
 		why := "it has fewer approvers than that"
 		if !w.AllowSelfApproval && s.matches(ctx, w.Approvers, caller) {
 			why = "you are one of its approvers, and the flow does not allow approving your own request"
@@ -573,7 +574,38 @@ func (s *Service) Submit(ctx context.Context, caller Identity, in NewRequest) (*
 	}
 	s.Log.Info("access request submitted", "id", r.ID, "by", caller.Actor(), "grants", grantSummary(w.Attribute, w.OktaGroups), "duration", dur)
 	s.emit(r, r.Timeline[len(r.Timeline)-1])
+	if w.AutoApprove {
+		return s.autoApprove(ctx, r, w)
+	}
 	return r, nil
+}
+
+// AutoActor is who an automatic approval is recorded as.
+const AutoActor = "jitd (automatic approval)"
+
+// autoApprove grants r, just submitted through a flow that approves on its
+// own. If the grant fails, the request is cancelled rather than left
+// pending with nobody to approve it, and the requester can submit again.
+// Callers hold s.mu.
+func (s *Service) autoApprove(ctx context.Context, r *AccessRequest, w *Workflow) (*AccessRequest, error) {
+	out, err := s.grant(ctx, r, w, Event{Actor: AutoActor}, "approved automatically by the flow", false)
+	if err == nil {
+		return out, nil
+	}
+	if out == nil {
+		return nil, err // the store write failed; nothing to report on
+	}
+	now := s.now()
+	out.Status, out.UpdatedAt = StatusCancelled, now
+	out.Timeline = append(out.Timeline, Event{Type: "cancelled", Actor: AutoActor, At: now,
+		Note: "automatic approval failed, so the request was cancelled; submit it again once the problem is fixed"})
+	if serr := s.save(out); serr != nil {
+		return nil, serr
+	}
+	s.emit(out, out.Timeline[len(out.Timeline)-1])
+	e := AsError(err)
+	e.RequestID = out.ID
+	return nil, e
 }
 
 // RecordSlackMessages notes Slack messages posted about request id, so they
@@ -840,6 +872,18 @@ func (s *Service) Approve(ctx context.Context, actor Identity, id, note string) 
 		return r, nil
 	}
 
+	return s.grant(ctx, r, w, Event{Actor: actor.Actor(), Via: actor.Via, SlackUser: actor.SlackUser}, note, !voted)
+}
+
+// grant gives r its access: it sets the posture attribute and adds the Okta
+// memberships, expiring after r's duration (capped at the flow's current
+// maximum), and records it as approved by "by" (its Actor, Via and
+// SlackUser). If granting fails, r stays pending with the error, and with
+// popVote its newest vote is dropped so the approver can retry; grant then
+// returns r and the error. Callers hold s.mu.
+func (s *Service) grant(ctx context.Context, r *AccessRequest, w *Workflow, by Event, note string, popVote bool) (*AccessRequest, error) {
+	id := r.ID
+	now := s.now()
 	grantNote := note
 	if r.Duration > w.MaxDuration {
 		grantNote = joinNote(grantNote, fmt.Sprintf("shortened from %s to the flow's maximum of %s", r.Duration.Human(), w.MaxDuration.Human()))
@@ -852,7 +896,7 @@ func (s *Service) Approve(ctx context.Context, actor Identity, id, note string) 
 	}
 	actx, cancel := apiContext(ctx)
 	defer cancel()
-	err = nil
+	var err error
 	if r.Attribute != "" {
 		err = s.syncAttribute(actx, r.TargetDeviceID, r.Attribute, r)
 	}
@@ -873,20 +917,20 @@ func (s *Service) Approve(ctx context.Context, actor Identity, id, note string) 
 			}
 		}
 		// Nothing was granted: drop this vote so the approver can retry.
-		if !voted {
+		if popVote {
 			r.Approvals = r.Approvals[:len(r.Approvals)-1]
 		}
 		r.LastError = err.Error()
-		r.Timeline = append(r.Timeline, Event{Type: "approve_failed", Actor: actor.Actor(), Note: r.LastError, Via: actor.Via, SlackUser: actor.SlackUser, At: now})
+		r.Timeline = append(r.Timeline, Event{Type: "approve_failed", Actor: by.Actor, Note: r.LastError, Via: by.Via, SlackUser: by.SlackUser, At: now})
 		if serr := s.save(r); serr != nil {
 			return nil, serr
 		}
-		s.Log.Info("access request approve failed", "id", id, "by", actor.Actor(), "err", r.LastError)
+		s.Log.Info("access request approve failed", "id", id, "by", by.Actor, "err", r.LastError)
 		s.emit(r, r.Timeline[len(r.Timeline)-1])
 		return r, apiFailed("could not grant access: %s", r.LastError)
 	}
 	r.LastError = ""
-	r.Timeline = append(r.Timeline, Event{Type: "approved", Actor: actor.Actor(), At: now, Via: actor.Via, SlackUser: actor.SlackUser,
+	r.Timeline = append(r.Timeline, Event{Type: "approved", Actor: by.Actor, At: now, Via: by.Via, SlackUser: by.SlackUser,
 		Note: joinNote(grantNote, fmt.Sprintf("for %s, until %s", r.Duration.Human(), exp.Format("2006-01-02 15:04 MST")))})
 	s.verify(actx, r)
 	if err := s.save(r); err != nil {
@@ -903,7 +947,7 @@ func (s *Service) Approve(ctx context.Context, actor Identity, id, note string) 
 		}
 		return nil, err
 	}
-	s.Log.Info("access request approved", "id", id, "by", actor.Actor(), "grants", grantSummary(r.Attribute, r.OktaGroups), "expires", exp)
+	s.Log.Info("access request approved", "id", id, "by", by.Actor, "grants", grantSummary(r.Attribute, r.OktaGroups), "expires", exp)
 	s.emit(r, r.Timeline[len(r.Timeline)-1])
 	return r, nil
 }

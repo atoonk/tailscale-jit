@@ -178,6 +178,7 @@ const openAPISpec = `{
         "max_duration": {"$ref": "#/components/schemas/Duration"}, "default_duration": {"$ref": "#/components/schemas/Duration"},
         "approvers": {"type": "array", "items": {"$ref": "#/components/schemas/Principal"}},
         "allow_self_approval": {"type": "boolean"}, "approvals_required": {"type": "integer"},
+        "auto_approve": {"type": "boolean", "description": "Requests are granted at once, with no approver"},
         "active_request_id": {"type": "string", "description": "The caller's live request through this flow, if any"},
         "active_request_url": {"type": "string"}, "active_status": {"$ref": "#/components/schemas/Status"},
         "active_expires_at": {"type": "string", "format": "date-time"}}},
@@ -220,7 +221,7 @@ const openAPISpec = `{
         "unreferenced": {"type": "boolean", "description": "No grant uses the posture: approving unlocks nothing"},
         "missing": {"type": "array", "items": {"type": "string"}}, "extra": {"type": "array", "items": {"type": "string"}},
         "error": {"type": "string", "description": "Set when the policy could not be read; the other fields are then unknown"}}},
-      "Workflow": {"type": "object", "required": ["name", "requesters", "approvers"], "properties": {
+      "Workflow": {"type": "object", "required": ["name", "requesters"], "properties": {
         "id": {"type": "string", "readOnly": true}, "name": {"type": "string", "example": "Database access (read-only)"}, "description": {"type": "string"},
         "attribute": {"type": "string", "description": "custom:jit_<name>; the prefix may be omitted when writing. Optional when okta_groups is set", "example": "custom:jit_db_ro"},
         "okta_groups": {"type": "array", "description": "Okta groups an approval adds the requester to until the access ends. When writing, give each by id or by exact name", "items": {"type": "object", "properties": {"id": {"type": "string", "example": "00g1abcdEFGHijkl2345"}, "name": {"type": "string", "example": "AWS-Prod-Admin"}}}},
@@ -228,6 +229,7 @@ const openAPISpec = `{
         "requesters": {"type": "array", "items": {"$ref": "#/components/schemas/Principal"}},
         "approvers": {"type": "array", "items": {"$ref": "#/components/schemas/Principal"}},
         "allow_self_approval": {"type": "boolean"}, "approvals_required": {"type": "integer", "default": 1, "minimum": 1, "maximum": 10},
+        "auto_approve": {"type": "boolean", "description": "Grant every request as soon as it is submitted, with no approver. approvers is then optional; anyone listed may still revoke"},
         "max_duration": {"allOf": [{"$ref": "#/components/schemas/Duration"}], "description": "1 minute to 365 days"},
         "default_duration": {"allOf": [{"$ref": "#/components/schemas/Duration"}], "description": "At most max_duration"},
         "approval_timeout": {"allOf": [{"$ref": "#/components/schemas/Duration"}], "description": "1 minute to 365 days; pending requests expire after this"}, "disabled": {"type": "boolean"},
