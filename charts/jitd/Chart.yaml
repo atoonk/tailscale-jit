@@ -1,0 +1,14 @@
+apiVersion: v2
+name: jitd
+description: Just-in-time access for a Tailscale tailnet, with approval flows that set expiring posture attributes and Okta group memberships.
+type: application
+version: 0.1.0
+appVersion: "v0.7.0"
+home: https://github.com/atoonk/tailscale-jit
+sources:
+  - https://github.com/atoonk/tailscale-jit
+keywords:
+  - tailscale
+  - jit
+  - access
+  - okta

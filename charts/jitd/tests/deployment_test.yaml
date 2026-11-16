@@ -1,0 +1,146 @@
+suite: deployment
+templates:
+  - templates/deployment.yaml
+  - templates/secret.yaml
+release:
+  name: jitd
+  namespace: jitd
+tests:
+  - it: runs one replica with Recreate and no service account token
+    template: templates/deployment.yaml
+    asserts:
+      - equal:
+          path: spec.replicas
+          value: 1
+      - equal:
+          path: spec.strategy.type
+          value: Recreate
+      - equal:
+          path: spec.template.spec.automountServiceAccountToken
+          value: false
+
+  - it: downloads the appVersion release for the chosen arch and pins the node
+    template: templates/deployment.yaml
+    set:
+      release.arch: arm64
+    asserts:
+      - contains:
+          path: spec.template.spec.initContainers[0].env
+          content:
+            name: JITD_URL
+            value: https://github.com/atoonk/tailscale-jit/releases/download/v0.7.0/jitd-linux-arm64
+      - contains:
+          path: spec.template.spec.initContainers[0].env
+          content:
+            name: JITD_SHA256
+            value: 8acdec7af679516391b13cfa178d3535ff2fb38afb9fd5c628ea2305dbcb90ed
+      - equal:
+          path: spec.template.spec.nodeSelector["kubernetes.io/arch"]
+          value: arm64
+
+  - it: uses a mirror URL when given
+    template: templates/deployment.yaml
+    set:
+      release.url: https://mirror.example.com/jitd
+    asserts:
+      - contains:
+          path: spec.template.spec.initContainers[0].env
+          content:
+            name: JITD_URL
+            value: https://mirror.example.com/jitd
+
+  - it: refuses a missing or malformed checksum
+    template: templates/deployment.yaml
+    set:
+      release.sha256.amd64: ""
+    asserts:
+      - failedTemplate:
+          errorPattern: release.sha256.amd64 must be the 64-character sha256
+
+  - it: refuses an unknown arch
+    template: templates/deployment.yaml
+    set:
+      release.arch: riscv64
+    asserts:
+      - failedTemplate:
+          errorPattern: release.arch must be amd64 or arm64
+
+  - it: passes admins, flags and keeps state on the data volume
+    template: templates/deployment.yaml
+    set:
+      admins: [you@example.com, group:jit-admins]
+      https: true
+      extraArgs: [-ts-api=https://api.example.com]
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: -admins=you@example.com,group:jit-admins
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: -https
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: -state-dir=/data/tsnet-state
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: -ts-api=https://api.example.com
+      - equal:
+          path: spec.template.spec.volumes[2].persistentVolumeClaim.claimName
+          value: jitd-data
+
+  - it: has no admins flag and no envFrom by default
+    template: templates/deployment.yaml
+    asserts:
+      - notContains:
+          path: spec.template.spec.containers[0].args
+          content: -admins=
+      - notExists:
+          path: spec.template.spec.containers[0].envFrom
+
+  - it: reads credentials from an existing Secret
+    template: templates/deployment.yaml
+    set:
+      credentials.existingSecret: my-jitd-creds
+      env:
+        OKTA_ORG_URL: https://example.okta.com
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].envFrom
+          content:
+            secretRef:
+              name: my-jitd-creds
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: OKTA_ORG_URL
+            value: https://example.okta.com
+      - notExists:
+          path: spec.template.metadata.annotations["checksum/credentials"]
+
+  - it: creates a Secret from values and restarts on change
+    set:
+      credentials.values:
+        TS_OAUTH_CLIENT_ID: example-id
+    asserts:
+      - template: templates/secret.yaml
+        equal:
+          path: stringData.TS_OAUTH_CLIENT_ID
+          value: example-id
+      - template: templates/deployment.yaml
+        exists:
+          path: spec.template.metadata.annotations["checksum/credentials"]
+      - template: templates/deployment.yaml
+        contains:
+          path: spec.template.spec.containers[0].envFrom
+          content:
+            secretRef:
+              name: jitd
+
+  - it: uses an emptyDir without persistence
+    template: templates/deployment.yaml
+    set:
+      persistence.enabled: false
+    asserts:
+      - equal:
+          path: spec.template.spec.volumes[2].emptyDir
+          value: {}
