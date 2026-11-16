@@ -182,3 +182,26 @@ func TestAutoApproveFlowChangedMeanwhile(t *testing.T) {
 		t.Errorf("request = %+v, member = %v", g, f.Member(gAdmin, uAlice))
 	}
 }
+
+// A failed automatic grant whose memberships cannot be taken back leaves a
+// note on the cancelled request, and the next tick takes them back.
+func TestAutoApproveFailedTakeBackIsRetried(t *testing.T) {
+	h, f := oktaHarness(t)
+	w := h.workflow(t, autoFlow(OktaGroup{ID: gAdmin}, OktaGroup{ID: gRead}))
+	f.Fail["add:"+gRead] = errors.New("boom")
+	f.Fail["remove:"+gAdmin] = errors.New("okta is down")
+	_, err := h.svc.Submit(ctx, alice, NewRequest{WorkflowID: w.ID, Reason: "x"})
+	e := AsError(err)
+	if e.RequestID == "" {
+		t.Fatalf("submit = %v", err)
+	}
+	g := h.svc.Request(e.RequestID)
+	if g.Status != StatusCancelled || g.OktaAdding == nil || !f.Member(gAdmin, uAlice) {
+		t.Fatalf("after the failed grant: status %s, intent %+v, member = %v", g.Status, g.OktaAdding, f.Member(gAdmin, uAlice))
+	}
+	delete(f.Fail, "remove:"+gAdmin)
+	h.svc.ExpireDue()
+	if g := h.svc.Request(e.RequestID); g.OktaAdding != nil || f.Member(gAdmin, uAlice) {
+		t.Errorf("after the tick: intent %+v, member = %v", g.OktaAdding, f.Member(gAdmin, uAlice))
+	}
+}

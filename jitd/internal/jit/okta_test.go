@@ -713,3 +713,321 @@ func TestOktaReadAllowlist(t *testing.T) {
 		t.Errorf("approver logins = %v, %v", logins, err)
 	}
 }
+
+// jitd writes down which memberships it is about to add before it adds the
+// first one, and the note goes away in the save that records the grant.
+func TestOktaIntentRecordedBeforeAdd(t *testing.T) {
+	h, f := oktaHarness(t)
+	w := h.workflow(t, oktaFlow(OktaGroup{ID: gAdmin}, OktaGroup{ID: gRead}))
+	r, _ := h.svc.Submit(ctx, alice, NewRequest{WorkflowID: w.ID, Reason: "x"})
+	f.SetMember(gRead, uAlice) // held outside jitd: not jitd's to record or undo
+	var seen *OktaIntent
+	f.Hook = func(call string) {
+		if call == "add" && seen == nil {
+			if cur := h.svc.Request(r.ID); cur.OktaAdding != nil {
+				seen = cur.OktaAdding
+			} else {
+				seen = &OktaIntent{}
+			}
+		}
+	}
+	got, err := h.svc.Approve(ctx, bob, r.ID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if seen == nil || seen.UserID != uAlice || !slices.Equal(seen.Groups, []string{gAdmin}) {
+		t.Fatalf("on record at the first Okta change: %+v", seen)
+	}
+	if got.OktaAdding != nil || !slices.Equal(got.Okta.Added, []string{gAdmin}) || !slices.Equal(got.Okta.Preexisting, []string{gRead}) {
+		t.Errorf("after approve: adding=%+v okta=%+v", got.OktaAdding, got.Okta)
+	}
+	if cur := h.svc.Request(r.ID); cur.OktaAdding != nil {
+		t.Errorf("stored intent after approve: %+v", cur.OktaAdding)
+	}
+}
+
+// jitd stops after it added the user in Okta and before the approval was
+// saved. The membership is on record, so the next tick (the first thing a
+// restarted jitd does) takes it back; the request is still pending and can
+// be approved again.
+func TestOktaUnfinishedApprovalTakenBack(t *testing.T) {
+	h, f := oktaHarness(t)
+	w := h.workflow(t, oktaFlow(OktaGroup{ID: gAdmin}))
+	r, _ := h.svc.Submit(ctx, alice, NewRequest{WorkflowID: w.ID, Reason: "x"})
+	if out := h.svc.grantOkta(ctx, r); out.err != nil { // an approval that gets no further
+		t.Fatal(out.err)
+	}
+	cur := h.svc.Request(r.ID)
+	if !f.Member(gAdmin, uAlice) || cur.Status != StatusPending || cur.OktaAdding == nil || cur.Okta != nil {
+		t.Fatalf("after the unfinished approval: member=%v %s adding=%+v okta=%+v", f.Member(gAdmin, uAlice), cur.Status, cur.OktaAdding, cur.Okta)
+	}
+	h.svc.ExpireDue()
+	cur = h.svc.Request(r.ID)
+	if f.Member(gAdmin, uAlice) || cur.OktaAdding != nil || cur.Status != StatusPending {
+		t.Fatalf("after the tick: member=%v %s adding=%+v", f.Member(gAdmin, uAlice), cur.Status, cur.OktaAdding)
+	}
+	got, err := h.svc.Approve(ctx, bob, r.ID, "")
+	if err != nil || !slices.Equal(got.Okta.Added, []string{gAdmin}) || !f.Member(gAdmin, uAlice) {
+		t.Errorf("approve afterwards = %v %+v", err, got)
+	}
+}
+
+// The request is approved again before the tick cleaned up. The membership
+// the unfinished approval left is jitd's: it is recorded as added, not as
+// one the user had before, so it comes off when the access ends.
+func TestOktaReapprovalAfterUnfinished(t *testing.T) {
+	h, f := oktaHarness(t)
+	w := h.workflow(t, oktaFlow(OktaGroup{ID: gAdmin}))
+	r, _ := h.svc.Submit(ctx, alice, NewRequest{WorkflowID: w.ID, Reason: "x", Duration: Duration(time.Hour)})
+	if out := h.svc.grantOkta(ctx, r); out.err != nil {
+		t.Fatal(out.err)
+	}
+	got, err := h.svc.Approve(ctx, bob, r.ID, "")
+	if err != nil || !slices.Equal(got.Okta.Added, []string{gAdmin}) || len(got.Okta.Preexisting) != 0 || got.OktaAdding != nil {
+		t.Fatalf("approve = %v okta=%+v adding=%+v", err, got.Okta, got.OktaAdding)
+	}
+	if calls := f.Mutations(); !slices.Equal(calls, []string{"ADD " + gAdmin + " " + uAlice}) {
+		t.Errorf("Okta changes = %v", calls)
+	}
+	h.svc.ExpireDue() // nothing unfinished is left to take back
+	if !f.Member(gAdmin, uAlice) {
+		t.Fatal("the tick removed a membership a running request holds")
+	}
+	h.now = t0.Add(2 * time.Hour)
+	h.svc.ExpireDue()
+	if f.Member(gAdmin, uAlice) {
+		t.Error("the membership outlived the access")
+	}
+}
+
+// The approval fails and so does taking the membership back. It stays on
+// record, the admins can see it, and the tick retries. Meanwhile another
+// request may take the membership over; then it is no longer removed.
+func TestOktaFailedTakeBackRetried(t *testing.T) {
+	for _, takeover := range []bool{false, true} {
+		t.Run(fmt.Sprintf("takeover=%v", takeover), func(t *testing.T) {
+			h, f := oktaHarness(t)
+			fl := oktaFlow(OktaGroup{ID: gAdmin})
+			fl.Attribute = "aws"
+			w := h.workflow(t, fl)
+			r, _ := h.svc.Submit(ctx, alice, NewRequest{WorkflowID: w.ID, Reason: "x"})
+			h.ts.fail["custom:jit_aws"] = errors.New("tailscale down")
+			f.Fail["remove:"+gAdmin] = errors.New("okta down")
+			got, err := h.svc.Approve(ctx, bob, r.ID, "")
+			if code(err) != "tailscale_api_error" || got.Status != StatusPending || got.Okta != nil {
+				t.Fatalf("approve = %v %+v", err, got)
+			}
+			if got.OktaAdding == nil || !slices.Equal(got.OktaAdding.Groups, []string{gAdmin}) || !strings.Contains(got.OktaAdding.Error, "okta down") {
+				t.Fatalf("left on record: %+v", got.OktaAdding)
+			}
+			if ps := h.svc.OktaProblems(); len(ps) != 1 || ps[0].RequestID != r.ID || !strings.Contains(ps[0].Text, "AWS-Prod-Admin") {
+				t.Errorf("problems = %+v", ps)
+			}
+			if takeover {
+				other := oktaFlow(OktaGroup{ID: gAdmin})
+				other.Name = "AWS admin, Okta only"
+				w2 := h.workflow(t, other)
+				b, _ := h.svc.Submit(ctx, alice, NewRequest{WorkflowID: w2.ID, Reason: "y"})
+				got, err := h.svc.Approve(ctx, bob, b.ID, "")
+				if err != nil || !slices.Equal(got.Okta.Added, []string{gAdmin}) || len(got.Okta.Preexisting) != 0 {
+					t.Fatalf("approve of the other request = %v %+v", err, got.Okta)
+				}
+			}
+			delete(f.Fail, "remove:"+gAdmin)
+			h.svc.ExpireDue()
+			if f.Member(gAdmin, uAlice) != takeover {
+				t.Errorf("member after the retry = %v, want %v", f.Member(gAdmin, uAlice), takeover)
+			}
+			if cur := h.svc.Request(r.ID); cur.OktaAdding != nil {
+				t.Errorf("still on record: %+v", cur.OktaAdding)
+			}
+			if ps := h.svc.OktaProblems(); len(ps) != 0 {
+				t.Errorf("problems after the retry = %+v", ps)
+			}
+		})
+	}
+}
+
+// A removal that keeps failing is retried quietly at first. After
+// OktaAlertAfter the admins are told, once, and told again when it clears.
+func TestOktaStuckRemovalAlerts(t *testing.T) {
+	for _, attr := range []string{"", "aws"} {
+		t.Run("attribute="+attr, func(t *testing.T) {
+			h, f := oktaHarness(t)
+			rec := &recorder{}
+			h.svc.Notify = rec
+			fl := oktaFlow(OktaGroup{ID: gAdmin})
+			fl.Attribute = attr
+			w := h.workflow(t, fl)
+			r, _ := h.svc.Submit(ctx, alice, NewRequest{WorkflowID: w.ID, Reason: "x"})
+			h.svc.Approve(ctx, bob, r.ID, "")
+			f.Fail["remove:"+gAdmin] = errors.New("403 forbidden")
+			h.svc.Revoke(ctx, bob, r.ID, "")
+			count := func(typ string) int {
+				n := 0
+				for _, e := range rec.list() {
+					if strings.HasPrefix(e, r.ID+" "+typ+" ") {
+						n++
+					}
+				}
+				return n
+			}
+
+			h.now = t0.Add(time.Minute)
+			h.svc.ExpireDue()
+			cur := h.svc.Request(r.ID)
+			if cur.Okta.FailingSince == nil || !cur.Okta.FailingSince.Equal(t0) || cur.OktaStuck() || count(EventOktaStuck) != 0 || len(h.svc.OktaProblems()) != 0 {
+				t.Fatalf("after a minute: %+v, %d alerts, problems %+v", cur.Okta, count(EventOktaStuck), h.svc.OktaProblems())
+			}
+			h.now = t0.Add(6 * time.Minute)
+			h.svc.ExpireDue()
+			h.now = t0.Add(7 * time.Minute)
+			h.svc.ExpireDue()
+			cur = h.svc.Request(r.ID)
+			if !cur.OktaStuck() || count(EventOktaStuck) != 1 {
+				t.Fatalf("after six minutes: %+v, %d alerts", cur.Okta, count(EventOktaStuck))
+			}
+			if ps := h.svc.OktaProblems(); len(ps) != 1 || ps[0].RequestID != r.ID || !strings.Contains(ps[0].Text, "403 forbidden") {
+				t.Errorf("problems = %+v", ps)
+			}
+
+			delete(f.Fail, "remove:"+gAdmin)
+			h.now = t0.Add(8 * time.Minute)
+			h.svc.ExpireDue()
+			cur = h.svc.Request(r.ID)
+			if f.Member(gAdmin, uAlice) || cur.Okta.RemovedAt == nil || cur.Okta.FailingSince != nil || cur.Okta.Error != "" || cur.OktaStuck() {
+				t.Fatalf("after Okta recovered: member=%v %+v", f.Member(gAdmin, uAlice), cur.Okta)
+			}
+			if len(h.svc.OktaProblems()) != 0 {
+				t.Errorf("problems after Okta recovered = %+v", h.svc.OktaProblems())
+			}
+			// Someone is told that it went through: for an Okta-only request
+			// that is the end of its access, otherwise the all-clear.
+			want := EventOktaCleared
+			if attr == "" {
+				want = EventRemoved
+			}
+			if count(want) != 1 {
+				t.Errorf("%s events = %d; all: %v", want, count(want), rec.list())
+			}
+		})
+	}
+}
+
+// Someone takes the user out of the group in Okta while the access is
+// running. jitd notes it on the request and leaves Okta alone.
+func TestOktaVerifyNotesMissing(t *testing.T) {
+	h, f := oktaHarness(t)
+	w := h.workflow(t, oktaFlow(OktaGroup{ID: gAdmin}, OktaGroup{ID: gRead}))
+	r, _ := h.svc.Submit(ctx, alice, NewRequest{WorkflowID: w.ID, Reason: "x", Duration: Duration(2 * time.Hour)})
+	h.svc.Approve(ctx, bob, r.ID, "")
+	lookups := func() int {
+		n := 0
+		for _, c := range f.Calls {
+			if c == "USERGROUPS "+uAlice {
+				n++
+			}
+		}
+		f.Mutations() // clears the log
+		return n
+	}
+	lookups()
+	h.svc.ExpireDue()
+	cur := h.svc.Request(r.ID)
+	if lookups() != 1 || cur.Okta.CheckedAt == nil || len(cur.Okta.Missing) != 0 {
+		t.Fatalf("first comparison: %+v", cur.Okta)
+	}
+	f.RemoveMember(ctx, gAdmin, uAlice) // an Okta admin, not jitd
+	h.now = t0.Add(time.Minute)
+	h.svc.ExpireDue()
+	if n := lookups(); n != 0 {
+		t.Errorf("compared again after a minute (%d lookups)", n)
+	}
+	h.now = t0.Add(11 * time.Minute)
+	h.svc.ExpireDue()
+	cur = h.svc.Request(r.ID)
+	if !slices.Equal(cur.Okta.Missing, []string{gAdmin}) || !slices.Equal(cur.OktaMissingLabels(), []string{"AWS-Prod-Admin"}) {
+		t.Fatalf("missing = %v %v", cur.Okta.Missing, cur.OktaMissingLabels())
+	}
+	if f.Member(gAdmin, uAlice) || !f.Member(gRead, uAlice) {
+		t.Errorf("jitd changed Okta: admin=%v read=%v", f.Member(gAdmin, uAlice), f.Member(gRead, uAlice))
+	}
+	if calls := f.Mutations(); len(calls) != 0 {
+		t.Errorf("Okta changes = %v", calls)
+	}
+	// The end of the access is as usual.
+	h.now = t0.Add(3 * time.Hour)
+	h.svc.ExpireDue()
+	cur = h.svc.Request(r.ID)
+	if f.Member(gRead, uAlice) || cur.Okta.RemovedAt == nil || len(cur.OktaMissingLabels()) != 0 {
+		t.Errorf("after expiry: read=%v %+v", f.Member(gRead, uAlice), cur.Okta)
+	}
+}
+
+// Credentials that stop working show before a removal needs them.
+func TestOktaCredentialsCheck(t *testing.T) {
+	h, f := oktaHarness(t)
+	h.svc.ExpireDue()
+	if ps := h.svc.OktaProblems(); len(ps) != 0 {
+		t.Fatalf("problems with working credentials = %+v", ps)
+	}
+	f.Fail["check"] = errors.New("401 invalid token")
+	h.now = t0.Add(30 * time.Minute)
+	h.svc.ExpireDue()
+	if len(h.svc.OktaProblems()) != 0 {
+		t.Error("checked again within the hour")
+	}
+	h.now = t0.Add(61 * time.Minute)
+	h.svc.ExpireDue()
+	if ps := h.svc.OktaProblems(); len(ps) != 1 || ps[0].RequestID != "" || !strings.Contains(ps[0].Text, "401 invalid token") {
+		t.Fatalf("problems = %+v", ps)
+	}
+	delete(f.Fail, "check")
+	h.now = t0.Add(63 * time.Minute)
+	h.svc.ExpireDue()
+	if len(h.svc.OktaProblems()) != 1 {
+		t.Error("a failing check was repeated after two minutes")
+	}
+	h.now = t0.Add(67 * time.Minute)
+	h.svc.ExpireDue()
+	if ps := h.svc.OktaProblems(); len(ps) != 0 {
+		t.Errorf("problems after the credentials were fixed = %+v", ps)
+	}
+}
+
+// Two approvers answer at once. The second read the request while the
+// first was halfway (its note of what it was adding was on record) and
+// then loses. Taking the loser's attempt back must not remove what the
+// winner's approval holds.
+func TestOktaLosingApprovalLeavesWinnersGrant(t *testing.T) {
+	h, f := oktaHarness(t)
+	fl := oktaFlow(OktaGroup{ID: gAdmin})
+	fl.Approvers = []Principal{"bob@example.com", "group:sre"}
+	w := h.workflow(t, fl)
+	r, _ := h.svc.Submit(ctx, alice, NewRequest{WorkflowID: w.ID, Reason: "x"})
+	var stale *AccessRequest
+	f.Hook = func(call string) {
+		if call == "add" && stale == nil {
+			stale = h.svc.Request(r.ID) // what the second approver saw
+		}
+	}
+	if _, err := h.svc.Approve(ctx, bob, r.ID, ""); err != nil {
+		t.Fatal(err)
+	}
+	f.Hook = nil
+	if stale == nil || stale.Status != StatusPending || stale.OktaAdding == nil {
+		t.Fatalf("the request halfway through the first approval: %+v", stale)
+	}
+	f.Mutations()
+	out := h.svc.grantOkta(ctx, stale)
+	if out.err == nil {
+		t.Fatal("a grant for an approved request went through")
+	}
+	h.svc.takeBackOkta(ctx, r.ID, out)
+	if calls := f.Mutations(); len(calls) != 0 || !f.Member(gAdmin, uAlice) {
+		t.Errorf("Okta changes = %v, member=%v", calls, f.Member(gAdmin, uAlice))
+	}
+	if got, err := h.svc.Approve(ctx, carol, r.ID, ""); code(err) != "conflict" || !f.Member(gAdmin, uAlice) {
+		t.Errorf("second approval = %v %+v, member=%v", err, got, f.Member(gAdmin, uAlice))
+	}
+}

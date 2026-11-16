@@ -594,10 +594,23 @@ How it behaves:
   (`-expiry-interval`, 30 seconds by default). If jitd is down when access
   ends, the membership stays until it is back. A removal that fails (a rate
   limit, a revoked token) is retried on every tick, and the request page
-  says so.
+  says so. After five minutes of failing, admins see a banner on every
+  page, and those with a Slack account get one direct message, which turns
+  into an all-clear when the removal goes through.
 - **All or nothing.** If adding any group fails, jitd takes back what it
   already added (and the posture attribute) and the request stays pending,
   so the approver can try again.
+- **Recorded first.** jitd writes down which memberships it is about to add
+  before it adds the first one. If it stops halfway through an approval,
+  or can't take a failed approval back, the next tick (the first thing a
+  restarted jitd does) removes them; until then admins see it in the
+  banner.
+- **Checked while it runs.** Every ten minutes jitd compares the
+  memberships of running requests with Okta. If someone removed the user
+  from a group in Okta, the request page says so; jitd does not add them
+  back.
+- **Token check.** jitd makes one cheap Okta call an hour, so a revoked or
+  expired token shows in the admins' banner before a removal needs it.
 - **Policy.** A flow with only Okta groups needs nothing in the tailnet
   policy file, and the policy snippet leaves it out.
 

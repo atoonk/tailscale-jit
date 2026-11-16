@@ -235,6 +235,34 @@ type OktaGrant struct {
 	RemovedAt *time.Time `json:"removed_at,omitempty"`
 	// Error is the last failure to remove a membership; jitd keeps retrying.
 	Error string `json:"error,omitempty"`
+	// FailingSince is when removal first failed, for as long as it keeps
+	// failing.
+	FailingSince *time.Time `json:"failing_since,omitempty"`
+	// AlertedAt is when jitd told the admins that removal is stuck (it had
+	// been failing for Service.OktaAlertAfter).
+	AlertedAt *time.Time `json:"alerted_at,omitempty"`
+	// Missing are Added groups the user was no longer in when jitd last
+	// looked, while the access was still running: someone took the user
+	// out in Okta. jitd reports it and does not add them back.
+	Missing []string `json:"missing,omitempty"`
+	// CheckedAt is when jitd last compared Added with Okta.
+	CheckedAt *time.Time `json:"checked_at,omitempty"`
+}
+
+// OktaIntent is written to a request before jitd adds its requester to any
+// Okta group, and cleared in the same save that records the grant (or once
+// the memberships are taken back). A membership is therefore never in Okta
+// without a record of it: if jitd stops halfway through an approval, the
+// intent is still there and the next expiry tick takes the user out again.
+type OktaIntent struct {
+	UserID string `json:"user_id"`
+	Login  string `json:"login,omitempty"`
+	// Groups are the IDs of the groups jitd set out to add the user to.
+	// The user was in none of them when the intent was written.
+	Groups []string  `json:"groups"`
+	At     time.Time `json:"at"`
+	// Error is the last failure to take the memberships back.
+	Error string `json:"error,omitempty"`
 }
 
 // AttrPrefix is the namespace of every attribute jitd writes.
@@ -378,6 +406,10 @@ type Event struct {
 const (
 	EventConfirmed = "confirmed"
 	EventRemoved   = "removed"
+	// The removal of the request's Okta memberships has been failing for a
+	// while, or went through after that.
+	EventOktaStuck   = "okta_stuck"
+	EventOktaCleared = "okta_cleared"
 )
 
 // AccessRequest is a request for time-limited access through one workflow.
@@ -407,6 +439,9 @@ type AccessRequest struct {
 	LastError         string      `json:"last_error,omitempty"`
 	// Okta is what approval did in Okta, for flows with OktaGroups.
 	Okta *OktaGrant `json:"okta,omitempty"`
+	// OktaAdding is set while an approval is adding the requester to Okta
+	// groups, and stays if that approval did not finish (see OktaIntent).
+	OktaAdding *OktaIntent `json:"okta_adding,omitempty"`
 	// Slack lists the Slack messages posted about this request.
 	Slack     []SlackMessage `json:"slack,omitempty"`
 	CreatedAt time.Time      `json:"created_at"`
@@ -436,6 +471,48 @@ func (r *AccessRequest) Granted() bool {
 func (r *AccessRequest) oktaPendingRemoval() bool {
 	ended := r.Status == StatusExpired || r.Status == StatusRevoked
 	return ended && r.Okta != nil && len(r.Okta.Added) > 0 && r.Okta.RemovedAt == nil
+}
+
+// OktaRemovalPending reports whether r ended and its requester is still in
+// Okta groups jitd added them to.
+func (r *AccessRequest) OktaRemovalPending() bool { return r.oktaPendingRemoval() }
+
+// OktaStuck reports whether removing r's Okta memberships has been failing
+// for long enough that jitd told the admins.
+func (r *AccessRequest) OktaStuck() bool {
+	return r.oktaPendingRemoval() && r.Okta.AlertedAt != nil
+}
+
+// OktaAddedLabels names the Okta groups jitd added r's requester to.
+func (r *AccessRequest) OktaAddedLabels() []string {
+	if r.Okta == nil {
+		return nil
+	}
+	return r.oktaLabels(r.Okta.Added)
+}
+
+// OktaMissingLabels names the Okta groups r's requester was taken out of,
+// outside jitd, while the access was running.
+func (r *AccessRequest) OktaMissingLabels() []string {
+	if r.Okta == nil || r.Status != StatusApproved {
+		return nil
+	}
+	return r.oktaLabels(r.Okta.Missing)
+}
+
+// oktaLabels names Okta groups by ID, with the names r was filed with.
+func (r *AccessRequest) oktaLabels(ids []string) []string {
+	var out []string
+	for _, id := range ids {
+		label := id
+		for _, g := range r.OktaGroups {
+			if g.ID == id {
+				label = g.Label()
+			}
+		}
+		out = append(out, label)
+	}
+	return out
 }
 
 var attrNameRE = regexp.MustCompile(`^[a-z0-9_]{1,32}$`)

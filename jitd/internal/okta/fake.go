@@ -14,10 +14,11 @@ type Fake struct {
 	Users   map[string]User            // by login
 	Groups  map[string]Group           // by ID
 	Members map[string]map[string]bool // group ID -> user ID -> member
-	Fail    map[string]error           // "add:<group>", "remove:<group>", "find:<login>" -> error
+	Fail    map[string]error           // "add:<group>", "remove:<group>", "find:<login>", "usergroups:<user>", "check" -> error
 	Calls   []string
 	// Hook, if set, runs at the start of every call with its name
-	// ("finduser", "findgroup", "ismember", "add", "remove"), before the
+	// ("finduser", "findgroup", "ismember", "add", "remove", "usergroups",
+	// "check"), before the
 	// Fake takes its own lock, so it may call back into the code under test.
 	Hook func(call string)
 }
@@ -142,7 +143,16 @@ func (f *Fake) RemoveMember(ctx context.Context, groupID, userID string) error {
 	return nil
 }
 
+// Check fails with Fail["check"], if set.
+func (f *Fake) Check(ctx context.Context) error {
+	f.hook("check")
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.Fail["check"]
+}
+
 func (f *Fake) UserGroups(ctx context.Context, userID string) ([]Group, error) {
+	f.hook("usergroups")
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.Calls = append(f.Calls, "USERGROUPS "+userID)

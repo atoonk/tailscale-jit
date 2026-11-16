@@ -55,6 +55,11 @@ type Service struct {
 	// is held, so waiting for Okta does not hold up anything else.
 	oktaMu sync.Mutex
 	ocache oktaCache
+	// OktaAlertAfter is how long the removal of a request's Okta
+	// memberships may keep failing before jitd tells the admins. Default
+	// DefaultOktaAlertAfter.
+	OktaAlertAfter time.Duration
+	okHealth       oktaHealth
 }
 
 // Notifier is told about access request changes: a new request, a vote, a
@@ -900,24 +905,22 @@ func (s *Service) grantOutsideLock(ctx context.Context, id string, step func(*ok
 	defer s.oktaMu.Unlock()
 	octx, cancel := apiContext(ctx)
 	defer cancel()
-	out := &oktaOutcome{}
-	out.grant, out.fresh, out.err = s.grantOkta(octx, r)
+	// Read the request again now that oktaMu is held: another approval may
+	// have finished, or left a note of what it added, while this one waited.
+	if cur := s.Request(id); cur != nil {
+		r = cur
+	}
+	out := s.grantOkta(octx, r)
 	r, _, err = step(out)
 	if !out.used {
 		// The approval did not go through after all (the request changed
 		// meanwhile, the attribute could not be set, the save failed).
 		s.takeBackOkta(octx, id, out)
+		if cur := s.Request(id); r != nil && cur != nil {
+			r.OktaAdding = cur.OktaAdding // what could not be taken back, if anything
+		}
 	}
 	return r, err
-}
-
-// oktaOutcome is the result of adding a request's Okta memberships, which
-// grantOutsideLock does outside the service lock.
-type oktaOutcome struct {
-	grant *OktaGrant // what to record on the request; nil if err is set
-	fresh []string   // IDs of the groups this attempt added the user to
-	err   error
-	used  bool // the approval was saved with grant
 }
 
 // approve is Approve under the service lock. For a grant that includes Okta
@@ -1036,7 +1039,8 @@ func (s *Service) grant(ctx context.Context, r *AccessRequest, w *Workflow, by E
 		return r, false, apiFailed("could not grant access: %s", r.LastError)
 	}
 	if og != nil {
-		r.Okta = og.grant
+		// The grant is on record from here; the intent has done its job.
+		r.Okta, r.OktaAdding = og.grant, nil
 	}
 	r.LastError = ""
 	r.Timeline = append(r.Timeline, Event{Type: "approved", Actor: by.Actor, At: now, Via: by.Via, SlackUser: by.SlackUser,
@@ -1250,7 +1254,7 @@ func (s *Service) Cancel(ctx context.Context, actor Identity, id, note string) (
 // pending requests nobody decided within the workflow's approval timeout. It
 // makes no Tailscale API calls: Tailscale removes the attribute itself at its
 // expiry. Okta memberships have no expiry, so it removes those, after the
-// service lock is released (see releaseOktaDue).
+// service lock is released (see oktaUpkeep).
 // (Two live requests for one attribute and device are rare: one per flow and
 // device is allowed, so it takes an attribute moved to another flow. The
 // attribute then carries the later expiry already.)
@@ -1258,7 +1262,7 @@ func (s *Service) ExpireDue() int {
 	n := s.expireDue()
 	octx, cancel := context.WithTimeout(context.Background(), oktaTimeout)
 	defer cancel()
-	s.releaseOktaDue(octx)
+	s.oktaUpkeep(octx)
 	return n
 }
 

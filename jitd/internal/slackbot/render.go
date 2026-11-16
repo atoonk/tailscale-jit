@@ -167,7 +167,7 @@ func statusLine(r *jit.AccessRequest, counted int) string {
 		if r.Enforcement.RemovedAt != nil {
 			s += "\nAccess confirmed gone from the device"
 		}
-		return s
+		return s + oktaStuckLine(r)
 	case jit.StatusExpired:
 		if !r.Granted() {
 			return "Expired without a decision"
@@ -179,9 +179,51 @@ func statusLine(r *jit.AccessRequest, counted int) string {
 		if r.Enforcement.RemovedAt != nil {
 			s += "\nAccess confirmed gone from the device"
 		}
-		return s
+		return s + oktaStuckLine(r)
 	}
 	return string(r.Status)
+}
+
+// oktaStuckLine warns, on an ended request, that its Okta memberships are
+// still in place after jitd kept failing to remove them.
+func oktaStuckLine(r *jit.AccessRequest) string {
+	if !r.OktaStuck() {
+		return ""
+	}
+	return "\n:warning: still in the Okta group " + esc(strings.Join(r.OktaAddedLabels(), ", ")) + "; jitd keeps trying to remove it"
+}
+
+// renderOktaAlert builds the direct message to an admin about a request
+// whose Okta memberships jitd cannot remove. Like the request message it is
+// rebuilt from the request, so it turns into the all-clear once the removal
+// goes through.
+func renderOktaAlert(r *jit.AccessRequest, url string) slack.Message {
+	who, groups := "the requester", "its Okta groups"
+	if r.Okta != nil {
+		who = "`" + esc(r.Okta.Login) + "`"
+		groups = esc(strings.Join(r.OktaAddedLabels(), ", "))
+	}
+	link := fmt.Sprintf("<%s|%s>", url, esc(r.WorkflowName))
+	var text, plain string
+	if r.OktaStuck() {
+		plain = fmt.Sprintf("Okta removal is failing: %s is still in %s", r.Requester.Actor(), strings.Join(r.OktaAddedLabels(), ", "))
+		text = fmt.Sprintf(":warning: *Okta removal is failing · %s*\nThe access of %s has ended, but the Okta user is still in *%s*. jitd keeps trying; take the user out in Okta if this cannot wait.",
+			link, who, groups)
+		if e := r.Okta.Error; e != "" {
+			if len(e) > 600 {
+				e = e[:600] + "…"
+			}
+			text += "\n" + quote(e)
+		}
+	} else {
+		plain = fmt.Sprintf("Okta removal went through: %s is out of %s", r.Requester.Actor(), strings.Join(r.OktaAddedLabels(), ", "))
+		text = fmt.Sprintf(":white_check_mark: *Okta removal went through · %s*\nThe Okta user %s is out of *%s*.", link, who, groups)
+	}
+	return slack.Message{Text: plain, Blocks: []slack.Block{
+		slack.Section(slack.Mrkdwn(text)),
+		slack.Context(slack.Mrkdwn("`" + r.ID + "`")),
+		slack.Actions("jit_actions", slack.LinkButton(actionOpen, "Open", url)),
+	}}
 }
 
 // slackTime shows t in the reader's own time zone, with a UTC fallback.

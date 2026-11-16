@@ -34,6 +34,8 @@ type Client interface {
 	UserGroups(ctx context.Context, userID string) ([]Group, error)
 	// GroupMembers lists the members of group, up to MaxGroupMembers.
 	GroupMembers(ctx context.Context, groupID string) ([]User, error)
+	// Check makes one cheap call to see that the credentials work.
+	Check(ctx context.Context) error
 }
 
 // MaxGroupMembers caps GroupMembers, so one huge group cannot stall jitd.
@@ -271,6 +273,13 @@ func memberPath(groupID, userID string) string {
 	return "/api/v1/groups/" + url.PathEscape(groupID) + "/users/" + url.PathEscape(userID)
 }
 
+// Check lists one group: it needs the same rights as the rest of jitd's
+// calls, and it counts as use of the token.
+func (c *HTTP) Check(ctx context.Context) error {
+	var gs []Group
+	return c.do(ctx, http.MethodGet, "/api/v1/groups?limit=1", nil, &gs, nil)
+}
+
 func (c *HTTP) AddMember(ctx context.Context, groupID, userID string) error {
 	return c.do(ctx, http.MethodPut, memberPath(groupID, userID), nil, nil, nil)
 }
@@ -479,6 +488,14 @@ func (d *Dynamic) GroupMembers(ctx context.Context, groupID string) ([]User, err
 		return nil, err
 	}
 	return c.GroupMembers(ctx, groupID)
+}
+
+func (d *Dynamic) Check(ctx context.Context) error {
+	c, err := d.get()
+	if err != nil {
+		return err
+	}
+	return c.Check(ctx)
 }
 
 func (d *Dynamic) RemoveMember(ctx context.Context, groupID, userID string) error {
