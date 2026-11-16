@@ -92,24 +92,30 @@ func grantSummary(attr string, groups []OktaGroup) string {
 	return strings.Join(parts, " and ")
 }
 
-// oktaHolders returns, for user, the IDs of groups that live requests other
-// than self hold through jitd.
-func (s *Service) oktaHolders(userID string, self string) map[string]bool {
+// oktaHolders returns, for user, the IDs of groups that requests other than
+// self hold through jitd. live are held by a request whose access is still
+// running. leaving are held by a request that has ended (or is past its
+// expiry) and whose removal from Okta has not happened yet: jitd put the
+// user in those groups, so they are jitd's to take off, not memberships
+// the user had before.
+func (s *Service) oktaHolders(userID string, self string) (live, leaving map[string]bool) {
 	now := s.now()
-	held := map[string]bool{}
+	live, leaving = map[string]bool{}, map[string]bool{}
 	s.Store.View(func(d *Data) {
 		for _, r := range d.Requests {
-			if r.ID == self || r.Okta == nil || r.Okta.UserID != userID {
+			if r.ID == self || r.Okta == nil || r.Okta.UserID != userID || r.Okta.RemovedAt != nil {
 				continue
 			}
+			into := leaving
 			if r.Status == StatusApproved && r.ExpiresAt != nil && r.ExpiresAt.After(now) {
-				for _, g := range r.Okta.Added {
-					held[g] = true
-				}
+				into = live
+			}
+			for _, g := range r.Okta.Added {
+				into[g] = true
 			}
 		}
 	})
-	return held
+	return live, leaving
 }
 
 // grantOkta adds r's requester to r's Okta groups and records what it did
@@ -137,7 +143,7 @@ func (s *Service) grantOkta(ctx context.Context, r *AccessRequest) error {
 		}
 	}
 	g := &OktaGrant{UserID: u.ID, Login: u.Profile.Login}
-	held := s.oktaHolders(u.ID, r.ID)
+	held, leaving := s.oktaHolders(u.ID, r.ID)
 	var added []string // added by this call, to undo on failure
 	undo := func() {
 		for _, id := range added {
@@ -156,6 +162,13 @@ func (s *Service) grantOkta(ctx context.Context, r *AccessRequest) error {
 		if err != nil {
 			undo()
 			return fmt.Errorf("checking Okta group %s: %w", grp.Label(), err)
+		}
+		if member && leaving[grp.ID] {
+			// jitd added this for a request that has ended and has not
+			// taken it off yet. Take it over: recorded as preexisting, the
+			// ended request's removal would cut this grant short.
+			g.Added = append(g.Added, grp.ID)
+			continue
 		}
 		if member {
 			g.Preexisting = append(g.Preexisting, grp.ID)
@@ -179,7 +192,7 @@ func (s *Service) releaseOkta(ctx context.Context, r *AccessRequest) error {
 	if r.Okta == nil || len(r.Okta.Added) == 0 || r.Okta.RemovedAt != nil {
 		return nil
 	}
-	held := s.oktaHolders(r.Okta.UserID, r.ID)
+	held, _ := s.oktaHolders(r.Okta.UserID, r.ID)
 	var errs []error
 	for _, id := range r.Okta.Added {
 		if held[id] {

@@ -3,6 +3,7 @@ package jit
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -229,6 +230,98 @@ func TestOktaRemovalRetried(t *testing.T) {
 	g, _ := h.svc.GetRequest(ctx, alice, r.ID)
 	if f.Member(gAdmin, uAlice) || g.Okta.RemovedAt == nil || g.Okta.Error != "" {
 		t.Errorf("retry did not remove: member=%v okta=%+v", f.Member(gAdmin, uAlice), g.Okta)
+	}
+}
+
+// A request ends but its removal from Okta fails, so the user is still in
+// the group. A new approval for the same group must take the membership
+// over, not record it as one the user had before: otherwise the retried
+// removal cuts the new grant short.
+func TestOktaRegrantWhileRemovalPending(t *testing.T) {
+	h, f := oktaHarness(t)
+	w := h.workflow(t, oktaFlow(OktaGroup{ID: gAdmin}))
+	a, _ := h.svc.Submit(ctx, alice, NewRequest{WorkflowID: w.ID, Reason: "x"})
+	h.svc.Approve(ctx, bob, a.ID, "")
+	f.Fail["remove:"+gAdmin] = errors.New("rate limited")
+	if got, err := h.svc.Revoke(ctx, bob, a.ID, ""); err != nil || got.Okta.RemovedAt != nil {
+		t.Fatalf("revoke = %v %+v", err, got.Okta)
+	}
+
+	b, err := h.svc.Submit(ctx, alice, NewRequest{WorkflowID: w.ID, Reason: "again"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := h.svc.Approve(ctx, bob, b.ID, "")
+	if err != nil || !slices.Equal(got.Okta.Added, []string{gAdmin}) || len(got.Okta.Preexisting) != 0 {
+		t.Fatalf("second approve = %v %+v", err, got.Okta)
+	}
+
+	// Okta recovers: the first request's removal is retried and must leave
+	// the membership the second request now holds.
+	delete(f.Fail, "remove:"+gAdmin)
+	h.now = t0.Add(time.Minute)
+	h.svc.ExpireDue()
+	ga, _ := h.svc.GetRequest(ctx, alice, a.ID)
+	if !f.Member(gAdmin, uAlice) || ga.Okta.RemovedAt == nil {
+		t.Fatalf("after retry: member=%v first=%+v", f.Member(gAdmin, uAlice), ga.Okta)
+	}
+
+	// It comes off when the second request ends.
+	if _, err := h.svc.Revoke(ctx, bob, b.ID, ""); err != nil {
+		t.Fatal(err)
+	}
+	if f.Member(gAdmin, uAlice) {
+		t.Error("membership left behind after the second request ended")
+	}
+}
+
+// The same, in the window between a request's expiry time and the tick
+// that marks it expired.
+func TestOktaRegrantBeforeExpiryTick(t *testing.T) {
+	h, f := oktaHarness(t)
+	w1 := h.workflow(t, oktaFlow(OktaGroup{ID: gAdmin}))
+	second := oktaFlow(OktaGroup{ID: gAdmin})
+	second.Name = "AWS admin, break glass"
+	w2 := h.workflow(t, second)
+	a, _ := h.svc.Submit(ctx, alice, NewRequest{WorkflowID: w1.ID, Reason: "x", Duration: Duration(time.Hour)})
+	h.svc.Approve(ctx, bob, a.ID, "")
+
+	h.now = t0.Add(time.Hour + time.Second) // past the expiry, before the tick
+	b, err := h.svc.Submit(ctx, alice, NewRequest{WorkflowID: w2.ID, Reason: "y", Duration: Duration(time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := h.svc.Approve(ctx, bob, b.ID, "")
+	if err != nil || !slices.Equal(got.Okta.Added, []string{gAdmin}) {
+		t.Fatalf("second approve = %v %+v", err, got.Okta)
+	}
+	h.svc.ExpireDue()
+	if !f.Member(gAdmin, uAlice) {
+		t.Fatal("the first request's expiry removed the membership the second holds")
+	}
+	h.now = t0.Add(3 * time.Hour)
+	h.svc.ExpireDue()
+	if f.Member(gAdmin, uAlice) {
+		t.Error("membership left behind after both expired")
+	}
+}
+
+// A membership the user had before jitd is still kept.
+func TestOktaPreexistingKeptWithEndedRequests(t *testing.T) {
+	h, f := oktaHarness(t)
+	w := h.workflow(t, oktaFlow(OktaGroup{ID: gAdmin}))
+	a, _ := h.svc.Submit(ctx, alice, NewRequest{WorkflowID: w.ID, Reason: "x"})
+	h.svc.Approve(ctx, bob, a.ID, "")
+	h.svc.Revoke(ctx, bob, a.ID, "") // removed cleanly
+	f.AddMember(ctx, gAdmin, uAlice) // then added by hand in Okta
+	b, _ := h.svc.Submit(ctx, alice, NewRequest{WorkflowID: w.ID, Reason: "again"})
+	got, err := h.svc.Approve(ctx, bob, b.ID, "")
+	if err != nil || len(got.Okta.Added) != 0 || !slices.Equal(got.Okta.Preexisting, []string{gAdmin}) {
+		t.Fatalf("approve = %v %+v", err, got.Okta)
+	}
+	h.svc.Revoke(ctx, bob, b.ID, "")
+	if !f.Member(gAdmin, uAlice) {
+		t.Error("a membership from outside jitd was removed")
 	}
 }
 
