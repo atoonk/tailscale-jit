@@ -17,7 +17,7 @@
     <td>{{with .Flow.Attribute}}<code>{{.}}</code>{{end}}{{range .Flow.OktaGroups}}<div class="small">Okta: {{.Label}}</div>{{end}}{{if not .Policy.OK}}<div class="small warn" title="{{join .Policy.Problems}}">⚠ {{index .Policy.Problems 0}}</div>{{end}}</td>
     <td><div class="svcs">{{range .Flow.Resources}}<span title="{{.Description}}">{{.Name}}</span>{{end}}</div></td>
     <td>{{principals .Flow.Requesters}}</td>
-    <td>{{if .Flow.AutoApprove}}<b>Automatic</b>{{if .Flow.Approvers}}<div class="muted small">revoke: {{principals .Flow.Approvers}}</div>{{end}}{{else}}{{principals .Flow.Approvers}}{{end}}{{if and (not .Flow.AutoApprove) (gt .Flow.ApprovalsRequired 1)}}<div class="muted small">{{.Flow.ApprovalsRequired}} approvals needed</div>{{end}}{{if and (not .Flow.AutoApprove) .Flow.AllowSelfApproval}}<div class="muted small">or the requester</div>{{end}}</td>
+    <td>{{if .Flow.AutoApprove}}<b>Automatic</b>{{with .Flow.AutoApproveBy}}<div class="muted small">set by {{.}}</div>{{end}}{{if .Flow.Approvers}}<div class="muted small">revoke: {{principals .Flow.Approvers}}</div>{{end}}{{else}}{{principals .Flow.Approvers}}{{end}}{{if and (not .Flow.AutoApprove) (gt .Flow.ApprovalsRequired 1)}}<div class="muted small">{{.Flow.ApprovalsRequired}} approvals needed</div>{{end}}{{if and (not .Flow.AutoApprove) .Flow.AllowSelfApproval}}<div class="muted small">or the requester</div>{{end}}</td>
     <td>{{human .Flow.MaxDuration}}</td>
   </tr>
   {{end}}

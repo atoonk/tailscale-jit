@@ -417,6 +417,21 @@ The fields:
   it. Approvers are optional on such a flow; any you list can revoke. If the
   grant fails (an Okta or Tailscale API error), the request is cancelled
   with the error in its timeline, and the requester can submit it again.
+  Things to know about such a flow:
+  - Making a flow automatic is the approval of every request that follows,
+    so jitd keeps who did it and when with the flow, shows it on the flows
+    page and names them in each grant's timeline. Every flow change is
+    logged with who made it.
+  - Revoking ends that one grant. The requester can ask again and is
+    granted again; to keep someone out, take them out of the flow's
+    requesters or disable the flow.
+  - It cannot hand out an Okta group whose members are approvers of a flow
+    or jitd admins through an `okta:` principal: anyone who may request it
+    could then give themselves that role. jitd refuses to save either side.
+  - With **Decide in the browser only** set, it can only be requested in
+    the browser, since the request is the decision.
+  - In Slack the channel gets one message when the access is granted, with
+    no buttons, and approvers get no direct message.
 
 Make a flow per *kind* of access, not per service. A flow is one posture
 attribute and one grant, and a grant can list as many destinations as you

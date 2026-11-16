@@ -81,11 +81,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/workflows", s.withAdmin(func(w http.ResponseWriter, r *http.Request, _ jit.Identity) {
 		writeJSON(w, http.StatusOK, map[string]any{"workflows": jit.OrEmpty(s.Svc.ListWorkflows())})
 	}))
-	mux.HandleFunc("POST /v1/workflows", s.withAdmin(func(w http.ResponseWriter, r *http.Request, _ jit.Identity) {
+	mux.HandleFunc("POST /v1/workflows", s.withAdmin(func(w http.ResponseWriter, r *http.Request, id jit.Identity) {
 		var in jit.Workflow
 		if !decode(w, r, &in) {
 			return
 		}
+		in.UpdatedBy = id.Actor() // recorded with the flow; never taken from the body
 		out, err := s.Svc.CreateWorkflow(in)
 		s.reply(w, http.StatusCreated, out, err)
 	}))
@@ -93,19 +94,21 @@ func (s *Server) Handler() http.Handler {
 		out, err := s.Svc.GetWorkflow(r.PathValue("id"))
 		s.reply(w, http.StatusOK, out, err)
 	}))
-	mux.HandleFunc("PUT /v1/workflows/{id}", s.withAdmin(func(w http.ResponseWriter, r *http.Request, _ jit.Identity) {
+	mux.HandleFunc("PUT /v1/workflows/{id}", s.withAdmin(func(w http.ResponseWriter, r *http.Request, id jit.Identity) {
 		var in jit.Workflow
 		if !decode(w, r, &in) {
 			return
 		}
+		in.UpdatedBy = id.Actor()
 		out, err := s.Svc.UpdateWorkflow(r.PathValue("id"), in)
 		s.reply(w, http.StatusOK, out, err)
 	}))
-	mux.HandleFunc("DELETE /v1/workflows/{id}", s.withAdmin(func(w http.ResponseWriter, r *http.Request, _ jit.Identity) {
+	mux.HandleFunc("DELETE /v1/workflows/{id}", s.withAdmin(func(w http.ResponseWriter, r *http.Request, id jit.Identity) {
 		if err := s.Svc.DeleteWorkflow(r.PathValue("id")); err != nil {
 			writeErr(w, err)
 			return
 		}
+		s.Svc.Log.Info("approval flow deleted", "id", r.PathValue("id"), "by", id.Actor())
 		w.WriteHeader(http.StatusNoContent)
 	}))
 

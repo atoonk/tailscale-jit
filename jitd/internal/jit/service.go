@@ -55,6 +55,10 @@ type Service struct {
 	// is held, so waiting for Okta does not hold up anything else.
 	oktaMu sync.Mutex
 	ocache oktaCache
+	// autoBusy holds the requests whose automatic approval is running
+	// right now (guarded by mu). A pending request on an automatic flow
+	// that is not in it was left behind by a jitd that stopped mid-grant.
+	autoBusy map[string]bool
 	// OktaAlertAfter is how long the removal of a request's Okta
 	// memberships may keep failing before jitd tells the admins. Default
 	// DefaultOktaAlertAfter.
@@ -141,8 +145,12 @@ func (s *Service) CreateWorkflow(w Workflow) (*Workflow, error) {
 	}
 	now := s.now()
 	w.ID, w.CreatedAt, w.UpdatedAt = NewID("wf_"), now, now
+	markAutoApprove(nil, &w, now)
 	err := s.Store.Update(func(d *Data) error {
 		if err := attributeFree(d, w.Attribute, ""); err != nil {
+			return err
+		}
+		if err := s.selfServeRole(d, &w); err != nil {
 			return err
 		}
 		d.Workflows[w.ID] = clone(&w)
@@ -151,7 +159,65 @@ func (s *Service) CreateWorkflow(w Workflow) (*Workflow, error) {
 	if err != nil {
 		return nil, err
 	}
+	s.Log.Info("approval flow created", "id", w.ID, "name", w.Name, "by", w.UpdatedBy, "auto_approve", w.AutoApprove)
 	return &w, nil
+}
+
+// markAutoApprove records on w who made it automatic and when. An edit that
+// leaves the flow automatic keeps the first record.
+func markAutoApprove(old, w *Workflow, now time.Time) {
+	switch {
+	case !w.AutoApprove:
+		w.AutoApproveBy, w.AutoApproveAt = "", nil
+	case old != nil && old.AutoApprove:
+		w.AutoApproveBy, w.AutoApproveAt = old.AutoApproveBy, old.AutoApproveAt
+	default:
+		w.AutoApproveBy, w.AutoApproveAt = w.UpdatedBy, &now
+	}
+}
+
+// selfServeRole refuses to save w when an automatic flow would then hand
+// out an Okta group whose members, through an okta: principal, approve
+// requests in a flow or are jitd admins: whoever may request it could give
+// themselves that role with nobody deciding. d holds the other flows.
+func (s *Service) selfServeRole(d *Data, w *Workflow) error {
+	flows := []*Workflow{w}
+	for _, o := range d.Workflows {
+		if o.ID != w.ID {
+			flows = append(flows, o)
+		}
+	}
+	type role struct {
+		ref, what string
+		of        *Workflow // nil for the admins
+	}
+	var roles []role
+	for _, p := range s.Admins {
+		if p.IsOkta() {
+			roles = append(roles, role{ref: p.OktaRef(), what: "are jitd admins"})
+		}
+	}
+	for _, f := range flows {
+		for _, p := range f.Approvers {
+			if p.IsOkta() {
+				roles = append(roles, role{p.OktaRef(), fmt.Sprintf("are approvers in approval flow %q", f.Name), f})
+			}
+		}
+	}
+	for _, f := range flows {
+		if !f.AutoApprove {
+			continue
+		}
+		for _, g := range f.OktaGroups {
+			for _, ro := range roles {
+				if g.named(ro.ref) && (f == w || ro.of == w) {
+					return conflict("approval flow %q would hand out the Okta group %q automatically, and members of that group %s: anyone who may request it could give themselves that role with nobody deciding. Use another group, or let approvers decide requests for this one",
+						f.Name, g.Label(), ro.what)
+				}
+			}
+		}
+	}
+	return nil
 }
 
 // UpdateWorkflow replaces a workflow's editable fields.
@@ -171,6 +237,7 @@ func (s *Service) UpdateWorkflow(id string, w Workflow) (*Workflow, error) {
 	}
 	var out *Workflow
 	var expired []*AccessRequest
+	var wasAuto bool
 	err := s.Store.Update(func(d *Data) error {
 		old, ok := d.Workflows[id]
 		if !ok {
@@ -181,6 +248,11 @@ func (s *Service) UpdateWorkflow(id string, w Workflow) (*Workflow, error) {
 		}
 		now := s.now()
 		w.ID, w.CreatedAt, w.UpdatedAt = id, old.CreatedAt, now
+		wasAuto = old.AutoApprove
+		markAutoApprove(old, &w, now)
+		if err := s.selfServeRole(d, &w); err != nil {
+			return err
+		}
 		d.Workflows[id] = clone(&w)
 		out = clone(&w)
 		expired = nil
@@ -198,11 +270,23 @@ func (s *Service) UpdateWorkflow(id string, w Workflow) (*Workflow, error) {
 				expired = append(expired, clone(r))
 				continue
 			}
+			if w.AutoApprove && !old.AutoApprove {
+				// It was filed for people to decide, and the flow may now
+				// have no approvers at all. Granting it here, on a flow
+				// edit, would surprise everyone: a new request is granted
+				// at once.
+				r.Status, r.UpdatedAt = StatusExpired, now
+				r.Timeline = append(r.Timeline, Event{Type: "expired", Actor: "system", At: now,
+					Note: "the approval flow now approves requests automatically; file a new request"})
+				expired = append(expired, clone(r))
+				continue
+			}
 			r.ApprovalsRequired = w.ApprovalsRequired
 		}
 		return nil
 	})
 	if err == nil {
+		s.Log.Info("approval flow changed", "id", id, "name", w.Name, "by", w.UpdatedBy, "auto_approve", w.AutoApprove, "was_auto_approve", wasAuto)
 		for _, r := range expired {
 			s.emit(r, r.Timeline[len(r.Timeline)-1])
 		}
@@ -520,6 +604,11 @@ func (s *Service) Submit(ctx context.Context, caller Identity, in NewRequest) (*
 	if err != nil || !auto {
 		return r, err
 	}
+	defer func() {
+		s.mu.Lock()
+		delete(s.autoBusy, r.ID)
+		s.mu.Unlock()
+	}()
 	return s.autoApprove(ctx, r.ID)
 }
 
@@ -537,6 +626,10 @@ func (s *Service) submit(ctx context.Context, caller Identity, in NewRequest) (_
 	}
 	if w.Disabled {
 		return nil, false, conflict("approval flow %q is disabled", w.Name)
+	}
+	if w.AutoApprove && browserOnly(caller, w) != nil {
+		// With nobody deciding, the request is the decision.
+		return nil, false, forbidden("approval flow %q approves requests automatically and is for the browser only: request it there", w.Name)
 	}
 	if len(w.OktaGroups) > 0 {
 		if caller.Tagged() {
@@ -599,11 +692,23 @@ func (s *Service) submit(ctx context.Context, caller Identity, in NewRequest) (_
 	}
 	s.Log.Info("access request submitted", "id", r.ID, "by", caller.Actor(), "grants", grantSummary(w.Attribute, w.OktaGroups), "duration", dur)
 	s.emit(r, r.Timeline[len(r.Timeline)-1])
+	if w.AutoApprove {
+		if s.autoBusy == nil {
+			s.autoBusy = map[string]bool{}
+		}
+		s.autoBusy[r.ID] = true
+	}
 	return r, w.AutoApprove, nil
 }
 
 // AutoActor is who an automatic approval is recorded as.
 const AutoActor = "jitd (automatic approval)"
+
+// AutoApproved reports whether the request was approved by its flow, with
+// nobody deciding.
+func (r *AccessRequest) AutoApproved() bool {
+	return slices.ContainsFunc(r.Timeline, func(e Event) bool { return e.Type == "approved" && e.Actor == AutoActor })
+}
 
 // autoApprove grants request id, just submitted through a flow that
 // approves on its own. It grants the way Approve does, with the Okta calls
@@ -665,7 +770,11 @@ func (s *Service) autoGrant(ctx context.Context, id string, og *oktaOutcome) (_ 
 		return nil, false, conflict("%s", why)
 	}
 	r.UpdatedAt = s.now()
-	return s.grant(ctx, r, w, Event{Actor: AutoActor}, "approved automatically by the flow", false, og)
+	note := "approved automatically by the flow"
+	if w.AutoApproveBy != "" {
+		note += ", which " + w.AutoApproveBy + " made automatic"
+	}
+	return s.grant(ctx, r, w, Event{Actor: AutoActor}, note, false, og)
 }
 
 // RecordSlackMessages notes Slack messages posted about request id, so they
@@ -1289,8 +1398,20 @@ func (s *Service) expireDue() int {
 				expired = append(expired, clone(r))
 			case r.Status == StatusPending:
 				timeout := DefaultApprovalTimeout
-				if w, ok := d.Workflows[r.WorkflowID]; ok && w.ApprovalTimeout > 0 {
+				w, ok := d.Workflows[r.WorkflowID]
+				if ok && w.ApprovalTimeout > 0 {
 					timeout = w.ApprovalTimeout
+				}
+				if ok && w.AutoApprove && !s.autoBusy[r.ID] {
+					// jitd stopped between saving the request and
+					// granting it. Nobody may be able to approve it, and
+					// while it is pending the requester cannot file
+					// another, so it does not wait out the timeout.
+					r.Status, r.UpdatedAt = StatusExpired, now
+					r.Timeline = append(r.Timeline, Event{Type: "expired", Actor: "system", At: now,
+						Note: "the automatic approval did not finish (jitd was stopped meanwhile); file a new request"})
+					expired = append(expired, clone(r))
+					continue
 				}
 				if !r.CreatedAt.Add(time.Duration(timeout)).After(now) {
 					r.Status, r.UpdatedAt = StatusExpired, now

@@ -153,8 +153,15 @@ type Workflow struct {
 	// AutoApprove grants every request at once, with no approver: the
 	// request is still recorded, with its reason, and still expires and can
 	// be revoked. Approvers are optional then; any listed may still revoke.
-	AutoApprove bool     `json:"auto_approve,omitempty"`
-	MaxDuration Duration `json:"max_duration"`
+	AutoApprove bool `json:"auto_approve,omitempty"`
+	// AutoApproveBy and AutoApproveAt are who made the flow automatic and
+	// when: on such a flow that edit is the approval of every request that
+	// follows. UpdatedBy is who saved the flow last. jitd sets all three;
+	// what a caller sends is ignored.
+	AutoApproveBy string     `json:"auto_approve_by,omitempty"`
+	AutoApproveAt *time.Time `json:"auto_approve_at,omitempty"`
+	UpdatedBy     string     `json:"updated_by,omitempty"`
+	MaxDuration   Duration   `json:"max_duration"`
 	// ApprovalTimeout is how long a request may stay pending before it
 	// expires undecided. Zero means DefaultApprovalTimeout.
 	ApprovalTimeout Duration `json:"approval_timeout,omitempty"`
@@ -208,6 +215,12 @@ type Resource struct {
 type OktaGroup struct {
 	ID   string `json:"id,omitempty"`
 	Name string `json:"name,omitempty"`
+}
+
+// named reports whether ref, the group of an okta: principal, means g. A
+// name is compared loosely: this is used to refuse, not to grant.
+func (g OktaGroup) named(ref string) bool {
+	return ref != "" && (ref == g.ID || strings.EqualFold(ref, g.Name))
 }
 
 // Label is how the group is shown.

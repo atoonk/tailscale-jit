@@ -199,7 +199,8 @@ func (s *Server) addTools(srv *mcp.Server, id jit.Identity) {
 		Title: "Request just-in-time access",
 		Description: "Submit a just-in-time access request through a jitd approval flow (workflow_id from list_requestable) for the device you are on. " +
 			"Request the flow that fits the current step of the task, not the broadest one, for the time the work needs. " +
-			"A human must approve it. The result contains the approval URL; the user cannot see tool results, so write it in your reply on its own line and end your turn. " +
+			"Unless list_requestable says the flow is approved automatically (the result then comes back approved), a human must approve it. " +
+			"The result contains the approval URL; the user cannot see tool results, so write it in your reply on its own line and end your turn. " +
 			"Call wait_for_access once the user replies (they approved it, or want you to wait), before using the service.",
 		Annotations: &mcp.ToolAnnotations{DestructiveHint: new(false), OpenWorldHint: new(false)},
 		Meta:        appMeta(),
