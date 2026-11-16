@@ -1,0 +1,24 @@
+jitd is starting as {{ include "jitd.fullname" . }} in namespace {{ .Release.Namespace }}.
+
+It listens only on the tailnet, at http://{{ .Values.hostname }}/ once its node has joined.
+{{- if not (include "jitd.secretName" .) }}
+
+No credentials Secret is configured (credentials.existingSecret or
+credentials.values). jitd will start and serve its Setup page, but can't
+grant anything until it has Tailscale API credentials.
+{{- end }}
+
+First start: without TS_AUTHKEY in the credentials, jitd logs a login URL and waits:
+
+  kubectl -n {{ .Release.Namespace }} logs deploy/{{ include "jitd.fullname" . }} | grep login.tailscale.com
+
+Open it, approve the machine, and tag it {{ .Values.tag }} in the admin console.
+{{- if not .Values.admins }}
+
+admins is empty, so nobody can create approval flows. Set admins to at least one login.
+{{- end }}
+{{- if not .Values.persistence.enabled }}
+
+persistence.enabled is false: jitd's node identity, flows and history are lost
+whenever the pod restarts. Use this only to try the chart.
+{{- end }}

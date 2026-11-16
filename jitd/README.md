@@ -46,13 +46,14 @@ You need:
 
 ## Install
 
-Steps 1 and 2 happen in the admin console and are the same either way.
-Step 3 is where the two paths split:
+Steps 1 and 2 happen in the admin console and are the same whichever way
+you run jitd. Step 3 is where the paths split:
 
 | | |
 |---|---|
 | **[A. On a Mac, to try it out](#a-on-a-mac-to-try-it-out)** | One terminal, a few minutes; jitd stops when you press Ctrl-C. For seeing what it does before you give it a machine. |
 | **[B. On an EC2 instance](#b-on-an-ec2-instance-recommended)** | Recommended. A small always-on instance with jitd as a systemd service, so it starts at boot and comes back after a reboot. This is the one to keep. |
+| **[C. On Kubernetes](#c-on-kubernetes)** | If you already run a cluster: the Helm chart in [`charts/jitd`](../charts/jitd) runs jitd as one pod with a persistent volume. |
 
 Starting with A costs nothing: the same two credentials work on EC2, and
 you can carry jitd's state over when you move.
@@ -141,9 +142,9 @@ to grant anything. Use the OAuth client.
 
 ### 3. Run it
 
-Pick one: **A** on your Mac to try it out, or **B** on an EC2 instance to
-keep it. The two paths end in the same place, with jitd on the tailnet at
-`http://jit/`.
+Pick one: **A** on your Mac to try it out, **B** on an EC2 instance to
+keep it, or **C** on a Kubernetes cluster you already run. They all end in
+the same place, with jitd on the tailnet at `http://jit/`.
 
 #### A. On a Mac, to try it out
 
@@ -340,6 +341,23 @@ services are. While it is down nobody can request or approve, but access
 already granted keeps working and still ends on time. Don't run two
 instances against the same database file.
 
+#### C. On Kubernetes
+
+The Helm chart in [`charts/jitd`](../charts/jitd) runs jitd as one pod.
+An init container downloads the release binary and checks its checksum,
+and a persistent volume keeps the node identity and the database. Put the
+two credentials from step 2 in a Secret, then install the chart from a
+checkout of this repository:
+
+```sh
+helm install jitd ./charts/jitd -n jitd \
+  --set credentials.existingSecret=jitd-credentials \
+  --set 'admins={you@example.com,group:jit-admins}'
+```
+
+The [chart's README](../charts/jitd/README.md) covers the Secret, the
+values and upgrades.
+
 #### Either way
 
 Things to know:
@@ -353,8 +371,9 @@ Things to know:
 - **Keep two things:** the node's identity in `tsnet-state` (`-state-dir`)
   and the flows and requests in the SQLite database `jit.db` (`-data`).
   Both sit in the directory jitd runs from: where you started it in path
-  A, `/var/lib/jitd` in path B. Lose the state directory and jitd joins
-  the tailnet as a new machine, with a new auth key.
+  A, `/var/lib/jitd` in path B, and the data volume (`/data`) in path C.
+  Lose the state directory and jitd joins the tailnet as a new machine,
+  with a new auth key.
 - **A later release?** Replacing the binary and restarting is the whole
   upgrade: see [Upgrading to a new release](#upgrading-to-a-new-release).
 - **Upgrading from a jitd that kept its data in `jit-data.json`?** With the
@@ -370,8 +389,8 @@ Things to know:
   `-hostname`). People then connect their MCP client to that name instead
   of `http://jit`; jitd's Help page prints the exact command.
 - **No auth key?** Then jitd logs a login URL instead (path B: find it
-  with `sudo journalctl -u jitd`). Open it, approve the machine, and tag it
-  `tag:jit` in the admin console.
+  with `sudo journalctl -u jitd`; path C: `kubectl -n jitd logs deploy/jitd`).
+  Open it, approve the machine, and tag it `tag:jit` in the admin console.
 - **Wrong credential, or none?** jitd still starts and serves the UI; it
   just can't grant anything. Step 4 says what's wrong, and a fixed env
   file needs no restart.
@@ -720,6 +739,11 @@ Two things to know before you start:
   its own schema on its first start, in a single transaction. An older
   jitd then refuses that database and says so, so going back to the old
   binary can mean restoring the backup from step 1. Take it.
+
+On Kubernetes (path C), set `release.version` and the `release.sha256`
+entries from the new release's `SHA256SUMS`, and run `helm upgrade`; the
+[chart's README](../charts/jitd/README.md#upgrading-jitd) has the details.
+Back up the database first, as in step 1 below.
 
 #### Path B: the systemd service
 

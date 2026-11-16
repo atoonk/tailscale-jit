@@ -1,0 +1,129 @@
+nameOverride: ""
+fullnameOverride: ""
+
+# jitd has no container image of its own. An init container downloads the
+# release binary from GitHub, checks it against the release's SHA256SUMS, and
+# the main container runs it from a shared emptyDir.
+release:
+  # GitHub repository the release comes from (owner/name).
+  repository: atoonk/tailscale-jit
+  # Release tag. Defaults to the chart's appVersion.
+  version: ""
+  # CPU architecture of the binary: amd64 or arm64. Pods are pinned to nodes
+  # of this architecture.
+  arch: amd64
+  # sha256 of jitd-linux-<arch> for that release, from its SHA256SUMS. The
+  # entries below match the chart's appVersion; change them together with
+  # release.version.
+  sha256:
+    amd64: 506462b2fe06446a43d7427e491945b0a914b67fe439c229b62f345520f20be6
+    arm64: 8acdec7af679516391b13cfa178d3535ff2fb38afb9fd5c628ea2305dbcb90ed
+  # Full download URL, for a mirror. Overrides repository, version and arch.
+  url: ""
+
+# Image for both containers: the init container needs wget and sha256sum, and
+# jitd needs CA certificates. The binary itself is static.
+image:
+  repository: alpine
+  tag: "3.22"
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+# Tailnet hostname of jitd's node. People open http://<hostname>/.
+hostname: jit
+# Tag jitd's node runs as; used in the policy snippet.
+tag: tag:jit
+# Principals who manage approval flows and see every request: logins,
+# group:, okta:, tag:. Include at least one login, so someone can still get
+# in to fix a broken credential. Nobody is an admin if empty.
+admins: []
+# Serve HTTPS on :443 with a Tailscale certificate (needs HTTPS enabled for
+# the tailnet).
+https: false
+# How often jitd expires access and removes Okta memberships.
+expiryInterval: 30s
+# Log tsnet's backend and every HTTP request.
+verbose: false
+# More jitd flags, e.g. ["-ts-api=https://api.tailscale.com"].
+extraArgs: []
+
+# Credentials, read from the environment (jitd also reads an env file on the
+# data volume, which its Setup page can write).
+#
+# Keys jitd uses:
+#   TS_OAUTH_CLIENT_ID, TS_OAUTH_CLIENT_SECRET (or TS_API_KEY): Tailscale API
+#   TS_AUTHKEY: joins the tailnet on first start (optional: without it, jitd
+#     logs a login URL)
+#   SLACK_BOT_TOKEN, SLACK_APP_TOKEN: Slack (optional)
+#   OKTA_API_TOKEN, or OKTA_CLIENT_ID and OKTA_PRIVATE_KEY: Okta (optional)
+credentials:
+  # Name of an existing Secret holding the keys above. Recommended: create it
+  # with your secrets tooling (External Secrets, Sealed Secrets, ...).
+  existingSecret: ""
+  # Or let the chart create a Secret from these values. Avoid in production:
+  # the values end up in your Helm release and wherever you keep values files.
+  values: {}
+
+# Plain (non-secret) environment variables, e.g.
+#   OKTA_ORG_URL: https://example.okta.com
+#   OKTA_GRANT_ALLOWLIST: jit-*
+#   OKTA_READ_ALLOWLIST: jit-approvers
+env: {}
+# More env or envFrom entries, in Kubernetes form.
+extraEnv: []
+extraEnvFrom: []
+
+# jitd keeps its node identity (tsnet-state) and its database (jit.db) here.
+# Lose the volume and jitd joins the tailnet as a new machine, with no flows
+# or history.
+persistence:
+  enabled: true
+  # Use an existing PersistentVolumeClaim instead of creating one.
+  existingClaim: ""
+  storageClass: ""
+  accessModes:
+    - ReadWriteOnce
+  size: 1Gi
+  annotations: {}
+
+serviceAccount:
+  create: true
+  # Defaults to the release's full name.
+  name: ""
+  annotations: {}
+
+podAnnotations: {}
+podLabels: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65534
+  runAsGroup: 65534
+  fsGroup: 65534
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: [ALL]
+
+resources:
+  requests:
+    cpu: 25m
+    memory: 64Mi
+  limits:
+    memory: 256Mi
+
+initResources:
+  requests:
+    cpu: 10m
+    memory: 32Mi
+  limits:
+    memory: 64Mi
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+priorityClassName: ""

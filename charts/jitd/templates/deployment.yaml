@@ -1,0 +1,155 @@
+{{- $secret := include "jitd.secretName" . }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "jitd.fullname" . }}
+  labels:
+    {{- include "jitd.labels" . | nindent 4 }}
+spec:
+  # One process owns one SQLite database and one tailnet node identity:
+  # never run two, not even briefly during a rollout.
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "jitd.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "jitd.labels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        {{- if and .Values.credentials.values (not .Values.credentials.existingSecret) }}
+        checksum/credentials: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+        {{- end }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "jitd.serviceAccountName" . }}
+      # jitd never calls the Kubernetes API.
+      automountServiceAccountToken: false
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      nodeSelector:
+        kubernetes.io/os: linux
+        kubernetes.io/arch: {{ include "jitd.arch" . }}
+        {{- with .Values.nodeSelector }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      initContainers:
+        - name: fetch-jitd
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            - name: JITD_URL
+              value: {{ include "jitd.url" . | quote }}
+            - name: JITD_SHA256
+              value: {{ include "jitd.sha256" . | quote }}
+          command:
+            - /bin/sh
+            - -ec
+            - |
+              wget -qO /opt/jitd/jitd.tmp "$JITD_URL"
+              echo "$JITD_SHA256  /opt/jitd/jitd.tmp" | sha256sum -c -
+              chmod 0555 /opt/jitd/jitd.tmp
+              mv /opt/jitd/jitd.tmp /opt/jitd/jitd
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          resources:
+            {{- toYaml .Values.initResources | nindent 12 }}
+          volumeMounts:
+            - name: bin
+              mountPath: /opt/jitd
+      containers:
+        - name: jitd
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: [/opt/jitd/jitd]
+          args:
+            - -hostname={{ .Values.hostname }}
+            - -tag={{ .Values.tag }}
+            - -state-dir=/data/tsnet-state
+            - -data=/data/jit.db
+            - -env-file=/data/env
+            - -expiry-interval={{ .Values.expiryInterval }}
+            {{- with .Values.admins }}
+            - -admins={{ join "," . }}
+            {{- end }}
+            {{- if .Values.https }}
+            - -https
+            {{- end }}
+            {{- if .Values.verbose }}
+            - -verbose
+            {{- end }}
+            {{- range .Values.extraArgs }}
+            - {{ . | quote }}
+            {{- end }}
+          {{- if or $secret .Values.extraEnvFrom }}
+          envFrom:
+            {{- if $secret }}
+            - secretRef:
+                name: {{ $secret }}
+            {{- end }}
+            {{- with .Values.extraEnvFrom }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- end }}
+          {{- if or .Values.env .Values.extraEnv }}
+          env:
+            {{- range $k, $v := .Values.env }}
+            - name: {{ $k }}
+              value: {{ $v | toString | quote }}
+            {{- end }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- end }}
+          # No probes: jitd listens only on its tailnet address, which the
+          # kubelet cannot reach. Its health shows in the Tailscale admin
+          # console and on its Setup page.
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: bin
+              mountPath: /opt/jitd
+              readOnly: true
+            - name: data
+              mountPath: /data
+            # tsnet and SQLite may write temporary files.
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: bin
+          emptyDir:
+            sizeLimit: 128Mi
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
+        - name: data
+          {{- if .Values.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "jitd.claimName" . }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}

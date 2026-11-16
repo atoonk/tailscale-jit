@@ -1,0 +1,35 @@
+name: Chart
+
+# Lints and unit-tests the Helm chart in charts/jitd when it changes.
+on:
+  pull_request:
+    paths: ["charts/**", ".github/workflows/chart.yml"]
+  push:
+    branches: [main]
+    paths: ["charts/**", ".github/workflows/chart.yml"]
+
+permissions:
+  contents: read
+
+jobs:
+  chart:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.17.3
+
+      - name: Install helm-unittest
+        run: helm plugin install https://github.com/helm-unittest/helm-unittest.git --version v0.8.2
+
+      - name: Lint
+        run: helm lint --strict charts/jitd --set 'admins={you@example.com}'
+
+      - name: Unit tests
+        run: helm unittest charts/jitd
+
+      # The defaults must render on their own, as a first install would.
+      - name: Render the defaults
+        run: helm template jitd charts/jitd > /dev/null
