@@ -68,6 +68,7 @@ function workflowBody(f) {
     name: f.name.value,
     description: f.description.value,
     attribute: f.attribute.value.trim(),
+    okta_groups: f.okta_groups ? list(f.okta_groups.value).map((name) => ({ name })) : undefined,
     resources: resources(f),
     requesters: list(f.requesters.value),
     approvers: list(f.approvers.value),

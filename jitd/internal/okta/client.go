@@ -1,0 +1,379 @@
+// Package okta is a minimal client for the parts of the Okta management API
+// that jitd needs to grant time-limited membership in Okta groups: finding a
+// user and a group, and adding, checking and removing a group member.
+package okta
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"regexp"
+	"strings"
+	"sync"
+	"time"
+)
+
+// Client is the subset of the Okta API used by jitd, so tests can fake it.
+type Client interface {
+	// FindUser returns the Okta user whose login (or, failing that, primary
+	// email) is login.
+	FindUser(ctx context.Context, login string) (User, error)
+	// FindGroup returns a group by its ID (00g…) or its exact name.
+	FindGroup(ctx context.Context, ref string) (Group, error)
+	// IsMember reports whether user is a direct member of group.
+	IsMember(ctx context.Context, groupID, userID string) (bool, error)
+	// AddMember adds user to group. Adding an existing member is a no-op.
+	AddMember(ctx context.Context, groupID, userID string) error
+	// RemoveMember removes user from group. Removing a non-member is a no-op.
+	RemoveMember(ctx context.Context, groupID, userID string) error
+}
+
+// User is the part of an Okta user jitd looks at.
+type User struct {
+	ID      string `json:"id"`
+	Status  string `json:"status"`
+	Profile struct {
+		Login string `json:"login"`
+		Email string `json:"email"`
+	} `json:"profile"`
+}
+
+// Group is the part of an Okta group jitd looks at.
+type Group struct {
+	ID      string `json:"id"`
+	Type    string `json:"type"` // OKTA_GROUP, APP_GROUP, BUILT_IN
+	Profile struct {
+		Name        string `json:"name"`
+		Description string `json:"description"`
+	} `json:"profile"`
+}
+
+// Name is the group's display name.
+func (g Group) Name() string { return g.Profile.Name }
+
+// Manageable reports whether Okta lets an API client change the group's
+// members. Groups mastered by a directory or app (APP_GROUP) and built-in
+// groups (Everyone) are not.
+func (g Group) Manageable() bool { return g.Type == "" || g.Type == "OKTA_GROUP" }
+
+// APIError is a non-2xx response from the Okta API.
+type APIError struct {
+	Method, Path string
+	Status       int
+	Code         string // Okta's errorCode, e.g. E0000007
+	Summary      string // Okta's errorSummary
+	Body         string
+}
+
+func (e *APIError) Error() string {
+	if e.Summary != "" {
+		return fmt.Sprintf("okta API %s %s: %d %s (%s)", e.Method, e.Path, e.Status, e.Summary, e.Code)
+	}
+	return fmt.Sprintf("okta API %s %s: %d %s", e.Method, e.Path, e.Status, e.Body)
+}
+
+// IsNotFound reports whether err is a 404 from the Okta API.
+func IsNotFound(err error) bool {
+	var ae *APIError
+	return errors.As(err, &ae) && ae.Status == http.StatusNotFound
+}
+
+// ErrNotFound is returned by FindUser and FindGroup when nothing matches.
+var ErrNotFound = errors.New("not found in Okta")
+
+// ErrUnconfigured is returned by every call of a Dynamic client while no
+// Okta credentials are set.
+var ErrUnconfigured = errors.New("Okta is not configured: set OKTA_ORG_URL and OKTA_API_TOKEN in jitd's env file")
+
+// CredentialVars are the variables NewFromValues looks at.
+var CredentialVars = []string{"OKTA_ORG_URL", "OKTA_API_TOKEN"}
+
+// Configured reports whether vars hold a complete Okta credential.
+func Configured(vars map[string]string) bool {
+	return vars["OKTA_ORG_URL"] != "" && vars["OKTA_API_TOKEN"] != ""
+}
+
+// HTTP implements Client over net/http with an Okta API token (SSWS).
+type HTTP struct {
+	BaseURL string // https://example.okta.com
+	Token   string
+	HC      *http.Client
+	Timeout time.Duration
+}
+
+// NewFromValues builds a client from OKTA_ORG_URL and OKTA_API_TOKEN.
+func NewFromValues(vars map[string]string) (*HTTP, error) {
+	if !Configured(vars) {
+		return nil, ErrUnconfigured
+	}
+	base := strings.TrimSuffix(strings.TrimSpace(vars["OKTA_ORG_URL"]), "/")
+	u, err := url.Parse(base)
+	if err != nil || u.Host == "" {
+		return nil, fmt.Errorf("OKTA_ORG_URL %q is not a URL like https://example.okta.com", base)
+	}
+	if u.Scheme != "https" && u.Hostname() != "localhost" && u.Hostname() != "127.0.0.1" {
+		return nil, fmt.Errorf("OKTA_ORG_URL %q must use https", base)
+	}
+	return &HTTP{BaseURL: base, Token: strings.TrimSpace(vars["OKTA_API_TOKEN"]), HC: http.DefaultClient, Timeout: 15 * time.Second}, nil
+}
+
+// groupIDRE is the shape of an Okta group ID.
+var groupIDRE = regexp.MustCompile(`^00g[A-Za-z0-9]{10,}$`)
+
+// IsGroupID reports whether ref looks like an Okta group ID rather than a name.
+func IsGroupID(ref string) bool { return groupIDRE.MatchString(ref) }
+
+func (c *HTTP) FindUser(ctx context.Context, login string) (User, error) {
+	var u User
+	err := c.do(ctx, http.MethodGet, "/api/v1/users/"+url.PathEscape(login), nil, &u, nil)
+	if err == nil {
+		return u, nil
+	}
+	if !IsNotFound(err) {
+		return User{}, err
+	}
+	// Not a login: try the primary email, which is what Tailscale usually
+	// knows a person by when the two differ.
+	var us []User
+	q := url.Values{"search": {fmt.Sprintf("profile.email eq %q", login)}, "limit": {"2"}}
+	if err := c.do(ctx, http.MethodGet, "/api/v1/users?"+q.Encode(), nil, &us, nil); err != nil {
+		return User{}, err
+	}
+	switch len(us) {
+	case 0:
+		return User{}, fmt.Errorf("user %s: %w", login, ErrNotFound)
+	case 1:
+		return us[0], nil
+	}
+	return User{}, fmt.Errorf("more than one Okta user has the email %s", login)
+}
+
+func (c *HTTP) FindGroup(ctx context.Context, ref string) (Group, error) {
+	ref = strings.TrimSpace(ref)
+	if IsGroupID(ref) {
+		var g Group
+		err := c.do(ctx, http.MethodGet, "/api/v1/groups/"+url.PathEscape(ref), nil, &g, nil)
+		if IsNotFound(err) {
+			return Group{}, fmt.Errorf("group %s: %w", ref, ErrNotFound)
+		}
+		return g, err
+	}
+	// q is a prefix match on the name: keep only exact matches.
+	var gs []Group
+	q := url.Values{"q": {ref}, "limit": {"200"}}
+	if err := c.do(ctx, http.MethodGet, "/api/v1/groups?"+q.Encode(), nil, &gs, nil); err != nil {
+		return Group{}, err
+	}
+	var hits []Group
+	for _, g := range gs {
+		if g.Profile.Name == ref {
+			hits = append(hits, g)
+		}
+	}
+	switch len(hits) {
+	case 0:
+		return Group{}, fmt.Errorf("group %q: %w", ref, ErrNotFound)
+	case 1:
+		return hits[0], nil
+	}
+	return Group{}, fmt.Errorf("more than one Okta group is named %q; use its ID (00g…)", ref)
+}
+
+func (c *HTTP) IsMember(ctx context.Context, groupID, userID string) (bool, error) {
+	next := "/api/v1/users/" + url.PathEscape(userID) + "/groups"
+	for next != "" {
+		var gs []Group
+		var link string
+		if err := c.do(ctx, http.MethodGet, next, nil, &gs, &link); err != nil {
+			return false, err
+		}
+		for _, g := range gs {
+			if g.ID == groupID {
+				return true, nil
+			}
+		}
+		next = c.nextPath(link)
+	}
+	return false, nil
+}
+
+func memberPath(groupID, userID string) string {
+	return "/api/v1/groups/" + url.PathEscape(groupID) + "/users/" + url.PathEscape(userID)
+}
+
+func (c *HTTP) AddMember(ctx context.Context, groupID, userID string) error {
+	return c.do(ctx, http.MethodPut, memberPath(groupID, userID), nil, nil, nil)
+}
+
+func (c *HTTP) RemoveMember(ctx context.Context, groupID, userID string) error {
+	err := c.do(ctx, http.MethodDelete, memberPath(groupID, userID), nil, nil, nil)
+	if IsNotFound(err) {
+		return nil
+	}
+	return err
+}
+
+// nextPath extracts the rel="next" URL from a Link header, as a path on
+// BaseURL; links pointing anywhere else are ignored.
+func (c *HTTP) nextPath(link string) string {
+	for _, part := range strings.Split(link, ",") {
+		target, params, ok := strings.Cut(part, ";")
+		if !ok || !strings.Contains(params, `rel="next"`) {
+			continue
+		}
+		target = strings.Trim(strings.TrimSpace(target), "<>")
+		if p, ok := strings.CutPrefix(target, c.BaseURL); ok && strings.HasPrefix(p, "/") {
+			return p
+		}
+	}
+	return ""
+}
+
+func (c *HTTP) do(ctx context.Context, method, path string, in, out any, link *string) error {
+	if c.Timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, c.Timeout)
+		defer cancel()
+	}
+	var body io.Reader
+	if in != nil {
+		b, err := json.Marshal(in)
+		if err != nil {
+			return err
+		}
+		body = strings.NewReader(string(b))
+	}
+	req, err := http.NewRequestWithContext(ctx, method, c.BaseURL+path, body)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "SSWS "+c.Token)
+	req.Header.Set("User-Agent", "jitd")
+	hc := c.HC
+	if hc == nil {
+		hc = http.DefaultClient
+	}
+	resp, err := hc.Do(req)
+	if err != nil {
+		return fmt.Errorf("okta API %s %s: %w", method, logPath(path), err)
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	if resp.StatusCode/100 != 2 {
+		ae := &APIError{Method: method, Path: logPath(path), Status: resp.StatusCode}
+		var oe struct {
+			ErrorCode    string `json:"errorCode"`
+			ErrorSummary string `json:"errorSummary"`
+		}
+		if json.Unmarshal(b, &oe) == nil && oe.ErrorSummary != "" {
+			ae.Code, ae.Summary = oe.ErrorCode, oe.ErrorSummary
+		} else {
+			ae.Body = strings.TrimSpace(string(b))
+			if len(ae.Body) > 512 {
+				ae.Body = ae.Body[:512]
+			}
+		}
+		return ae
+	}
+	if link != nil {
+		*link = strings.Join(resp.Header.Values("Link"), ",")
+	}
+	if out != nil && len(b) > 0 {
+		if err := json.Unmarshal(b, out); err != nil {
+			return fmt.Errorf("okta API %s %s: decoding response: %w", method, logPath(path), err)
+		}
+	}
+	return nil
+}
+
+// logPath drops the query string, which can carry a person's email.
+func logPath(p string) string {
+	p, _, _ = strings.Cut(p, "?")
+	return p
+}
+
+// Dynamic is a Client that (re)builds its backing HTTP client from Load on
+// each call, so editing the env file takes effect without a restart. Until
+// Load returns a complete credential, every call fails with ErrUnconfigured.
+type Dynamic struct {
+	Load func() map[string]string
+
+	mu   sync.Mutex
+	key  string
+	c    Client
+	berr error
+}
+
+// Enabled reports whether Okta credentials are present (not whether they work).
+func (d *Dynamic) Enabled() bool {
+	_, err := d.get()
+	return err == nil
+}
+
+func (d *Dynamic) get() (Client, error) {
+	vars := map[string]string{}
+	if d.Load != nil {
+		vars = d.Load()
+	}
+	key := vars["OKTA_ORG_URL"] + "\x00" + vars["OKTA_API_TOKEN"]
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if key != d.key || (d.c == nil && d.berr == nil) {
+		d.key = key
+		c, err := NewFromValues(vars)
+		d.c, d.berr = nil, err
+		if err == nil {
+			d.c = c
+		}
+	}
+	if d.berr != nil {
+		return nil, d.berr
+	}
+	return d.c, nil
+}
+
+func (d *Dynamic) FindUser(ctx context.Context, login string) (User, error) {
+	c, err := d.get()
+	if err != nil {
+		return User{}, err
+	}
+	return c.FindUser(ctx, login)
+}
+
+func (d *Dynamic) FindGroup(ctx context.Context, ref string) (Group, error) {
+	c, err := d.get()
+	if err != nil {
+		return Group{}, err
+	}
+	return c.FindGroup(ctx, ref)
+}
+
+func (d *Dynamic) IsMember(ctx context.Context, groupID, userID string) (bool, error) {
+	c, err := d.get()
+	if err != nil {
+		return false, err
+	}
+	return c.IsMember(ctx, groupID, userID)
+}
+
+func (d *Dynamic) AddMember(ctx context.Context, groupID, userID string) error {
+	c, err := d.get()
+	if err != nil {
+		return err
+	}
+	return c.AddMember(ctx, groupID, userID)
+}
+
+func (d *Dynamic) RemoveMember(ctx context.Context, groupID, userID string) error {
+	c, err := d.get()
+	if err != nil {
+		return err
+	}
+	return c.RemoveMember(ctx, groupID, userID)
+}

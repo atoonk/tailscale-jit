@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"math"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -122,8 +123,9 @@ func ParseDuration(s string) (time.Duration, error) {
 	return out, nil
 }
 
-// Workflow is an approval flow: who may request it, who approves, and the
-// one posture attribute an approval sets on the requester's device.
+// Workflow is an approval flow: who may request it, who approves, and what
+// an approval grants: a posture attribute on the requester's device, time
+// limited membership in Okta groups, or both.
 type Workflow struct {
 	ID          string `json:"id"`
 	Name        string `json:"name"`
@@ -132,7 +134,14 @@ type Workflow struct {
 	// expiry, on the requester's device: custom:jit_<name>. It is the only
 	// thing jitd does; what it unlocks is decided by the tailnet policy
 	// (grants with srcPosture on posture:jit_<name>).
+	//
+	// It may be empty when the flow grants Okta groups instead.
 	Attribute string `json:"attribute"`
+	// OktaGroups are the Okta groups an approval adds the requester (the
+	// Okta user with their login or email) to, until the access ends. Okta
+	// has no expiring membership, so jitd removes them itself: unlike the
+	// posture attribute, this needs jitd running to end on time.
+	OktaGroups []OktaGroup `json:"okta_groups,omitempty"`
 	// Resources is "Gives access to": what the policy unlocks for this
 	// attribute, as told by the admin. Discovery only, for people and agents
 	// choosing what to request; it grants nothing.
@@ -188,6 +197,41 @@ type Resource struct {
 	Description string `json:"description,omitempty"`
 }
 
+// OktaGroup names one Okta group a flow grants membership in. When a flow
+// is saved, a group given by Name alone is looked up and its ID filled in;
+// the ID is what jitd uses from then on.
+type OktaGroup struct {
+	ID   string `json:"id,omitempty"`
+	Name string `json:"name,omitempty"`
+}
+
+// Label is how the group is shown.
+func (g OktaGroup) Label() string {
+	if g.Name != "" {
+		return g.Name
+	}
+	return g.ID
+}
+
+// OktaGrant is what an approval did in Okta for one request: which user it
+// acted on and which group memberships jitd added (and so must remove).
+type OktaGrant struct {
+	UserID string `json:"user_id"`
+	Login  string `json:"login,omitempty"` // the Okta login, for people
+	// Added are the IDs of the groups jitd made the user a member of (or
+	// that another live jitd request had already added). These come off
+	// when the access ends.
+	Added []string `json:"added,omitempty"`
+	// Preexisting are groups the user was already in, outside jitd, when
+	// access was approved. jitd never removes these.
+	Preexisting []string `json:"preexisting,omitempty"`
+	// RemovedAt is when every Added membership was confirmed removed
+	// after the request ended.
+	RemovedAt *time.Time `json:"removed_at,omitempty"`
+	// Error is the last failure to remove a membership; jitd keeps retrying.
+	Error string `json:"error,omitempty"`
+}
+
 // AttrPrefix is the namespace of every attribute jitd writes.
 const AttrPrefix = "custom:jit_"
 
@@ -202,8 +246,35 @@ const MaxFlowDuration = Duration(365 * 24 * time.Hour)
 // MaxApprovalsRequired caps a flow's quorum (the flow form offers 1..this).
 const MaxApprovalsRequired = 10
 
-// Posture is the policy-file posture that checks the workflow's attribute.
-func (w *Workflow) Posture() string { return PostureFor(w.Attribute) }
+// Posture is the policy-file posture that checks the workflow's attribute,
+// or "" if the flow sets none.
+func (w *Workflow) Posture() string {
+	if w.Attribute == "" {
+		return ""
+	}
+	return PostureFor(w.Attribute)
+}
+
+// OktaGroupLabels lists the flow's Okta group names.
+func (w *Workflow) OktaGroupLabels() []string { return oktaLabels(w.OktaGroups) }
+
+func oktaLabels(gs []OktaGroup) []string {
+	out := make([]string, len(gs))
+	for i, g := range gs {
+		out[i] = g.Label()
+	}
+	return out
+}
+
+// oktaGroupIDs lists the group IDs, sorted, for comparing two sets.
+func oktaGroupIDs(gs []OktaGroup) []string {
+	out := make([]string, 0, len(gs))
+	for _, g := range gs {
+		out = append(out, g.ID)
+	}
+	slices.Sort(out)
+	return out
+}
 
 // PostureFor turns custom:jit_x into posture:jit_x.
 func PostureFor(attr string) string { return "posture:jit_" + strings.TrimPrefix(attr, AttrPrefix) }
@@ -312,14 +383,15 @@ type AccessRequest struct {
 	WorkflowName string `json:"workflow_name"`
 	// Attribute and Resources are snapshots of the workflow at submit, so a
 	// request stays readable after its flow changes.
-	Attribute      string     `json:"attribute"`
-	Resources      []Resource `json:"resources"`
-	Requester      Identity   `json:"requester"`
-	TargetDeviceID string     `json:"target_device_id"`
-	Duration       Duration   `json:"duration"`
-	Reason         string     `json:"reason"`
-	Status         Status     `json:"status"`
-	Timeline       []Event    `json:"timeline"`
+	Attribute      string      `json:"attribute"`
+	OktaGroups     []OktaGroup `json:"okta_groups,omitempty"`
+	Resources      []Resource  `json:"resources"`
+	Requester      Identity    `json:"requester"`
+	TargetDeviceID string      `json:"target_device_id"`
+	Duration       Duration    `json:"duration"`
+	Reason         string      `json:"reason"`
+	Status         Status      `json:"status"`
+	Timeline       []Event     `json:"timeline"`
 	// Approvals so far; access is granted once ApprovalsRequired is reached.
 	Approvals         []Approval  `json:"approvals,omitempty"`
 	ApprovalsRequired int         `json:"approvals_required"` // the flow's quorum; follows the flow while pending
@@ -328,6 +400,8 @@ type AccessRequest struct {
 	ExpiresAt         *time.Time  `json:"expires_at,omitempty"`
 	Attributes        []string    `json:"attributes,omitempty"` // [Attribute] once it was set on approve; empty if never granted
 	LastError         string      `json:"last_error,omitempty"`
+	// Okta is what approval did in Okta, for flows with OktaGroups.
+	Okta *OktaGrant `json:"okta,omitempty"`
 	// Slack lists the Slack messages posted about this request.
 	Slack     []SlackMessage `json:"slack,omitempty"`
 	CreatedAt time.Time      `json:"created_at"`
@@ -342,6 +416,22 @@ type AccessRequest struct {
 
 // ResourceNames lists the request's resource names.
 func (r *AccessRequest) ResourceNames() []string { return resourceNames(r.Resources) }
+
+// OktaGroupLabels lists the request's Okta group names.
+func (r *AccessRequest) OktaGroupLabels() []string { return oktaLabels(r.OktaGroups) }
+
+// Granted reports whether access was ever put in place for r: the posture
+// attribute set, or Okta memberships handled.
+func (r *AccessRequest) Granted() bool {
+	return len(r.Attributes) > 0 || (r.Okta != nil && r.Okta.UserID != "")
+}
+
+// oktaPendingRemoval reports whether r ended with Okta memberships jitd
+// added that are not yet confirmed removed.
+func (r *AccessRequest) oktaPendingRemoval() bool {
+	ended := r.Status == StatusExpired || r.Status == StatusRevoked
+	return ended && r.Okta != nil && len(r.Okta.Added) > 0 && r.Okta.RemovedAt == nil
+}
 
 var attrNameRE = regexp.MustCompile(`^[a-z0-9_]{1,32}$`)
 
@@ -376,7 +466,12 @@ func ValidatePrincipal(p Principal) error {
 func (w *Workflow) Normalize() {
 	w.Name = strings.TrimSpace(w.Name)
 	w.Description = strings.TrimSpace(w.Description)
-	w.Attribute = AttrKey(w.Attribute)
+	if strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(w.Attribute), AttrPrefix)) == "" {
+		w.Attribute = ""
+	} else {
+		w.Attribute = AttrKey(w.Attribute)
+	}
+	w.OktaGroups = cleanOktaGroups(w.OktaGroups)
 	w.Resources = cleanResources(w.Resources)
 	w.Requesters = cleanPrincipals(w.Requesters)
 	w.Approvers = cleanPrincipals(w.Approvers)
@@ -412,12 +507,25 @@ func (w *Workflow) Validate() error {
 	if w.Name == "" {
 		return badRequest("name is required")
 	}
-	name := strings.TrimPrefix(w.Attribute, AttrPrefix)
-	if !attrNameRE.MatchString(name) {
-		return badRequest("invalid posture attribute %q: use 1-32 of a-z, 0-9, _ after %s (e.g. db_ro, ssh)", name, AttrPrefix)
+	if w.Attribute == "" && len(w.OktaGroups) == 0 {
+		return badRequest("an approval flow must grant something: a posture attribute, Okta groups, or both")
 	}
-	if name == ReservedAttribute {
-		return badRequest("the posture attribute %s%s is reserved for jitd's setup check", AttrPrefix, name)
+	if w.Attribute != "" {
+		name := strings.TrimPrefix(w.Attribute, AttrPrefix)
+		if !attrNameRE.MatchString(name) {
+			return badRequest("invalid posture attribute %q: use 1-32 of a-z, 0-9, _ after %s (e.g. db_ro, ssh)", name, AttrPrefix)
+		}
+		if name == ReservedAttribute {
+			return badRequest("the posture attribute %s%s is reserved for jitd's setup check", AttrPrefix, name)
+		}
+	}
+	if len(w.OktaGroups) > MaxOktaGroups {
+		return badRequest("an approval flow may grant at most %d Okta groups", MaxOktaGroups)
+	}
+	for _, g := range w.OktaGroups {
+		if g.ID == "" {
+			return badRequest("Okta group %q has not been looked up; is Okta configured?", g.Name)
+		}
 	}
 	for _, r := range w.Resources {
 		if strings.ContainsAny(r.Name, " \t,\"") {
@@ -476,6 +584,34 @@ func (w *Workflow) Validate() error {
 	}
 	return nil
 }
+
+// MaxOktaGroups caps how many Okta groups one flow grants.
+const MaxOktaGroups = 20
+
+// cleanOktaGroups trims, drops empties and de-duplicates by ID (or name, for
+// groups not looked up yet). A name that is really a group ID moves to ID.
+func cleanOktaGroups(in []OktaGroup) []OktaGroup {
+	var out []OktaGroup
+	seen := map[string]bool{}
+	for _, g := range in {
+		g.ID, g.Name = strings.TrimSpace(g.ID), strings.TrimSpace(g.Name)
+		if g.ID == "" && oktaGroupIDRE.MatchString(g.Name) {
+			g.ID, g.Name = g.Name, ""
+		}
+		k := "id:" + g.ID
+		if g.ID == "" {
+			k = "name:" + g.Name
+		}
+		if (g.ID != "" || g.Name != "") && !seen[k] {
+			seen[k] = true
+			out = append(out, g)
+		}
+	}
+	return out
+}
+
+// oktaGroupIDRE is the shape of an Okta group ID (00g…).
+var oktaGroupIDRE = regexp.MustCompile(`^00g[A-Za-z0-9]{10,}$`)
 
 // MaxResourceDescription caps a resource description.
 const MaxResourceDescription = 200
