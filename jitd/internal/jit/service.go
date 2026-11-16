@@ -24,6 +24,10 @@ import (
 // stay fast: a mutation loads a copy, checks it and calls the API, then saves
 // the copy. VerifyNow also takes mu, so opening a not-yet-confirmed request
 // can wait behind a slow approval or expiry tick.
+//
+// Okta is slower and less dependable than the Tailscale API, so the calls
+// that add and remove Okta group memberships run without mu, under oktaMu
+// (see okta.go). Only the cached okta: principal lookups still run under mu.
 type Service struct {
 	Store *Store
 	TS    tsapi.Client
@@ -45,7 +49,11 @@ type Service struct {
 	// it is saved (see Notifier).
 	Notify Notifier
 
-	mu     sync.Mutex
+	mu sync.Mutex
+	// oktaMu serialises changes to Okta group memberships together with the
+	// store write that records them. It is taken before mu, never while mu
+	// is held, so waiting for Okta does not hold up anything else.
+	oktaMu sync.Mutex
 	ocache oktaCache
 }
 
@@ -113,15 +121,16 @@ func (s *Service) GetWorkflow(id string) (*Workflow, error) {
 
 // CreateWorkflow validates and stores a new workflow.
 func (s *Service) CreateWorkflow(w Workflow) (*Workflow, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	w.Normalize()
+	// The Okta lookups only touch w: they run before the lock is taken.
 	if err := s.resolveOktaGroups(context.Background(), &w); err != nil {
 		return nil, err
 	}
 	if err := s.checkOktaPrincipals(context.Background(), &w); err != nil {
 		return nil, err
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if err := w.Validate(); err != nil {
 		return nil, err
 	}
@@ -142,15 +151,16 @@ func (s *Service) CreateWorkflow(w Workflow) (*Workflow, error) {
 
 // UpdateWorkflow replaces a workflow's editable fields.
 func (s *Service) UpdateWorkflow(id string, w Workflow) (*Workflow, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	w.Normalize()
+	// The Okta lookups only touch w: they run before the lock is taken.
 	if err := s.resolveOktaGroups(context.Background(), &w); err != nil {
 		return nil, err
 	}
 	if err := s.checkOktaPrincipals(context.Background(), &w); err != nil {
 		return nil, err
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if err := w.Validate(); err != nil {
 		return nil, err
 	}
@@ -501,24 +511,34 @@ const MaxNoteLen = 2000
 
 // Submit files a pending access request for caller.
 func (s *Service) Submit(ctx context.Context, caller Identity, in NewRequest) (*AccessRequest, error) {
+	r, auto, err := s.submit(ctx, caller, in)
+	if err != nil || !auto {
+		return r, err
+	}
+	return s.autoApprove(ctx, r.ID)
+}
+
+// submit is Submit under the service lock. It reports whether the flow
+// approves on its own, which Submit then does without the lock held.
+func (s *Service) submit(ctx context.Context, caller Identity, in NewRequest) (_ *AccessRequest, auto bool, _ error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	w, err := s.GetWorkflow(in.WorkflowID)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if !s.matches(ctx, w.Requesters, caller) {
-		return nil, forbidden("%s is not a requester in approval flow %q", caller.Actor(), w.Name)
+		return nil, false, forbidden("%s is not a requester in approval flow %q", caller.Actor(), w.Name)
 	}
 	if w.Disabled {
-		return nil, conflict("approval flow %q is disabled", w.Name)
+		return nil, false, conflict("approval flow %q is disabled", w.Name)
 	}
 	if len(w.OktaGroups) > 0 {
 		if caller.Tagged() {
-			return nil, forbidden("approval flow %q grants Okta groups, and a tagged device has no Okta user", w.Name)
+			return nil, false, forbidden("approval flow %q grants Okta groups, and a tagged device has no Okta user", w.Name)
 		}
 		if !s.oktaEnabled() {
-			return nil, conflict("approval flow %q grants Okta groups, but Okta is not configured", w.Name)
+			return nil, false, conflict("approval flow %q grants Okta groups, but Okta is not configured", w.Name)
 		}
 	}
 	dur := in.Duration
@@ -526,25 +546,25 @@ func (s *Service) Submit(ctx context.Context, caller Identity, in NewRequest) (*
 		dur = cmp.Or(w.DefaultDuration, w.MaxDuration)
 	}
 	if dur < Duration(time.Minute) || dur > w.MaxDuration {
-		return nil, badRequest("duration must be between 1 minute and %s", w.MaxDuration.Human())
+		return nil, false, badRequest("duration must be between 1 minute and %s", w.MaxDuration.Human())
 	}
 	reason, err := cleanText("reason", in.Reason)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if reason == "" {
-		return nil, badRequest("reason is required")
+		return nil, false, badRequest("reason is required")
 	}
 	if !w.AutoApprove && !s.quorumReachable(ctx, w, caller) {
 		why := "it has fewer approvers than that"
 		if !w.AllowSelfApproval && s.matches(ctx, w.Approvers, caller) {
 			why = "you are one of its approvers, and the flow does not allow approving your own request"
 		}
-		return nil, conflict("not enough people can approve %q: it needs %s, and %s", w.Name, plural(max(1, w.ApprovalsRequired), "approval"), why)
+		return nil, false, conflict("not enough people can approve %q: it needs %s, and %s", w.Name, plural(max(1, w.ApprovalsRequired), "approval"), why)
 	}
 	target := caller.DeviceID
 	if target == "" {
-		return nil, badRequest("cannot tell which device you are on")
+		return nil, false, badRequest("cannot tell which device you are on")
 	}
 	now := s.now()
 	// One live request per flow and device: point at the existing one
@@ -560,7 +580,7 @@ func (s *Service) Submit(ctx context.Context, caller Identity, in NewRequest) (*
 	if existing != nil {
 		e := conflict("there is already a %s request for %q on this device (%s)", existing.Status, w.Name, existing.ID)
 		e.RequestID = existing.ID
-		return nil, e
+		return nil, false, e
 	}
 	r := &AccessRequest{
 		ID: NewID("req_"), WorkflowID: w.ID, WorkflowName: w.Name, Attribute: w.Attribute, OktaGroups: w.OktaGroups, Resources: OrEmpty(w.Resources),
@@ -570,42 +590,77 @@ func (s *Service) Submit(ctx context.Context, caller Identity, in NewRequest) (*
 	note := fmt.Sprintf("for %s: %s", dur.Human(), reason)
 	r.Timeline = append(r.Timeline, Event{Type: "submitted", Actor: caller.Actor(), Note: note, Via: caller.Via, SlackUser: caller.SlackUser, At: now})
 	if err := s.Store.Update(func(d *Data) error { d.Requests[r.ID] = clone(r); return nil }); err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	s.Log.Info("access request submitted", "id", r.ID, "by", caller.Actor(), "grants", grantSummary(w.Attribute, w.OktaGroups), "duration", dur)
 	s.emit(r, r.Timeline[len(r.Timeline)-1])
-	if w.AutoApprove {
-		return s.autoApprove(ctx, r, w)
-	}
-	return r, nil
+	return r, w.AutoApprove, nil
 }
 
 // AutoActor is who an automatic approval is recorded as.
 const AutoActor = "jitd (automatic approval)"
 
-// autoApprove grants r, just submitted through a flow that approves on its
-// own. If the grant fails, the request is cancelled rather than left
-// pending with nobody to approve it, and the requester can submit again.
-// Callers hold s.mu.
-func (s *Service) autoApprove(ctx context.Context, r *AccessRequest, w *Workflow) (*AccessRequest, error) {
-	out, err := s.grant(ctx, r, w, Event{Actor: AutoActor}, "approved automatically by the flow", false)
+// autoApprove grants request id, just submitted through a flow that
+// approves on its own. It grants the way Approve does, with the Okta calls
+// outside the service lock. If the grant fails, the request is cancelled
+// rather than left pending with nobody to approve it, and the requester can
+// submit again.
+func (s *Service) autoApprove(ctx context.Context, id string) (*AccessRequest, error) {
+	out, err := s.grantOutsideLock(ctx, id, func(og *oktaOutcome) (*AccessRequest, bool, error) {
+		return s.autoGrant(ctx, id, og)
+	})
 	if err == nil {
 		return out, nil
 	}
-	if out == nil {
-		return nil, err // the store write failed; nothing to report on
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r := s.Request(id)
+	switch {
+	case r == nil:
+		return nil, err
+	case r.Status == StatusApproved:
+		// An approver got there first; the access is in place either way.
+		return r, nil
+	case r.Status == StatusPending:
+		now := s.now()
+		r.Status, r.UpdatedAt = StatusCancelled, now
+		r.Timeline = append(r.Timeline, Event{Type: "cancelled", Actor: AutoActor, At: now,
+			Note: "automatic approval failed, so the request was cancelled; submit it again once the problem is fixed"})
+		if serr := s.save(r); serr != nil {
+			return nil, serr
+		}
+		s.emit(r, r.Timeline[len(r.Timeline)-1])
 	}
-	now := s.now()
-	out.Status, out.UpdatedAt = StatusCancelled, now
-	out.Timeline = append(out.Timeline, Event{Type: "cancelled", Actor: AutoActor, At: now,
-		Note: "automatic approval failed, so the request was cancelled; submit it again once the problem is fixed"})
-	if serr := s.save(out); serr != nil {
-		return nil, serr
-	}
-	s.emit(out, out.Timeline[len(out.Timeline)-1])
 	e := AsError(err)
-	e.RequestID = out.ID
+	e.RequestID = id
 	return nil, e
+}
+
+// autoGrant is autoApprove under the service lock. Like approve, it is
+// called twice for a grant that includes Okta groups.
+func (s *Service) autoGrant(ctx context.Context, id string, og *oktaOutcome) (_ *AccessRequest, needOkta bool, _ error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r, w, err := s.load(id)
+	if err != nil {
+		return nil, false, err
+	}
+	// The request and its flow may have changed since submit let go of the
+	// lock: grant only what the flow still grants on its own.
+	if r.Status != StatusPending {
+		return nil, false, conflict("request is %s, not pending", r.Status)
+	}
+	if !w.AutoApprove {
+		return nil, false, conflict("approval flow %q no longer approves requests automatically", w.Name)
+	}
+	if w.Disabled {
+		return nil, false, conflict("approval flow %q is disabled; no new access can be granted", w.Name)
+	}
+	if why := s.stale(ctx, r, w); why != "" {
+		return nil, false, conflict("%s", why)
+	}
+	r.UpdatedAt = s.now()
+	return s.grant(ctx, r, w, Event{Actor: AutoActor}, "approved automatically by the flow", false, og)
 }
 
 // RecordSlackMessages notes Slack messages posted about request id, so they
@@ -818,35 +873,80 @@ func (s *Service) stale(ctx context.Context, r *AccessRequest, w *Workflow) stri
 
 // Approve records actor's vote and, once the flow's quorum is reached, sets
 // the flow's posture attribute on the target device, expiring at
-// now+duration (capped at the flow's current maximum).
+// now+duration (capped at the flow's current maximum), and adds the
+// requester to the flow's Okta groups.
 func (s *Service) Approve(ctx context.Context, actor Identity, id, note string) (*AccessRequest, error) {
 	note, err := cleanNote(note)
 	if err != nil {
 		return nil, err
 	}
+	return s.grantOutsideLock(ctx, id, func(og *oktaOutcome) (*AccessRequest, bool, error) {
+		return s.approve(ctx, actor, id, note, og)
+	})
+}
+
+// grantOutsideLock runs step, the part of an approval that holds the
+// service lock (approve, or autoGrant for a flow that approves on its own).
+// When step reports that it would grant and the grant includes Okta groups,
+// the Okta calls run here, without the service lock; step then runs again,
+// checks everything afresh and records the outcome. oktaMu is held until
+// the outcome is saved, so no other grant or removal sees a half-done one.
+func (s *Service) grantOutsideLock(ctx context.Context, id string, step func(*oktaOutcome) (*AccessRequest, bool, error)) (*AccessRequest, error) {
+	r, needOkta, err := step(nil)
+	if !needOkta {
+		return r, err
+	}
+	s.oktaMu.Lock()
+	defer s.oktaMu.Unlock()
+	octx, cancel := apiContext(ctx)
+	defer cancel()
+	out := &oktaOutcome{}
+	out.grant, out.fresh, out.err = s.grantOkta(octx, r)
+	r, _, err = step(out)
+	if !out.used {
+		// The approval did not go through after all (the request changed
+		// meanwhile, the attribute could not be set, the save failed).
+		s.takeBackOkta(octx, id, out)
+	}
+	return r, err
+}
+
+// oktaOutcome is the result of adding a request's Okta memberships, which
+// grantOutsideLock does outside the service lock.
+type oktaOutcome struct {
+	grant *OktaGrant // what to record on the request; nil if err is set
+	fresh []string   // IDs of the groups this attempt added the user to
+	err   error
+	used  bool // the approval was saved with grant
+}
+
+// approve is Approve under the service lock. For a grant that includes Okta
+// groups it is called twice: first with og nil, when it saves nothing and
+// reports needOkta, then with the outcome of the Okta calls.
+func (s *Service) approve(ctx context.Context, actor Identity, id, note string, og *oktaOutcome) (_ *AccessRequest, needOkta bool, _ error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	r, w, err := s.loadFor(ctx, actor, id)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if r.Status != StatusPending {
-		return nil, conflict("request is %s, not pending", r.Status)
+		return nil, false, conflict("request is %s, not pending", r.Status)
 	}
 	if err := browserOnly(actor, w); err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if !s.matches(ctx, w.Approvers, actor) {
-		return nil, forbidden("%s is not an approver in approval flow %q", actor.Actor(), w.Name)
+		return nil, false, forbidden("%s is not an approver in approval flow %q", actor.Actor(), w.Name)
 	}
 	if isSelf(actor, r.Requester) && !w.AllowSelfApproval {
-		return nil, forbidden("approval flow %q does not allow approving your own request", w.Name)
+		return nil, false, forbidden("approval flow %q does not allow approving your own request", w.Name)
 	}
 	if w.Disabled {
-		return nil, conflict("approval flow %q is disabled; no new access can be granted", w.Name)
+		return nil, false, conflict("approval flow %q is disabled; no new access can be granted", w.Name)
 	}
 	if why := s.stale(ctx, r, w); why != "" {
-		return nil, conflict("%s", why)
+		return nil, false, conflict("%s", why)
 	}
 	now := s.now()
 	r.ApprovalsRequired = max(1, w.ApprovalsRequired)
@@ -861,27 +961,32 @@ func (s *Service) Approve(ctx context.Context, actor Identity, id, note string) 
 	valid := s.validVotes(ctx, r, w)
 	if valid < r.ApprovalsRequired {
 		if voted {
-			return r, nil
+			return r, false, nil
 		}
 		r.Timeline = append(r.Timeline, Event{Type: "approval", Actor: actor.Actor(), At: now, Via: actor.Via, SlackUser: actor.SlackUser,
 			Note: joinNote(note, fmt.Sprintf("%d of %d approvals", valid, r.ApprovalsRequired))})
 		if err := s.save(r); err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		s.emit(r, r.Timeline[len(r.Timeline)-1])
-		return r, nil
+		return r, false, nil
 	}
-
-	return s.grant(ctx, r, w, Event{Actor: actor.Actor(), Via: actor.Via, SlackUser: actor.SlackUser}, note, !voted)
+	return s.grant(ctx, r, w, Event{Actor: actor.Actor(), Via: actor.Via, SlackUser: actor.SlackUser}, note, !voted, og)
 }
 
-// grant gives r its access: it sets the posture attribute and adds the Okta
-// memberships, expiring after r's duration (capped at the flow's current
-// maximum), and records it as approved by "by" (its Actor, Via and
-// SlackUser). If granting fails, r stays pending with the error, and with
-// popVote its newest vote is dropped so the approver can retry; grant then
-// returns r and the error. Callers hold s.mu.
-func (s *Service) grant(ctx context.Context, r *AccessRequest, w *Workflow, by Event, note string, popVote bool) (*AccessRequest, error) {
+// grant gives r its access: it sets the posture attribute and records the
+// Okta memberships, expiring after r's duration (capped at the flow's
+// current maximum), and records it as approved by "by" (its Actor, Via and
+// SlackUser). The Okta calls are not made here: when the grant includes
+// Okta groups and og is nil, grant saves nothing and reports needOkta, and
+// the caller comes back with their outcome (see grantOutsideLock). If
+// granting fails, r stays pending with the error, and with popVote its
+// newest vote is dropped so the approver can retry; grant then returns r
+// and the error. Callers hold s.mu.
+func (s *Service) grant(ctx context.Context, r *AccessRequest, w *Workflow, by Event, note string, popVote bool, og *oktaOutcome) (_ *AccessRequest, needOkta bool, _ error) {
+	if len(r.OktaGroups) > 0 && og == nil {
+		return r, true, nil
+	}
 	id := r.ID
 	now := s.now()
 	grantNote := note
@@ -897,21 +1002,22 @@ func (s *Service) grant(ctx context.Context, r *AccessRequest, w *Workflow, by E
 	actx, cancel := apiContext(ctx)
 	defer cancel()
 	var err error
-	if r.Attribute != "" {
-		err = s.syncAttribute(actx, r.TargetDeviceID, r.Attribute, r)
+	attrTried := false
+	if og != nil && og.err != nil {
+		err = fmt.Errorf("okta: %w", og.err)
 	}
-	if err == nil {
-		if err = s.grantOkta(actx, r); err != nil {
-			err = fmt.Errorf("okta: %w", err)
-		}
+	if err == nil && r.Attribute != "" {
+		attrTried = true
+		err = s.syncAttribute(actx, r.TargetDeviceID, r.Attribute, r)
 	}
 	if err != nil {
 		// The call may have failed after Tailscale applied it (a timeout, a
 		// lost response): put the attribute back to what the store says,
-		// best effort, so no access is left that nobody can see. grantOkta
-		// takes back its own memberships.
+		// best effort, so no access is left that nobody can see. Okta
+		// memberships added for this attempt are taken back by
+		// grantOutsideLock.
 		r.Status, r.ApprovedAt, r.ExpiresAt, r.Attributes, r.Okta = StatusPending, nil, nil, nil, nil
-		if r.Attribute != "" {
+		if attrTried {
 			if cerr := s.syncAttribute(actx, r.TargetDeviceID, r.Attribute, r); cerr != nil {
 				s.Log.Error("approve failed and the attribute could not be reset", "id", id, "err", cerr)
 			}
@@ -923,11 +1029,14 @@ func (s *Service) grant(ctx context.Context, r *AccessRequest, w *Workflow, by E
 		r.LastError = err.Error()
 		r.Timeline = append(r.Timeline, Event{Type: "approve_failed", Actor: by.Actor, Note: r.LastError, Via: by.Via, SlackUser: by.SlackUser, At: now})
 		if serr := s.save(r); serr != nil {
-			return nil, serr
+			return nil, false, serr
 		}
 		s.Log.Info("access request approve failed", "id", id, "by", by.Actor, "err", r.LastError)
 		s.emit(r, r.Timeline[len(r.Timeline)-1])
-		return r, apiFailed("could not grant access: %s", r.LastError)
+		return r, false, apiFailed("could not grant access: %s", r.LastError)
+	}
+	if og != nil {
+		r.Okta = og.grant
 	}
 	r.LastError = ""
 	r.Timeline = append(r.Timeline, Event{Type: "approved", Actor: by.Actor, At: now, Via: by.Via, SlackUser: by.SlackUser,
@@ -936,20 +1045,21 @@ func (s *Service) grant(ctx context.Context, r *AccessRequest, w *Workflow, by E
 	if err := s.save(r); err != nil {
 		// The attribute is on the device but the store does not say so: take
 		// it off again rather than leave access nobody can see or revoke.
+		// grantOutsideLock does the same for the Okta memberships.
 		r.Status = StatusPending
 		if r.Attribute != "" {
 			if derr := s.syncAttribute(actx, r.TargetDeviceID, r.Attribute, r); derr != nil {
 				s.Log.Error("approve: store write failed and the attribute could not be removed", "id", id, "err", derr)
 			}
 		}
-		if derr := s.releaseOkta(actx, r); derr != nil {
-			s.Log.Error("approve: store write failed and Okta memberships could not be removed", "id", id, "err", derr)
-		}
-		return nil, err
+		return nil, false, err
+	}
+	if og != nil {
+		og.used = true
 	}
 	s.Log.Info("access request approved", "id", id, "by", by.Actor, "grants", grantSummary(r.Attribute, r.OktaGroups), "expires", exp)
 	s.emit(r, r.Timeline[len(r.Timeline)-1])
-	return r, nil
+	return r, false, nil
 }
 
 // verify reads the target device's attributes back and records whether the
@@ -1047,6 +1157,23 @@ func (s *Service) Revoke(ctx context.Context, actor Identity, id, note string) (
 	if err != nil {
 		return nil, err
 	}
+	r, err := s.revoke(ctx, actor, id, note)
+	if err != nil || !r.oktaPendingRemoval() {
+		return r, err
+	}
+	// Okta memberships come off now, without the service lock. A failure
+	// does not undo the revoke: the request stays revoked and the expiry
+	// tick keeps retrying the removal.
+	octx, cancel := apiContext(ctx)
+	defer cancel()
+	if got := s.releaseOktaOne(octx, id); got != nil {
+		r = got
+	}
+	return r, nil
+}
+
+// revoke is Revoke under the service lock, up to the Okta removal.
+func (s *Service) revoke(ctx context.Context, actor Identity, id, note string) (*AccessRequest, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	r, w, err := s.loadFor(ctx, actor, id)
@@ -1079,12 +1206,6 @@ func (s *Service) Revoke(ctx context.Context, actor Identity, id, note string) (
 		return r, apiFailed("could not remove access: %s", r.LastError)
 	}
 	r.LastError = ""
-	// Okta memberships: a failure here does not undo the revoke. The
-	// request stays revoked and the expiry tick keeps retrying the removal.
-	if oerr := s.releaseOkta(actx, r); oerr != nil {
-		r.LastError = "okta: " + oerr.Error()
-		s.Log.Error("revoke: Okta memberships not removed yet; will retry", "id", id, "err", oerr)
-	}
 	r.Timeline = append(r.Timeline, Event{Type: "revoked", Actor: actor.Actor(), Note: note, Via: actor.Via, SlackUser: actor.SlackUser, At: now})
 	s.verify(actx, r)
 	if err := s.save(r); err != nil {
@@ -1128,12 +1249,21 @@ func (s *Service) Cancel(ctx context.Context, actor Identity, id, note string) (
 // ExpireDue marks approved requests whose expiry has passed as expired, and
 // pending requests nobody decided within the workflow's approval timeout. It
 // makes no Tailscale API calls: Tailscale removes the attribute itself at its
-// expiry. Okta memberships have no expiry, so it removes those (see
-// releaseOktaDue).
+// expiry. Okta memberships have no expiry, so it removes those, after the
+// service lock is released (see releaseOktaDue).
 // (Two live requests for one attribute and device are rare: one per flow and
 // device is allowed, so it takes an attribute moved to another flow. The
 // attribute then carries the later expiry already.)
 func (s *Service) ExpireDue() int {
+	n := s.expireDue()
+	octx, cancel := context.WithTimeout(context.Background(), oktaTimeout)
+	defer cancel()
+	s.releaseOktaDue(octx)
+	return n
+}
+
+// expireDue is ExpireDue under the service lock, without the Okta removals.
+func (s *Service) expireDue() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := s.now()
@@ -1176,9 +1306,6 @@ func (s *Service) ExpireDue() int {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	s.verifyRemovals(ctx)
-	octx, ocancel := context.WithTimeout(context.Background(), oktaTimeout)
-	defer ocancel()
-	s.releaseOktaDue(octx)
 	return len(ids)
 }
 

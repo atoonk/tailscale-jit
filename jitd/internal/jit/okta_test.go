@@ -217,7 +217,7 @@ func TestOktaRemovalRetried(t *testing.T) {
 	h.svc.Approve(ctx, bob, r.ID, "")
 	f.Fail["remove:"+gAdmin] = errors.New("rate limited")
 	got, err := h.svc.Revoke(ctx, bob, r.ID, "done")
-	if err != nil || got.Status != StatusRevoked || got.Okta.RemovedAt != nil || !strings.Contains(got.LastError, "rate limited") {
+	if err != nil || got.Status != StatusRevoked || got.Okta.RemovedAt != nil || !strings.Contains(got.Okta.Error, "rate limited") {
 		t.Fatalf("revoke = %v %+v %+v", err, got, got.Okta)
 	}
 	h.svc.ExpireDue()
@@ -322,6 +322,134 @@ func TestOktaPreexistingKeptWithEndedRequests(t *testing.T) {
 	h.svc.Revoke(ctx, bob, b.ID, "")
 	if !f.Member(gAdmin, uAlice) {
 		t.Error("a membership from outside jitd was removed")
+	}
+}
+
+// Okta can be slow or down. None of the calls that add or remove a
+// membership, or that look a group up for a flow, may run while the service
+// lock is held: that would stall every other request.
+func TestOktaCallsOutsideServiceLock(t *testing.T) {
+	h, f := oktaHarness(t)
+	var held []string
+	f.Hook = func(call string) {
+		if !h.svc.mu.TryLock() {
+			held = append(held, call)
+			return
+		}
+		h.svc.mu.Unlock()
+	}
+	fl := oktaFlow(OktaGroup{Name: "AWS-Prod-Admin"}, OktaGroup{ID: gRead})
+	fl.Attribute = "aws"
+	w := h.workflow(t, fl)
+	if _, err := h.svc.UpdateWorkflow(w.ID, fl); err != nil {
+		t.Fatal(err)
+	}
+	a, _ := h.svc.Submit(ctx, alice, NewRequest{WorkflowID: w.ID, Reason: "x"})
+	if got, err := h.svc.Approve(ctx, bob, a.ID, ""); err != nil || got.Status != StatusApproved {
+		t.Fatalf("approve = %v %+v", err, got)
+	}
+	if got, err := h.svc.Revoke(ctx, bob, a.ID, ""); err != nil || got.Okta.RemovedAt == nil {
+		t.Fatalf("revoke = %v %+v", err, got)
+	}
+	b, _ := h.svc.Submit(ctx, alice, NewRequest{WorkflowID: w.ID, Reason: "y", Duration: Duration(time.Hour)})
+	h.svc.Approve(ctx, bob, b.ID, "")
+	h.now = t0.Add(2 * time.Hour)
+	h.svc.ExpireDue()
+	if f.Member(gAdmin, uAlice) || f.Member(gRead, uAlice) {
+		t.Fatal("expiry did not remove the memberships")
+	}
+	// A failed grant takes back what it added, also outside the lock.
+	c, _ := h.svc.Submit(ctx, alice, NewRequest{WorkflowID: w.ID, Reason: "z"})
+	f.Fail["add:"+gRead] = errors.New("boom")
+	h.svc.Approve(ctx, bob, c.ID, "")
+	if len(held) > 0 {
+		t.Errorf("Okta calls made with the service lock held: %v", held)
+	}
+	if calls := f.Mutations(); len(calls) < 9 {
+		t.Errorf("the test did not exercise the Okta calls: %v", calls)
+	}
+}
+
+// While Okta is being called for an approval the service is not locked, so
+// the request can change underneath it. The approval then does not go
+// through and the memberships it added are taken back.
+func TestOktaApproveLosesToCancel(t *testing.T) {
+	h, f := oktaHarness(t)
+	w := h.workflow(t, oktaFlow(OktaGroup{ID: gAdmin}))
+	r, _ := h.svc.Submit(ctx, alice, NewRequest{WorkflowID: w.ID, Reason: "x"})
+	f.Hook = func(call string) {
+		if call == "add" {
+			f.Hook = nil
+			if _, err := h.svc.Cancel(ctx, alice, r.ID, "never mind"); err != nil {
+				t.Errorf("cancel during the Okta call: %v", err)
+			}
+		}
+	}
+	got, err := h.svc.Approve(ctx, bob, r.ID, "")
+	if code(err) != "conflict" {
+		t.Fatalf("approve = %v %+v", err, got)
+	}
+	cur, _ := h.svc.GetRequest(ctx, alice, r.ID)
+	if cur.Status != StatusCancelled || cur.Okta != nil {
+		t.Errorf("request = %s %+v", cur.Status, cur.Okta)
+	}
+	if f.Member(gAdmin, uAlice) {
+		t.Error("the membership added for a cancelled request was left in Okta")
+	}
+}
+
+// The posture attribute is set after the Okta memberships. If that fails,
+// the memberships are taken back and the approver can retry.
+func TestOktaTakenBackWhenAttributeFails(t *testing.T) {
+	h, f := oktaHarness(t)
+	fl := oktaFlow(OktaGroup{ID: gAdmin})
+	fl.Attribute = "aws"
+	w := h.workflow(t, fl)
+	r, _ := h.svc.Submit(ctx, alice, NewRequest{WorkflowID: w.ID, Reason: "x"})
+	f.SetMember(gRead, uAlice) // unrelated, must survive
+	h.ts.fail["custom:jit_aws"] = errors.New("tailscale down")
+	got, err := h.svc.Approve(ctx, bob, r.ID, "")
+	if code(err) != "tailscale_api_error" || got.Status != StatusPending || got.Okta != nil {
+		t.Fatalf("approve = %v %+v", err, got)
+	}
+	if f.Member(gAdmin, uAlice) || !f.Member(gRead, uAlice) {
+		t.Errorf("after the failure: admin=%v read=%v", f.Member(gAdmin, uAlice), f.Member(gRead, uAlice))
+	}
+	delete(h.ts.fail, "custom:jit_aws")
+	if got, err := h.svc.Approve(ctx, bob, r.ID, ""); err != nil || got.Status != StatusApproved || !f.Member(gAdmin, uAlice) {
+		t.Fatalf("retry = %v %+v", err, got)
+	}
+}
+
+// Two approvers click at once: one grant, one membership, no race.
+func TestOktaConcurrentApprovals(t *testing.T) {
+	h, f := oktaHarness(t)
+	fl := oktaFlow(OktaGroup{ID: gAdmin})
+	fl.Approvers = []Principal{"bob@example.com", "group:sre"}
+	w := h.workflow(t, fl)
+	r, _ := h.svc.Submit(ctx, alice, NewRequest{WorkflowID: w.ID, Reason: "x"})
+	errs := make(chan error, 2)
+	for _, who := range []Identity{bob, carol} {
+		go func() {
+			_, err := h.svc.Approve(ctx, who, r.ID, "")
+			errs <- err
+		}()
+	}
+	var failed int
+	for range 2 {
+		if err := <-errs; err != nil {
+			failed++
+			if code(err) != "conflict" {
+				t.Errorf("losing approval = %v", err)
+			}
+		}
+	}
+	got, _ := h.svc.GetRequest(ctx, alice, r.ID)
+	if failed != 1 || got.Status != StatusApproved || len(got.Approvals) != 1 || !f.Member(gAdmin, uAlice) {
+		t.Errorf("failed=%d request=%+v member=%v", failed, got, f.Member(gAdmin, uAlice))
+	}
+	if calls := f.Mutations(); len(calls) != 1 {
+		t.Errorf("Okta changes = %v, want one add", calls)
 	}
 }
 

@@ -16,6 +16,16 @@ type Fake struct {
 	Members map[string]map[string]bool // group ID -> user ID -> member
 	Fail    map[string]error           // "add:<group>", "remove:<group>", "find:<login>" -> error
 	Calls   []string
+	// Hook, if set, runs at the start of every call with its name
+	// ("finduser", "findgroup", "ismember", "add", "remove"), before the
+	// Fake takes its own lock, so it may call back into the code under test.
+	Hook func(call string)
+}
+
+func (f *Fake) hook(call string) {
+	if f.Hook != nil {
+		f.Hook(call)
+	}
 }
 
 // NewFake returns an empty Fake.
@@ -62,6 +72,7 @@ func (f *Fake) SetMember(groupID, userID string) {
 }
 
 func (f *Fake) FindUser(ctx context.Context, login string) (User, error) {
+	f.hook("finduser")
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.Calls = append(f.Calls, "FINDUSER "+login)
@@ -76,6 +87,7 @@ func (f *Fake) FindUser(ctx context.Context, login string) (User, error) {
 }
 
 func (f *Fake) FindGroup(ctx context.Context, ref string) (Group, error) {
+	f.hook("findgroup")
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if g, ok := f.Groups[ref]; ok {
@@ -97,12 +109,14 @@ func (f *Fake) FindGroup(ctx context.Context, ref string) (Group, error) {
 }
 
 func (f *Fake) IsMember(ctx context.Context, groupID, userID string) (bool, error) {
+	f.hook("ismember")
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.Members[groupID][userID], nil
 }
 
 func (f *Fake) AddMember(ctx context.Context, groupID, userID string) error {
+	f.hook("add")
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.Calls = append(f.Calls, "ADD "+groupID+" "+userID)
@@ -117,6 +131,7 @@ func (f *Fake) AddMember(ctx context.Context, groupID, userID string) error {
 }
 
 func (f *Fake) RemoveMember(ctx context.Context, groupID, userID string) error {
+	f.hook("remove")
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.Calls = append(f.Calls, "REMOVE "+groupID+" "+userID)
