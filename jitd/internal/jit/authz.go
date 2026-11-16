@@ -131,6 +131,10 @@ func (s *Service) matches(ctx context.Context, ps []Principal, id Identity) bool
 			if slices.Contains(id.Tags, name) {
 				return true
 			}
+		case p.IsOkta():
+			if s.matchesOkta(ctx, p, id) {
+				return true
+			}
 		case strings.HasPrefix(name, "group:"):
 			if id.Tagged() || s.PolicyCache == nil {
 				continue

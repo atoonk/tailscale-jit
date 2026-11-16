@@ -127,6 +127,34 @@ func (f *Fake) RemoveMember(ctx context.Context, groupID, userID string) error {
 	return nil
 }
 
+func (f *Fake) UserGroups(ctx context.Context, userID string) ([]Group, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.Calls = append(f.Calls, "USERGROUPS "+userID)
+	if err := f.Fail["usergroups:"+userID]; err != nil {
+		return nil, err
+	}
+	var out []Group
+	for gid, m := range f.Members {
+		if m[userID] {
+			out = append(out, f.Groups[gid])
+		}
+	}
+	return out, nil
+}
+
+func (f *Fake) GroupMembers(ctx context.Context, groupID string) ([]User, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []User
+	for _, u := range f.Users {
+		if f.Members[groupID][u.ID] {
+			out = append(out, u)
+		}
+	}
+	return out, nil
+}
+
 // Mutations lists the ADD and REMOVE calls so far, and clears the log.
 func (f *Fake) Mutations() []string {
 	f.mu.Lock()

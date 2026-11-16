@@ -130,14 +130,28 @@ func (s *Service) Snippet(o SnippetOptions) string {
 	for _, w := range grants {
 		st := states[w.ID]
 		dst := w.ResourceNames()
-		src := make([]string, len(w.Requesters))
-		for i, p := range w.Requesters {
-			src[i] = string(p)
+		// okta: principals mean nothing to Tailscale. The posture is what
+		// gates access (jitd only sets it for approved requesters), so the
+		// grant can name every member in their place.
+		var src []string
+		viaOkta := false
+		for _, p := range w.Requesters {
+			if p.IsOkta() {
+				viaOkta = true
+				continue
+			}
+			src = append(src, string(p))
+		}
+		if viaOkta && !slices.Contains(src, string(AutogroupMember)) {
+			src = append(src, string(AutogroupMember))
 		}
 		fmt.Fprintf(&b, "    {\n")
 		fmt.Fprintf(&b, "      // Approval flow %q%s\n", w.Name, strings.TrimPrefix(mark(st.grant), " //"))
 		if st.grant && st.use != nil && (len(st.use.Missing) > 0 || len(st.use.Extra) > 0) {
 			fmt.Fprintf(&b, "      // Your grant's dst differs from the flow's list: it has %s; the flow lists %s.\n", list(st.use.Grants), list(dst))
+		}
+		if viaOkta {
+			fmt.Fprintf(&b, "      // Okta group requesters are checked by jitd; the posture gates the rest.\n")
 		}
 		fmt.Fprintf(&b, "      \"src\": %s,\n", list(src))
 		if len(dst) == 0 {

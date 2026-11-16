@@ -47,7 +47,7 @@ func main() {
 	jitTag := flag.String("tag", "tag:jit", "tag this node runs as (used in the policy snippet)")
 	expiryInterval := flag.Duration("expiry-interval", 30*time.Second, "how often to mark approved requests past their expiry as expired")
 	policySnippet := flag.Bool("policy-snippet", false, "print the policy-file snippet for the current approval flows and exit")
-	admins := flag.String("admins", "", "comma-separated principals who may manage approval flows and see every request (logins, group:, tag:); nobody if empty")
+	admins := flag.String("admins", "", "comma-separated principals who may manage approval flows and see every request (logins, group:, okta:, tag:); nobody if empty")
 	https := flag.Bool("https", false, "serve HTTPS on :443 with a Tailscale certificate (needs HTTPS enabled for the tailnet); :80 then redirects")
 	verbose := flag.Bool("verbose", false, "log tsnet backend and every HTTP request")
 	flag.Usage = func() {
