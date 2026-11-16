@@ -2,19 +2,19 @@
 <div class="head">
   <div>
     <h1>Approval flows</h1>
-    <p class="sub">Each flow says who can ask, who approves, and which posture attribute an approval sets on the requester's device.</p>
+    <p class="sub">Each flow says who can ask, who approves, and what an approval grants: a posture attribute on the requester's device, Okta group membership, or both.</p>
   </div>
   <a class="btn primary" href="/admin/workflows/new">New approval flow</a>
 </div>
 {{if .Data}}
 <div class="scroll">
 <table class="list">
-  <thead><tr><th>Name</th><th>Posture attribute</th><th>Gives access to</th><th>Who can request</th><th>Who can approve</th><th>Max duration</th></tr></thead>
+  <thead><tr><th>Name</th><th>Grants</th><th>Gives access to</th><th>Who can request</th><th>Who can approve</th><th>Max duration</th></tr></thead>
   <tbody>
   {{range .Data}}
   <tr data-href="/admin/workflows/{{.Flow.ID}}">
     <td><a href="/admin/workflows/{{.Flow.ID}}"><b>{{.Flow.Name}}</b></a>{{if .Flow.Disabled}} <span class="status expired">disabled</span>{{end}}{{with .Flow.Description}}<div class="muted small">{{.}}</div>{{end}}{{with .Flow.Slack}}{{if .Channel}}<div class="muted small">Slack: #{{or .ChannelName .Channel}}{{if .BrowserOnly}} (browser only){{end}}</div>{{end}}{{end}}</td>
-    <td><code>{{.Flow.Attribute}}</code>{{if not .Policy.OK}}<div class="small warn" title="{{join .Policy.Problems}}">⚠ {{index .Policy.Problems 0}}</div>{{end}}</td>
+    <td>{{with .Flow.Attribute}}<code>{{.}}</code>{{end}}{{range .Flow.OktaGroups}}<div class="small">Okta: {{.Label}}</div>{{end}}{{if not .Policy.OK}}<div class="small warn" title="{{join .Policy.Problems}}">⚠ {{index .Policy.Problems 0}}</div>{{end}}</td>
     <td><div class="svcs">{{range .Flow.Resources}}<span title="{{.Description}}">{{.Name}}</span>{{end}}</div></td>
     <td>{{principals .Flow.Requesters}}</td>
     <td>{{principals .Flow.Approvers}}{{if gt .Flow.ApprovalsRequired 1}}<div class="muted small">{{.Flow.ApprovalsRequired}} approvals needed</div>{{end}}{{if .Flow.AllowSelfApproval}}<div class="muted small">or the requester</div>{{end}}</td>

@@ -24,6 +24,7 @@ import (
 	"github.com/atoonk/tailscale-jit/jitd/internal/jit"
 	"github.com/atoonk/tailscale-jit/jitd/internal/jithttp"
 	"github.com/atoonk/tailscale-jit/jitd/internal/jitmcp"
+	"github.com/atoonk/tailscale-jit/jitd/internal/okta"
 	"github.com/atoonk/tailscale-jit/jitd/internal/setup"
 	"github.com/atoonk/tailscale-jit/jitd/internal/slack"
 	"github.com/atoonk/tailscale-jit/jitd/internal/slackbot"
@@ -126,6 +127,15 @@ func main() {
 	}
 	ts := &fakeTS{attrs: map[string]time.Time{}}
 	svc := &jit.Service{Store: st, TS: ts, Log: log, Admins: admins}
+	// A made-up Okta org: everyone in the cast has a user.
+	of := okta.NewFake()
+	for name, p := range people {
+		of.AddUser("00u"+name, p.Login)
+	}
+	of.AddGroup("00gAWSPRODADMIN01", "AWS-Prod-Admin", "")
+	of.AddGroup("00gAWSPRODREAD002", "AWS-Prod-ReadOnly", "")
+	of.AddGroup("00gGRAFANAADMIN3", "Grafana-Admins", "")
+	svc.Okta = of
 	svc.PolicyCache = &jit.PolicyCache{TS: ts, TTL: time.Minute, Log: log}
 
 	// A made-up Slack: everyone in the cast has an account, and the bot can
@@ -251,6 +261,13 @@ func seed(svc *jit.Service) {
 		AllowSelfApproval: true, MaxDuration: jit.Duration(8 * time.Hour), DefaultDuration: jit.Duration(2 * time.Hour),
 	}))
 
+	aws := must(svc.CreateWorkflow(jit.Workflow{
+		Name: "AWS production admin", Description: "Okta group membership: AdministratorAccess in the prod AWS account via SSO",
+		OktaGroups: []jit.OktaGroup{{Name: "AWS-Prod-Admin"}},
+		Requesters: []jit.Principal{"autogroup:member"}, Approvers: []jit.Principal{"bob@example.com", "group:sre"},
+		MaxDuration: jit.Duration(4 * time.Hour), DefaultDuration: jit.Duration(time.Hour),
+	}))
+
 	// More flows, so the request picker is tested with a realistic number.
 	more := []jit.Workflow{
 		{Name: "Analytics warehouse (read-only)", Description: "Query the analytics Postgres; SELECT only", Attribute: "analytics_ro", Resources: []jit.Resource{{Name: "svc:postgres-analytics", Description: "Analytics Postgres, read replica"}}, MaxDuration: jit.Duration(8 * time.Hour), DefaultDuration: jit.Duration(2 * time.Hour), Approvers: []jit.Principal{"group:sre"}},
@@ -270,6 +287,12 @@ func seed(svc *jit.Service) {
 			panic(err)
 		}
 		return r
+	}
+	// Dave has AWS admin through Okta, approved by bob.
+	if r := submit("dave", aws, time.Hour, "INC-4821: scale the prod RDS instance"); r != nil {
+		if _, err := svc.Approve(ctx, people["bob"], r.ID, "go ahead"); err != nil {
+			panic(err)
+		}
 	}
 	// Alice has SSH running (self-approved), waits on bob for read-only DB.
 	r := submit("alice", ssh, 2*time.Hour, "Rotate the log shipper config on the bastion")

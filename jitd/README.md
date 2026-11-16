@@ -509,6 +509,54 @@ access.
 
 Pages update on their own when something changes.
 
+### Okta groups
+
+A flow can also grant time-limited membership in **Okta groups**, with or
+without a posture attribute. That reaches whatever Okta gates: AWS or GCP
+roles through SSO, admin roles in SaaS apps, anything assigned by group.
+An approval adds the requester's Okta user to each of the flow's groups;
+when the access expires or is revoked, jitd takes them out again.
+
+**Set it up.** Create an API token in the Okta admin console
+(**Security → API → Tokens**), ideally while signed in as a dedicated
+service account that holds the **Group Administrator** role limited to the
+groups jitd should manage: the token can do whatever that account can.
+Then add two lines to jitd's env file:
+
+```sh
+OKTA_ORG_URL=https://example.okta.com
+OKTA_API_TOKEN=00a...
+```
+
+jitd re-reads the file on use, so no restart is needed. The flow form then
+shows an **Okta groups** field: group names or IDs (`00g…`), separated by
+commas. jitd looks each one up when you save, and stores its ID.
+
+How it behaves:
+
+- **Who.** The requester's Tailscale login is looked up as an Okta login,
+  then as a primary email. A tagged device has no Okta user, so it cannot
+  request through a flow with Okta groups.
+- **Only Okta-mastered groups.** Groups whose members come from Active
+  Directory, an app or a rule (`APP_GROUP`) cannot be changed through the
+  API; jitd refuses them when the flow is saved.
+- **Standing membership is left alone.** If the person was already in the
+  group when access was approved, jitd records that and never removes them.
+- **Shared membership.** If two live requests hold the same group for one
+  person (two flows, or two devices), the membership comes off only when
+  the last one ends.
+- **Removal needs jitd.** Okta memberships have no expiry, so unlike a
+  posture attribute, jitd removes them itself, on its expiry tick
+  (`-expiry-interval`, 30 seconds by default). If jitd is down when access
+  ends, the membership stays until it is back. A removal that fails (a rate
+  limit, a revoked token) is retried on every tick, and the request page
+  says so.
+- **All or nothing.** If adding any group fails, jitd takes back what it
+  already added (and the posture attribute) and the request stays pending,
+  so the approver can try again.
+- **Policy.** A flow with only Okta groups needs nothing in the tailnet
+  policy file, and the policy snippet leaves it out.
+
 ### Slack
 
 jitd can post access requests to Slack and let approvers approve or decline

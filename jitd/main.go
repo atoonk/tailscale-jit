@@ -28,6 +28,7 @@ import (
 	"github.com/atoonk/tailscale-jit/jitd/internal/jit"
 	"github.com/atoonk/tailscale-jit/jitd/internal/jithttp"
 	"github.com/atoonk/tailscale-jit/jitd/internal/jitmcp"
+	"github.com/atoonk/tailscale-jit/jitd/internal/okta"
 	"github.com/atoonk/tailscale-jit/jitd/internal/setup"
 	"github.com/atoonk/tailscale-jit/jitd/internal/slackbot"
 	"github.com/atoonk/tailscale-jit/jitd/internal/tsapi"
@@ -101,6 +102,28 @@ func main() {
 	// an admin re-runs it, so fixing the credentials needs no restart.
 	ts := &tsapi.Switchable{}
 	svc.TS = ts
+	// Okta, for flows that grant Okta group membership: OKTA_ORG_URL and
+	// OKTA_API_TOKEN from the env file (re-read on use, so no restart is
+	// needed after editing it) or the environment.
+	svc.Okta = &okta.Dynamic{Load: func() map[string]string {
+		vars := map[string]string{}
+		for _, k := range okta.CredentialVars {
+			vars[k] = os.Getenv(k)
+		}
+		if *envFile != "" {
+			if fromFile, err := setup.ReadEnvFile(*envFile); err == nil {
+				for _, k := range okta.CredentialVars {
+					if v := fromFile[k]; v != "" {
+						vars[k] = v
+					}
+				}
+			}
+		}
+		return vars
+	}}
+	if svc.OktaEnabled() {
+		log.Info("okta group grants enabled")
+	}
 	svc.PolicyCache = &jit.PolicyCache{TS: ts, TTL: time.Minute, Log: log}
 	for _, a := range strings.Split(*admins, ",") {
 		if a = strings.TrimSpace(a); a != "" {

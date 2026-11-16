@@ -1,9 +1,9 @@
 {{define "content"}}
-{{$policy := .Data.Policy}}{{$slack := .Data.Slack}}
+{{$policy := .Data.Policy}}{{$slack := .Data.Slack}}{{$okta := .Data.Okta}}
 {{with .Data.Flow}}
 <div class="crumbs"><a href="/admin/workflows">Approval flows</a> › {{if .ID}}{{.Name}}{{else}}New{{end}}</div>
 <h1>{{if .ID}}Edit approval flow{{else}}New approval flow{{end}}</h1>
-<p class="sub">Who can ask, who says yes, and the one posture attribute an approval sets.</p>
+<p class="sub">Who can ask, who says yes, and what an approval grants: a posture attribute, Okta groups, or both.</p>
 <form class="form" data-form="workflow" data-id="{{.ID}}">
   <div class="card fields">
     <h2>About</h2>
@@ -13,10 +13,16 @@
 
   <div class="card fields">
     <h2>Access</h2>
-    <label>Posture attribute
-      <span class="prefixed"><span class="prefix">custom:jit_</span><input name="attribute" value="{{attrname .Attribute}}" placeholder="db_ro" class="short" required pattern="[a-z0-9_]{1,32}" title="1-32 of a-z, 0-9, _"></span>
-      <span class="hint">The only thing an approval does: it sets this attribute on the requester's device, with an expiry. What it unlocks is decided by the tailnet policy, through a grant with <code>srcPosture</code> on <code>posture:jit_&lt;name&gt;</code>.</span>
+    <label>Posture attribute{{if or $okta .OktaGroups}} <span class="opt">optional with Okta groups</span>{{end}}
+      <span class="prefixed"><span class="prefix">custom:jit_</span><input name="attribute" value="{{attrname .Attribute}}" placeholder="db_ro" class="short" {{if not (or $okta .OktaGroups)}}required{{end}} pattern="[a-z0-9_]{1,32}" title="1-32 of a-z, 0-9, _"></span>
+      <span class="hint">An approval sets this attribute on the requester's device, with an expiry. What it unlocks is decided by the tailnet policy, through a grant with <code>srcPosture</code> on <code>posture:jit_&lt;name&gt;</code>.</span>
     </label>
+    {{if or $okta .OktaGroups}}
+    <label>Okta groups <span class="opt">optional</span>
+      <input name="okta_groups" value="{{oktagroups .OktaGroups}}" placeholder="AWS-Prod-ReadOnly, 00g1abcdEFGHijkl2345">
+      <span class="hint">Group names or IDs, separated by commas. An approval adds the requester's Okta user (matched by login, then by email) to each group, and jitd removes them when the access ends. Okta memberships have no expiry of their own, so removal needs jitd running; a group the person was already in stays as it was. Only Okta-mastered groups can be used.{{if not $okta}} <b>Okta is not configured</b>: set <code>OKTA_ORG_URL</code> and <code>OKTA_API_TOKEN</code> in jitd's env file.{{end}}</span>
+    </label>
+    {{end}}
     <div class="field">
       <span class="label">Gives access to <span class="opt">optional</span></span>
       <div class="resrows" id="resrows">
@@ -27,7 +33,7 @@
       <button type="button" class="btn sm" id="addres">+ Add another</button>
       <span class="hint">Target is the name as it appears in a policy grant: <code>svc:mysql-prod</code>, <code>tag:bastion</code>, a host name or a CIDR. Discovery only, for people and agents choosing what to request; it grants nothing, the policy does.</span>
     </div>
-    {{if .ID}}
+    {{if and .ID .Attribute}}
     <div class="policycheck {{if $policy.OK}}ok{{else}}warn{{end}}">
       <b>Policy check</b>
       {{if $policy.OK}}<span>the tailnet policy has <code>{{$policy.Posture}}</code> and gates {{join $policy.Grants}} on it.</span>

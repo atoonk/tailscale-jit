@@ -33,21 +33,28 @@ func (id identity) who() string {
 }
 
 type requestableFlow struct {
-	WorkflowID        string     `json:"workflow_id" jsonschema:"pass this to request_access"`
-	WorkflowName      string     `json:"workflow_name"`
-	Description       string     `json:"description,omitempty"`
-	Attribute         string     `json:"attribute" jsonschema:"the posture attribute an approval sets on this device"`
-	Resources         []resource `json:"resources" jsonschema:"what the flow gives access to, as described by the admin: services, tags, hosts"`
-	Policy            *policyUse `json:"policy,omitempty" jsonschema:"what the tailnet policy actually grants for the attribute, when jitd could read it"`
-	MaxDuration       string     `json:"max_duration"`
-	DefaultDuration   string     `json:"default_duration,omitempty" jsonschema:"what request_access uses when no duration is given"`
-	Approvers         []string   `json:"approvers"`
-	AllowSelfApproval bool       `json:"allow_self_approval"`
-	ApprovalsRequired int        `json:"approvals_required,omitempty" jsonschema:"how many approvers must approve"`
-	ActiveRequestID   string     `json:"active_request_id,omitempty" jsonschema:"your open (pending or approved) request through this flow, if any"`
-	ActiveRequestURL  string     `json:"active_request_url,omitempty"`
-	ActiveStatus      string     `json:"active_status,omitempty"`
-	ActiveExpiresAt   string     `json:"active_expires_at,omitempty"`
+	WorkflowID        string      `json:"workflow_id" jsonschema:"pass this to request_access"`
+	WorkflowName      string      `json:"workflow_name"`
+	Description       string      `json:"description,omitempty"`
+	Attribute         string      `json:"attribute" jsonschema:"the posture attribute an approval sets on this device; empty if the flow grants Okta groups only"`
+	OktaGroups        []oktaGroup `json:"okta_groups,omitempty" jsonschema:"Okta groups an approval adds the requester to until the access ends"`
+	Resources         []resource  `json:"resources" jsonschema:"what the flow gives access to, as described by the admin: services, tags, hosts"`
+	Policy            *policyUse  `json:"policy,omitempty" jsonschema:"what the tailnet policy actually grants for the attribute, when jitd could read it"`
+	MaxDuration       string      `json:"max_duration"`
+	DefaultDuration   string      `json:"default_duration,omitempty" jsonschema:"what request_access uses when no duration is given"`
+	Approvers         []string    `json:"approvers"`
+	AllowSelfApproval bool        `json:"allow_self_approval"`
+	ApprovalsRequired int         `json:"approvals_required,omitempty" jsonschema:"how many approvers must approve"`
+	ActiveRequestID   string      `json:"active_request_id,omitempty" jsonschema:"your open (pending or approved) request through this flow, if any"`
+	ActiveRequestURL  string      `json:"active_request_url,omitempty"`
+	ActiveStatus      string      `json:"active_status,omitempty"`
+	ActiveExpiresAt   string      `json:"active_expires_at,omitempty"`
+}
+
+// oktaGroup is an Okta group a flow grants membership in.
+type oktaGroup struct {
+	ID   string `json:"id,omitempty"`
+	Name string `json:"name,omitempty"`
 }
 
 // resource is one thing a flow gives access to, with the admin's description.
@@ -108,17 +115,18 @@ type enforcement struct {
 }
 
 type accessRequest struct {
-	ID             string     `json:"id"`
-	URL            string     `json:"url" jsonschema:"approval page; the user cannot see tool results, so put it in your reply"`
-	WorkflowID     string     `json:"workflow_id"`
-	WorkflowName   string     `json:"workflow_name"`
-	Attribute      string     `json:"attribute"`
-	Resources      []resource `json:"resources"`
-	Status         string     `json:"status" jsonschema:"pending, approved, declined, cancelled, expired or revoked"`
-	Duration       string     `json:"duration"`
-	Reason         string     `json:"reason"`
-	Requester      identity   `json:"requester"`
-	TargetDeviceID string     `json:"target_device_id"`
+	ID             string      `json:"id"`
+	URL            string      `json:"url" jsonschema:"approval page; the user cannot see tool results, so put it in your reply"`
+	WorkflowID     string      `json:"workflow_id"`
+	WorkflowName   string      `json:"workflow_name"`
+	Attribute      string      `json:"attribute"`
+	OktaGroups     []oktaGroup `json:"okta_groups,omitempty"`
+	Resources      []resource  `json:"resources"`
+	Status         string      `json:"status" jsonschema:"pending, approved, declined, cancelled, expired or revoked"`
+	Duration       string      `json:"duration"`
+	Reason         string      `json:"reason"`
+	Requester      identity    `json:"requester"`
+	TargetDeviceID string      `json:"target_device_id"`
 	// Approvals are the votes cast so far.
 	Approvals         []approval `json:"approvals,omitempty"`
 	ApprovalsRequired int        `json:"approvals_required,omitempty"`

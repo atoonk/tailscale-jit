@@ -56,7 +56,7 @@
       <li>
         <a class="rowmain" href="/requests/{{$r.ID}}">
           <span>{{if and (mine $.Me $r) (not $d.Admin)}}<b>You</b> have{{else}}<b>{{$r.Requester.Actor}}</b> has{{end}} <b>{{$r.WorkflowName}}</b>{{if not $r.Enforcement.ConfirmedAt}} <span class="badge">unconfirmed</span>{{end}}</span>
-          <span class="meta">{{$r.Requester.DeviceName}} · <code>{{$r.Attribute}}</code> · expires <b title="{{ts $r.ExpiresAt}}">{{ago $r.ExpiresAt}}</b></span>
+          <span class="meta">{{$r.Requester.DeviceName}} ·{{with $r.Attribute}} <code>{{.}}</code>{{end}}{{with $r.OktaGroups}} Okta: {{oktagroups .}}{{end}} · expires <b title="{{ts $r.ExpiresAt}}">{{ago $r.ExpiresAt}}</b></span>
         </a>
         <span class="rowact">{{if .Can.Revoke}}<button class="btn sm" data-action="/v1/requests/{{$r.ID}}/revoke">Revoke</button>{{end}}</span>
       </li>

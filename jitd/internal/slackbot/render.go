@@ -169,7 +169,7 @@ func statusLine(r *jit.AccessRequest, counted int) string {
 		}
 		return s
 	case jit.StatusExpired:
-		if len(r.Attributes) == 0 {
+		if !r.Granted() {
 			return "Expired without a decision"
 		}
 		s := "Access ended"

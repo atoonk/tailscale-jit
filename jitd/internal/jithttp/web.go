@@ -69,6 +69,13 @@ func init() {
 		"human":    jit.Duration.Human,
 		"sub":      func(a, b int) int { return a - b },
 		"attrname": func(attr string) string { return strings.TrimPrefix(attr, jit.AttrPrefix) },
+		"oktagroups": func(gs []jit.OktaGroup) string {
+			out := make([]string, len(gs))
+			for i, g := range gs {
+				out[i] = g.Label()
+			}
+			return strings.Join(out, ", ")
+		},
 		"seq": func(a, b int) []int {
 			var out []int
 			for i := a; i <= b; i++ {
@@ -171,6 +178,7 @@ type flowRow struct {
 	Flow   *jit.Workflow
 	Policy *jit.PolicyUse
 	Slack  *slackField // nil: no Slack integration in this build
+	Okta   bool        // Okta credentials are configured
 }
 
 // slackField fills the Slack part of the flow form.
@@ -288,7 +296,7 @@ func (s *Server) webRoutes(mux *http.ServeMux) {
 		wf := &jit.Workflow{MaxDuration: jit.DefaultMaxDuration, ApprovalTimeout: jit.DefaultApprovalTimeout}
 		wf.Normalize()
 		wf.Attribute = ""
-		s.renderAdmin(w, r, "workflow_form", "New approval flow", "workflows", flowRow{Flow: wf, Slack: s.slackField(r, wf)})
+		s.renderAdmin(w, r, "workflow_form", "New approval flow", "workflows", flowRow{Flow: wf, Slack: s.slackField(r, wf), Okta: s.Svc.OktaEnabled()})
 	}))
 	mux.HandleFunc("GET /admin/workflows/{id}", s.adminPage(func(w http.ResponseWriter, r *http.Request, _ jit.Identity) {
 		wf, err := s.Svc.GetWorkflow(r.PathValue("id"))
@@ -296,7 +304,7 @@ func (s *Server) webRoutes(mux *http.ServeMux) {
 			s.notFound(w, r, err)
 			return
 		}
-		s.renderAdmin(w, r, "workflow_form", "Edit approval flow", "workflows", flowRow{Flow: wf, Policy: s.Svc.PolicyUse(r.Context(), wf), Slack: s.slackField(r, wf)})
+		s.renderAdmin(w, r, "workflow_form", "Edit approval flow", "workflows", flowRow{Flow: wf, Policy: s.Svc.PolicyUse(r.Context(), wf), Slack: s.slackField(r, wf), Okta: s.Svc.OktaEnabled()})
 	}))
 	mux.HandleFunc("GET /admin/policy", s.adminPage(func(w http.ResponseWriter, r *http.Request, _ jit.Identity) {
 		missing := r.URL.Query().Get("missing") == "1"

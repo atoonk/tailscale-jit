@@ -171,7 +171,8 @@ const openAPISpec = `{
       "Me": {"allOf": [{"$ref": "#/components/schemas/Identity"}, {"type": "object", "properties": {"admin": {"type": "boolean"}}}]},
       "Requestable": {"type": "object", "properties": {
         "workflow_id": {"type": "string"}, "workflow_name": {"type": "string"}, "description": {"type": "string"},
-        "attribute": {"type": "string", "description": "The posture attribute an approval sets on your device", "example": "custom:jit_db_ro"},
+        "attribute": {"type": "string", "description": "The posture attribute an approval sets on your device; empty if the flow grants Okta groups only", "example": "custom:jit_db_ro"},
+        "okta_groups": {"type": "array", "description": "Okta groups an approval adds the requester to until the access ends", "items": {"type": "object", "properties": {"id": {"type": "string", "example": "00g1abcdEFGHijkl2345"}, "name": {"type": "string", "example": "AWS-Prod-Admin"}}}},
         "resources": {"type": "array", "items": {"$ref": "#/components/schemas/Resource"}, "description": "Gives access to: what the policy unlocks for the attribute, as described by the admin"},
         "policy": {"$ref": "#/components/schemas/PolicyUse"},
         "max_duration": {"$ref": "#/components/schemas/Duration"}, "default_duration": {"$ref": "#/components/schemas/Duration"},
@@ -196,6 +197,7 @@ const openAPISpec = `{
         "id": {"type": "string", "example": "req_ec77cc3939cd0d5d"}, "url": {"type": "string", "description": "The approval page; show this to the user"},
         "workflow_id": {"type": "string"}, "workflow_name": {"type": "string"},
         "attribute": {"type": "string", "example": "custom:jit_db_ro"},
+        "okta_groups": {"type": "array", "description": "Okta groups an approval adds the requester to until the access ends", "items": {"type": "object", "properties": {"id": {"type": "string", "example": "00g1abcdEFGHijkl2345"}, "name": {"type": "string", "example": "AWS-Prod-Admin"}}}},
         "resources": {"type": "array", "items": {"$ref": "#/components/schemas/Resource"}},
         "requester": {"$ref": "#/components/schemas/Identity"}, "target_device_id": {"type": "string"},
         "duration": {"$ref": "#/components/schemas/Duration"}, "reason": {"type": "string"},
@@ -218,9 +220,10 @@ const openAPISpec = `{
         "unreferenced": {"type": "boolean", "description": "No grant uses the posture: approving unlocks nothing"},
         "missing": {"type": "array", "items": {"type": "string"}}, "extra": {"type": "array", "items": {"type": "string"}},
         "error": {"type": "string", "description": "Set when the policy could not be read; the other fields are then unknown"}}},
-      "Workflow": {"type": "object", "required": ["name", "attribute", "requesters", "approvers"], "properties": {
+      "Workflow": {"type": "object", "required": ["name", "requesters", "approvers"], "properties": {
         "id": {"type": "string", "readOnly": true}, "name": {"type": "string", "example": "Database access (read-only)"}, "description": {"type": "string"},
-        "attribute": {"type": "string", "description": "custom:jit_<name>; the prefix may be omitted when writing", "example": "custom:jit_db_ro"},
+        "attribute": {"type": "string", "description": "custom:jit_<name>; the prefix may be omitted when writing. Optional when okta_groups is set", "example": "custom:jit_db_ro"},
+        "okta_groups": {"type": "array", "description": "Okta groups an approval adds the requester to until the access ends. When writing, give each by id or by exact name", "items": {"type": "object", "properties": {"id": {"type": "string", "example": "00g1abcdEFGHijkl2345"}, "name": {"type": "string", "example": "AWS-Prod-Admin"}}}},
         "resources": {"type": "array", "items": {"$ref": "#/components/schemas/Resource"}},
         "requesters": {"type": "array", "items": {"$ref": "#/components/schemas/Principal"}},
         "approvers": {"type": "array", "items": {"$ref": "#/components/schemas/Principal"}},
