@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/atoonk/tailscale-jit/jitd/internal/okta"
 )
@@ -24,7 +25,15 @@ import (
 // holds it. A membership the user had before jitd added it (put there by
 // hand, or by a rule) is recorded as Preexisting and never removed.
 
-// oktaEnabled reports whether jitd has an Okta client with credentials.
+// oktaEnabled reports whether jitd may use Okta for something new: a grant,
+// a flow that names Okta groups, an okta: principal. It is false without
+// usable credentials (and it is where a switch to turn Okta off belongs).
+//
+// It must not gate looking after what jitd already did. Taking memberships
+// back, retrying, and telling the admins run whenever there is an Okta
+// client at all (see oktaUpkeep): if Okta is off while memberships are in
+// place, those calls fail, and that failure is recorded and reported like
+// any other.
 func (s *Service) oktaEnabled() bool {
 	if s.Okta == nil {
 		return false
@@ -150,7 +159,10 @@ type oktaOutcome struct {
 	// earlier, unfinished attempt for this request left behind.
 	fresh []string
 	err   error
-	used  bool // the approval was saved with grant
+	// recorded says this attempt wrote the request's intent (OktaAdding),
+	// so it is this attempt's to settle.
+	recorded bool
+	used     bool // the approval was saved with grant
 }
 
 // grantOkta adds r's requester to r's Okta groups. It first works out what
@@ -178,7 +190,7 @@ func (s *Service) grantOkta(ctx context.Context, r *AccessRequest) *oktaOutcome 
 	if err != nil {
 		return fail("finding the Okta user for %s: %w", r.Requester.Login, err)
 	}
-	if u.Status != "" && u.Status != "ACTIVE" && u.Status != "PASSWORD_EXPIRED" && u.Status != "RECOVERY" {
+	if !u.Active() {
 		return fail("the Okta user %s is %s, not active", u.Profile.Login, strings.ToLower(u.Status))
 	}
 	for _, grp := range r.OktaGroups {
@@ -205,17 +217,18 @@ func (s *Service) grantOkta(ctx context.Context, r *AccessRequest) *oktaOutcome 
 	added := map[string]bool{} // the groups to record as Added
 	var todo []string          // the groups to add the user to
 	for _, grp := range r.OktaGroups {
-		if held[grp.ID] {
-			// Another live jitd request already put the user there: share it.
-			added[grp.ID] = true
-			continue
-		}
 		member, err := s.Okta.IsMember(ctx, grp.ID, u.ID)
 		if err != nil {
 			out.fresh = nil // nothing was changed; what an earlier attempt left stays on record
 			return fail("checking Okta group %s: %w", grp.Label(), err)
 		}
 		switch {
+		case member && held[grp.ID]:
+			// Another live jitd request already put the user there: share
+			// it. (If someone took the user out in Okta since, they are
+			// added again below: jitd must not record access that is not
+			// there.)
+			added[grp.ID] = true
 		case member && mine[grp.ID]:
 			added[grp.ID] = true
 			out.fresh = append(out.fresh, grp.ID)
@@ -236,11 +249,19 @@ func (s *Service) grantOkta(ctx context.Context, r *AccessRequest) *oktaOutcome 
 	if err := s.saveOktaIntent(r.ID, intent); err != nil {
 		return fail("recording the Okta change before making it: %w", err)
 	}
+	out.recorded = true
 	for _, id := range todo {
-		out.fresh = append(out.fresh, id)
 		if err := s.Okta.AddMember(ctx, id, u.ID); err != nil {
+			// Okta saying no means the user was not added, so there is
+			// nothing to take back; taking it back anyway could remove a
+			// membership somebody gives the user later. Any other failure
+			// may still have been applied.
+			if !okta.IsRefusal(err) {
+				out.fresh = append(out.fresh, id)
+			}
 			return fail("adding %s to Okta group %s: %w", u.Profile.Login, s.oktaLabel(r, id), err)
 		}
+		out.fresh = append(out.fresh, id)
 		added[id] = true
 	}
 	for _, grp := range r.OktaGroups {
@@ -303,7 +324,7 @@ func (s *Service) settleOktaIntent(id string, left []string, why string) {
 // on the request's intent, and the expiry tick tries again
 // (dropOktaIntents). The caller holds oktaMu and not mu.
 func (s *Service) takeBackOkta(ctx context.Context, id string, out *oktaOutcome) {
-	if out.userID == "" || len(out.fresh) == 0 {
+	if !out.recorded {
 		return // nothing was changed in Okta, and the record is as it was
 	}
 	keep := s.oktaKept(out.userID, id)
@@ -327,17 +348,20 @@ func (s *Service) takeBackOkta(ctx context.Context, id string, out *oktaOutcome)
 }
 
 // releaseOkta removes the memberships r holds that no other live request
-// still holds. r's status must already say it ended. It records the outcome
-// in r.Okta (r is a copy) and returns the error, if any; the expiry tick
-// retries. The caller holds oktaMu and not mu.
+// still holds; those it leaves in place and lists in Kept. r's status must
+// already say it ended. It records the outcome in r.Okta (r is a copy) and
+// returns the error, if any; the expiry tick retries. The caller holds
+// oktaMu and not mu.
 func (s *Service) releaseOkta(ctx context.Context, r *AccessRequest) error {
 	if r.Okta == nil || len(r.Okta.Added) == 0 || r.Okta.RemovedAt != nil {
 		return nil
 	}
 	held, _ := s.oktaHolders(r.Okta.UserID, r.ID)
+	var kept []string
 	var errs []error
 	for _, id := range r.Okta.Added {
 		if held[id] {
+			kept = append(kept, id)
 			continue
 		}
 		if err := s.Okta.RemoveMember(ctx, id, r.Okta.UserID); err != nil {
@@ -345,6 +369,7 @@ func (s *Service) releaseOkta(ctx context.Context, r *AccessRequest) error {
 		}
 	}
 	now := s.now()
+	r.Okta.TriedAt = &now
 	if err := errors.Join(errs...); err != nil {
 		r.Okta.Error = err.Error()
 		if r.Okta.FailingSince == nil {
@@ -352,7 +377,7 @@ func (s *Service) releaseOkta(ctx context.Context, r *AccessRequest) error {
 		}
 		return err
 	}
-	r.Okta.RemovedAt, r.Okta.Error, r.Okta.FailingSince = &now, "", nil
+	r.Okta.RemovedAt, r.Okta.Kept, r.Okta.Error, r.Okta.FailingSince = &now, kept, "", nil
 	return nil
 }
 
@@ -364,51 +389,83 @@ func (s *Service) oktaLabel(r *AccessRequest, id string) string {
 const oktaBatch = 20
 
 // releaseOktaDue removes the Okta memberships of ended requests that still
-// have them, oldest first. The caller must not hold mu.
+// have them: first the ones not tried yet, then the ones tried longest ago.
+// A removal that keeps failing so goes to the back of the line, and a batch
+// of stuck ones cannot keep a newer one from ever being tried. The caller
+// must not hold mu.
 func (s *Service) releaseOktaDue(ctx context.Context) {
-	if !s.oktaEnabled() {
+	if s.Okta == nil {
 		return
 	}
-	var due []*AccessRequest
+	type item struct {
+		id           string
+		ended, tried time.Time
+	}
+	var due []item
 	s.Store.View(func(d *Data) {
 		for _, r := range d.Requests {
-			if r.oktaPendingRemoval() {
-				due = append(due, &AccessRequest{ID: r.ID, UpdatedAt: r.UpdatedAt})
+			if !r.oktaPendingRemoval() {
+				continue
 			}
+			it := item{id: r.ID, ended: r.UpdatedAt}
+			if t := r.Okta.TriedAt; t != nil {
+				it.tried = *t
+			}
+			due = append(due, it)
 		}
 	})
-	slices.SortFunc(due, func(a, b *AccessRequest) int { return a.UpdatedAt.Compare(b.UpdatedAt) })
+	slices.SortFunc(due, func(a, b item) int {
+		if c := a.tried.Compare(b.tried); c != 0 {
+			return c
+		}
+		if c := a.ended.Compare(b.ended); c != 0 {
+			return c
+		}
+		return strings.Compare(a.id, b.id)
+	})
 	if len(due) > oktaBatch {
 		due = due[:oktaBatch]
 	}
-	for _, r := range due {
+	for _, it := range due {
 		if ctx.Err() != nil {
 			break
 		}
-		s.releaseOktaOne(ctx, r.ID)
+		s.releaseOktaOne(ctx, it.id)
 	}
 }
 
-// releaseOktaOne removes the Okta memberships of ended request id and saves
-// the outcome. It returns the request as saved, or nil if it had nothing to
-// remove. The caller must not hold mu: the Okta calls run under oktaMu
-// only, and mu is taken just for the save.
+// releaseOktaOne is releaseOktaLocked for the expiry tick: it takes oktaMu
+// and then gives the removal its own time. The caller must not hold mu.
 func (s *Service) releaseOktaOne(ctx context.Context, id string) *AccessRequest {
-	if !s.oktaEnabled() {
-		return nil
-	}
 	s.oktaMu.Lock()
 	defer s.oktaMu.Unlock()
+	sctx, cancel := oktaStepContext(ctx)
+	defer cancel()
+	return s.releaseOktaLocked(sctx, id)
+}
+
+// releaseOktaLocked removes the Okta memberships of ended request id and
+// saves the outcome. It returns the request as saved, or nil if it had
+// nothing to remove. The caller holds oktaMu and not mu: the Okta calls run
+// under oktaMu only, and mu is taken just for the save.
+func (s *Service) releaseOktaLocked(ctx context.Context, id string) *AccessRequest {
+	if s.Okta == nil {
+		return nil
+	}
 	r := s.Request(id)
 	if r == nil || !r.oktaPendingRemoval() {
 		return nil
 	}
 	was := r.Okta.Error
-	if err := s.releaseOkta(ctx, r); err != nil {
+	switch err := s.releaseOkta(ctx, r); {
+	case err != nil:
 		if was != r.Okta.Error {
 			s.Log.Error("removing Okta group memberships; will retry", "id", id, "err", err)
 		}
-	} else {
+	case len(r.Okta.Kept) > 0:
+		s.Log.Info("okta group memberships released; some stay because another running request holds them", "id", id, "user", r.Okta.Login,
+			"kept", strings.Join(r.oktaLabels(r.Okta.Kept), ", "))
+	default:
 		s.Log.Info("okta group memberships removed", "id", id, "user", r.Okta.Login)
 	}
 
@@ -416,7 +473,7 @@ func (s *Service) releaseOktaOne(ctx context.Context, id string) *AccessRequest 
 	defer s.mu.Unlock()
 	var out *AccessRequest
 	gone := false    // the removal is what ended an Okta-only request's access
-	cleared := false // a removal the admins were told about went through
+	cleared := false // a removal the admins were told about is no longer stuck
 	err := s.Store.UpdateQuiet(func(d *Data) (bool, error) {
 		out, gone, cleared = nil, false, false
 		cur, ok := d.Requests[id]
@@ -426,7 +483,8 @@ func (s *Service) releaseOktaOne(ctx context.Context, id string) *AccessRequest 
 		removed := cur.Okta.RemovedAt == nil && r.Okta.RemovedAt != nil
 		changed := removed || cur.Okta.Error != r.Okta.Error
 		// Only what the removal found out: the rest of the grant is as stored.
-		cur.Okta.RemovedAt, cur.Okta.Error, cur.Okta.FailingSince = r.Okta.RemovedAt, r.Okta.Error, r.Okta.FailingSince
+		cur.Okta.RemovedAt, cur.Okta.Kept, cur.Okta.TriedAt = r.Okta.RemovedAt, r.Okta.Kept, r.Okta.TriedAt
+		cur.Okta.Error, cur.Okta.FailingSince = r.Okta.Error, r.Okta.FailingSince
 		cleared = removed && cur.Okta.AlertedAt != nil
 		if cur.Attribute == "" && cur.Okta.RemovedAt != nil && cur.Enforcement.RemovedAt == nil {
 			cur.Enforcement.RemovedAt, gone = cur.Okta.RemovedAt, true

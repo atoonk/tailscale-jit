@@ -588,15 +588,26 @@ How it behaves:
   group when access was approved, jitd records that and never removes them.
 - **Shared membership.** If two live requests hold the same group for one
   person (two flows, or two devices), the membership comes off only when
-  the last one ends.
+  the last one ends. Until then the request that ended first says the
+  person is still in the group through the other one; it never claims the
+  membership was removed.
 - **Removal needs jitd.** Okta memberships have no expiry, so unlike a
   posture attribute, jitd removes them itself, on its expiry tick
   (`-expiry-interval`, 30 seconds by default). If jitd is down when access
   ends, the membership stays until it is back. A removal that fails (a rate
-  limit, a revoked token) is retried on every tick, and the request page
-  says so. After five minutes of failing, admins see a banner on every
-  page, and those with a Slack account get one direct message, which turns
-  into an all-clear when the removal goes through.
+  limit, a revoked token) is retried, and the request page says so. Each
+  tick tries up to twenty, the ones that have waited longest first, so
+  removals that keep failing do not hold up the others. After five minutes
+  of failing, admins see a banner on every page, and those with a Slack
+  account get one direct message, which turns into an all-clear when the
+  removal goes through. If Okta says the group or the user no longer
+  exists, jitd checks that its credential still works before it believes
+  that there is nothing left to remove.
+- **Turning Okta off.** Removing the Okta credentials stops new grants, not
+  the clean-up: memberships jitd added are still its to remove. While any
+  are in place the admins' banner says how many and that jitd cannot remove
+  them until Okta is configured again, and it removes them as soon as it
+  is.
 - **All or nothing.** If adding any group fails, jitd takes back what it
   already added (and the posture attribute) and the request stays pending,
   so the approver can try again.
@@ -622,13 +633,20 @@ does, including `-admins`, and for any flow, not only ones that grant Okta
 groups.
 
 - A person matches when their Okta user (Tailscale login, then email) is
-  a member. Any group type counts, including groups pushed from a
-  directory: jitd only reads them.
+  active and a member. A suspended or deactivated user matches nothing.
+  Any group type counts, including groups pushed from a directory: jitd
+  only reads them.
 - Lookups are cached for a minute, so a membership change in Okta reaches
   jitd within about a minute. If Okta can't be read, `okta:` principals
   match nobody (and jitd logs why); logins and other principals still work.
+  A failed lookup is not repeated for 30 seconds, so an Okta that is down
+  does not slow every page.
 - Saving a flow checks that each `okta:` group exists. Renaming the group
-  in Okta later breaks the match; use its ID to avoid that.
+  in Okta later breaks the match; use its ID to avoid that. A name stands
+  for exactly one group: if a second group gets the same name, the
+  principal matches nobody until you use the ID.
+- An `okta:` principal in `-admins` is checked when jitd starts, and jitd
+  logs an error if it cannot be used.
 - Tagged devices never match an `okta:` principal.
 - The policy snippet can't name an Okta group in a grant's `src`, so it
   uses `autogroup:member` instead. The posture still gates access, since
@@ -647,8 +665,10 @@ OKTA_READ_ALLOWLIST=Team-*,On-Call
 ```
 
 Entries are group names or IDs, separated by commas; `*` matches any run
-of characters. Both default to `*`, every group; jitd logs the lists in
-effect at startup.
+of characters. A list that is left out means `*`, every group. A list that
+is set but empty allows no group, and so does an env file jitd cannot read:
+when in doubt jitd grants nothing. jitd logs the lists in effect at
+startup.
 
 - A flow that grants a group outside `OKTA_GRANT_ALLOWLIST` can't be
   saved, and each approval checks the list again before adding anyone, so

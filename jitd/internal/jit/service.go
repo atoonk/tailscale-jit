@@ -915,7 +915,11 @@ func (s *Service) grantOutsideLock(ctx context.Context, id string, step func(*ok
 	if !out.used {
 		// The approval did not go through after all (the request changed
 		// meanwhile, the attribute could not be set, the save failed).
-		s.takeBackOkta(octx, id, out)
+		// Taking back gets its own time: if the grant ran out of it, that
+		// is exactly when there is something to take back.
+		tctx, tcancel := apiContext(ctx)
+		s.takeBackOkta(tctx, id, out)
+		tcancel()
 		if cur := s.Request(id); r != nil && cur != nil {
 			r.OktaAdding = cur.OktaAdding // what could not be taken back, if anything
 		}
@@ -1167,10 +1171,13 @@ func (s *Service) Revoke(ctx context.Context, actor Identity, id, note string) (
 	}
 	// Okta memberships come off now, without the service lock. A failure
 	// does not undo the revoke: the request stays revoked and the expiry
-	// tick keeps retrying the removal.
+	// tick keeps retrying the removal. The clock for the Okta calls starts
+	// once oktaMu is held, not while waiting for it.
+	s.oktaMu.Lock()
+	defer s.oktaMu.Unlock()
 	octx, cancel := apiContext(ctx)
 	defer cancel()
-	if got := s.releaseOktaOne(octx, id); got != nil {
+	if got := s.releaseOktaLocked(octx, id); got != nil {
 		r = got
 	}
 	return r, nil

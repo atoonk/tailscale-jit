@@ -7,10 +7,11 @@
   {{- else}}<div class="verify warn"><i></i>Approved · not yet confirmed on the device</div>{{end}}
   {{- with .OktaMissingLabels}}<div class="verify warn"><i></i>No longer in the Okta group{{if gt (len .) 1}}s{{end}} {{join .}}: removed in Okta, outside jitd. jitd does not add it back.</div>{{end}}
 {{- else if or (eq .Status "expired") (eq .Status "revoked") -}}
-  {{- if and $e.RemovedAt (not .Attribute)}}<div class="verify off"><i></i>Access removed · Okta group membership taken away <span class="muted" title="{{ts $e.RemovedAt}}">{{ago $e.RemovedAt}}</span></div>
+  {{- if and $e.RemovedAt (not .Attribute)}}<div class="verify off"><i></i>{{if .OktaRemovedLabels}}Access removed · Okta group membership taken away{{else}}Ended · this request no longer holds the Okta group membership{{end}} <span class="muted" title="{{ts $e.RemovedAt}}">{{ago $e.RemovedAt}}</span></div>
   {{- else if $e.RemovedAt}}<div class="verify off"><i></i>Access removed · confirmed gone from the device <span class="muted" title="{{ts $e.RemovedAt}}">{{ago $e.RemovedAt}}</span></div>
   {{- else if .Attributes}}<div class="verify warn"><i></i>Ended · removal not yet confirmed on the device{{with $e.Error}} ({{.}}){{end}}</div>
   {{- else if .OktaRemovalPending}}<div class="verify warn"><i></i>Ended · Okta group membership not yet removed{{with .Okta.FailingSince}}, failing since {{ts .}}{{end}}{{with .Okta.Error}} ({{.}}){{end}}</div>{{end}}
+  {{- with .OktaKeptLabels}}<div class="verify warn"><i></i>Still in the Okta group{{if gt (len .) 1}}s{{end}} {{join .}} through another running request, which removes it when it ends.</div>{{end}}
   {{- if and .Attributes .OktaRemovalPending}}<div class="verify warn"><i></i>Okta group membership not yet removed{{with .Okta.FailingSince}}, failing since {{ts .}}{{end}}{{with .Okta.Error}} ({{.}}){{end}}</div>{{end}}
 {{- end -}}
 {{end}}

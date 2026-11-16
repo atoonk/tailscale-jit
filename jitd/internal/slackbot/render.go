@@ -167,7 +167,7 @@ func statusLine(r *jit.AccessRequest, counted int) string {
 		if r.Enforcement.RemovedAt != nil {
 			s += "\nAccess confirmed gone from the device"
 		}
-		return s + oktaStuckLine(r)
+		return s + oktaStuckLine(r) + oktaKeptLine(r)
 	case jit.StatusExpired:
 		if !r.Granted() {
 			return "Expired without a decision"
@@ -179,7 +179,7 @@ func statusLine(r *jit.AccessRequest, counted int) string {
 		if r.Enforcement.RemovedAt != nil {
 			s += "\nAccess confirmed gone from the device"
 		}
-		return s + oktaStuckLine(r)
+		return s + oktaStuckLine(r) + oktaKeptLine(r)
 	}
 	return string(r.Status)
 }
@@ -191,6 +191,16 @@ func oktaStuckLine(r *jit.AccessRequest) string {
 		return ""
 	}
 	return "\n:warning: still in the Okta group " + esc(strings.Join(r.OktaAddedLabels(), ", ")) + "; jitd keeps trying to remove it"
+}
+
+// oktaKeptLine says, on an ended request, which Okta groups the requester
+// stays in because another running request of theirs holds them.
+func oktaKeptLine(r *jit.AccessRequest) string {
+	kept := r.OktaKeptLabels()
+	if len(kept) == 0 {
+		return ""
+	}
+	return "\nStill in the Okta group " + esc(strings.Join(kept, ", ")) + " through another running request, which removes it when it ends"
 }
 
 // renderOktaAlert builds the direct message to an admin about a request
@@ -216,8 +226,23 @@ func renderOktaAlert(r *jit.AccessRequest, url string) slack.Message {
 			text += "\n" + quote(e)
 		}
 	} else {
-		plain = fmt.Sprintf("Okta removal went through: %s is out of %s", r.Requester.Actor(), strings.Join(r.OktaAddedLabels(), ", "))
-		text = fmt.Sprintf(":white_check_mark: *Okta removal went through · %s*\nThe Okta user %s is out of *%s*.", link, who, groups)
+		// Say only what is true: a group another running request holds
+		// was not removed, and the user is still in it.
+		removed, kept := r.OktaRemovedLabels(), r.OktaKeptLabels()
+		later := "another running request of theirs holds it and removes it when it ends"
+		switch {
+		case len(kept) == 0:
+			plain = fmt.Sprintf("Okta removal went through: %s is out of %s", r.Requester.Actor(), strings.Join(r.OktaAddedLabels(), ", "))
+			text = fmt.Sprintf(":white_check_mark: *Okta removal went through · %s*\nThe Okta user %s is out of *%s*.", link, who, groups)
+		case len(removed) == 0:
+			plain = fmt.Sprintf("Okta removal is no longer failing: %s stays in %s through another running request", r.Requester.Actor(), strings.Join(kept, ", "))
+			text = fmt.Sprintf(":white_check_mark: *Okta removal is no longer failing · %s*\nThe Okta user %s is still in *%s*: %s.",
+				link, who, esc(strings.Join(kept, ", ")), later)
+		default:
+			plain = fmt.Sprintf("Okta removal went through: %s is out of %s and stays in %s through another running request", r.Requester.Actor(), strings.Join(removed, ", "), strings.Join(kept, ", "))
+			text = fmt.Sprintf(":white_check_mark: *Okta removal went through · %s*\nThe Okta user %s is out of *%s*, and still in *%s*: %s.",
+				link, who, esc(strings.Join(removed, ", ")), esc(strings.Join(kept, ", ")), later)
+		}
 	}
 	return slack.Message{Text: plain, Blocks: []slack.Block{
 		slack.Section(slack.Mrkdwn(text)),

@@ -14,7 +14,7 @@ type Fake struct {
 	Users   map[string]User            // by login
 	Groups  map[string]Group           // by ID
 	Members map[string]map[string]bool // group ID -> user ID -> member
-	Fail    map[string]error           // "add:<group>", "remove:<group>", "find:<login>", "usergroups:<user>", "check" -> error
+	Fail    map[string]error           // "add:<group>", "remove:<group>", "ismember:<group>", "find:<login>", "usergroups:<user>", "check" -> error
 	Calls   []string
 	// Hook, if set, runs at the start of every call with its name
 	// ("finduser", "findgroup", "ismember", "add", "remove", "usergroups",
@@ -113,6 +113,9 @@ func (f *Fake) IsMember(ctx context.Context, groupID, userID string) (bool, erro
 	f.hook("ismember")
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if err := f.Fail["ismember:"+groupID]; err != nil {
+		return false, err
+	}
 	return f.Members[groupID][userID], nil
 }
 

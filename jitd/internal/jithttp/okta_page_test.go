@@ -66,3 +66,45 @@ func TestOktaProblemsShown(t *testing.T) {
 		t.Error("the banner stayed after the removal went through")
 	}
 }
+
+// A request that ended while another of the same person holds the group
+// does not claim the membership was taken away.
+func TestKeptOktaGroupShown(t *testing.T) {
+	const group = "00gADMIN000000000001"
+	of := okta.NewFake()
+	of.AddUser("00uALICE", "alice@example.com")
+	of.AddGroup(group, "AWS-Prod-Admin", "")
+	srv, _, h := newTestServerWith(t, func(s *Server) { s.Svc.Okta = of })
+	var ids []string
+	for _, name := range []string{"AWS admin", "AWS break-glass"} {
+		w, err := h.Svc.CreateWorkflow(jit.Workflow{Name: name, OktaGroups: []jit.OktaGroup{{ID: group}},
+			Requesters: []jit.Principal{"autogroup:member"}, Approvers: []jit.Principal{"bob@example.com"}, MaxDuration: jit.Duration(time.Hour)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		r, err := h.Svc.Submit(t.Context(), people["alice"], jit.NewRequest{WorkflowID: w.ID, Reason: "x"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := h.Svc.Approve(t.Context(), people["bob"], r.ID, ""); err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, r.ID)
+	}
+	if _, err := h.Svc.Revoke(t.Context(), people["bob"], ids[0], ""); err != nil {
+		t.Fatal(err)
+	}
+	if !of.Member(group, "00uALICE") {
+		t.Fatal("the group the second request holds was removed")
+	}
+	_, page := getPage(t, srv, "root", "/requests/"+ids[0])
+	if strings.Contains(page, "membership taken away") || !strings.Contains(page, "Still in the Okta group AWS-Prod-Admin through another running request") {
+		t.Errorf("the ended request's page: kept group not shown, or claimed removed")
+	}
+	if _, err := h.Svc.Revoke(t.Context(), people["bob"], ids[1], ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, page := getPage(t, srv, "root", "/requests/"+ids[1]); !strings.Contains(page, "membership taken away") || of.Member(group, "00uALICE") {
+		t.Errorf("the last request's page does not say the membership was taken away")
+	}
+}

@@ -24,7 +24,10 @@ import (
 //     and notes the ones somebody removed there;
 //   - now and then checks that its Okta credentials still work.
 //
-// It only ever touches memberships it has a record of adding.
+// It only ever touches memberships it has a record of adding. The first
+// three run even while Okta is off (no credentials, or unusable ones): they
+// then fail, and that is recorded and reported, where skipping them would
+// leave memberships in place with nobody told.
 
 const (
 	// oktaTimeout bounds the Okta calls of one expiry tick.
@@ -39,18 +42,57 @@ const (
 	// they work, and oktaRecheckEvery while they do not.
 	oktaCheckEvery   = time.Hour
 	oktaRecheckEvery = 5 * time.Minute
+	// oktaCheckTimeout bounds that check.
+	oktaCheckTimeout = 15 * time.Second
 )
 
 // oktaUpkeep is the Okta part of the expiry tick. The caller must not hold mu.
+// oktaStepContext gives one step of the upkeep its own time, counted from
+// the moment it holds oktaMu. The tick's context only decides whether
+// another step is started: a step that waited behind a slow approval must
+// not then fail, and be recorded as a failed removal, because the wait used
+// up the time.
+func oktaStepContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), oktaTimeout)
+}
+
 func (s *Service) oktaUpkeep(ctx context.Context) {
-	if !s.oktaEnabled() {
+	if s.Okta == nil {
 		return
 	}
 	s.dropOktaIntents(ctx)
 	s.releaseOktaDue(ctx)
 	s.alertOktaStuck()
-	s.verifyOkta(ctx)
+	if s.oktaEnabled() {
+		s.verifyOkta(ctx)
+	}
 	s.checkOkta(ctx)
+}
+
+// oktaOwed counts the requests with Okta memberships jitd still has to look
+// after: running grants, removals not done yet, approvals that did not
+// finish.
+func (s *Service) oktaOwed() int {
+	now := s.now()
+	n := 0
+	s.Store.View(func(d *Data) {
+		for _, r := range d.Requests {
+			if r.OktaAdding != nil || r.oktaPendingRemoval() || r.oktaRunning(now) {
+				n++
+			}
+		}
+	})
+	return n
+}
+
+// oktaWhyOff says why Okta is off, for people.
+func (s *Service) oktaWhyOff() string {
+	if e, ok := s.Okta.(interface{ Err() error }); ok {
+		if err := e.Err(); err != nil {
+			return err.Error()
+		}
+	}
+	return "Okta is not configured"
 }
 
 // dropOktaIntents takes back the memberships of approvals that did not
@@ -78,6 +120,8 @@ func (s *Service) dropOktaIntents(ctx context.Context) {
 func (s *Service) dropOktaIntent(ctx context.Context, id string) {
 	s.oktaMu.Lock()
 	defer s.oktaMu.Unlock()
+	ctx, cancel := oktaStepContext(ctx)
+	defer cancel()
 	r := s.Request(id)
 	if r == nil || r.OktaAdding == nil {
 		return
@@ -90,9 +134,12 @@ func (s *Service) dropOktaIntent(ctx context.Context, id string) {
 		if keep[g] {
 			continue
 		}
-		// jitd may have stopped before it added the user, or after: the
-		// user was not in the group when the intent was written, so taking
-		// them out puts things back either way.
+		// jitd may have stopped before it added the user, or after, or
+		// the add may have failed without Okta saying whether it was
+		// applied. The user was not in the group when the intent was
+		// written, so taking them out puts things back either way. (The
+		// one case this gets wrong: somebody else added the user between
+		// then and now. jitd cannot tell that from its own add.)
 		if err := s.Okta.RemoveMember(ctx, g, a.UserID); err != nil {
 			left = append(left, g)
 			errs = append(errs, fmt.Errorf("removing from Okta group %s: %w", s.oktaLabel(r, g), err))
@@ -198,6 +245,8 @@ func (r *AccessRequest) oktaRunning(now time.Time) bool {
 func (s *Service) verifyOktaUser(ctx context.Context, userID string) {
 	s.oktaMu.Lock() // no grant or removal for this user while we compare
 	defer s.oktaMu.Unlock()
+	ctx, cancel := oktaStepContext(ctx)
+	defer cancel()
 	groups, err := s.Okta.UserGroups(ctx, userID)
 	if err != nil {
 		s.Log.Warn("comparing Okta group memberships with jitd's record", "user", userID, "err", err)
@@ -257,6 +306,7 @@ type oktaHealth struct {
 	mu  sync.Mutex
 	at  time.Time
 	err string
+	off bool // Okta was off with memberships still to look after, and that was logged
 }
 
 // checkOkta checks, now and then, that the Okta credentials still work, so
@@ -266,8 +316,23 @@ type oktaHealth struct {
 func (s *Service) checkOkta(ctx context.Context) {
 	now := s.now()
 	h := &s.okHealth
+	if !s.oktaEnabled() {
+		// There are no credentials to check. If memberships are waiting
+		// on them, say so (OktaProblems tells the admins).
+		owed := s.oktaOwed()
+		h.mu.Lock()
+		was := h.off
+		h.off, h.at, h.err = owed > 0, time.Time{}, ""
+		h.mu.Unlock()
+		if owed > 0 && !was {
+			s.Log.Error("Okta is off while jitd still has Okta group memberships to look after; they stay in place until Okta is configured again",
+				"requests", owed, "err", s.oktaWhyOff())
+		}
+		return
+	}
 	h.mu.Lock()
 	at, was := h.at, h.err
+	h.off = false
 	h.mu.Unlock()
 	every := oktaCheckEvery
 	if was != "" {
@@ -276,8 +341,12 @@ func (s *Service) checkOkta(ctx context.Context) {
 	if !at.IsZero() && now.Sub(at) < every {
 		return
 	}
+	// The check gets its own time: the tick's may have run out waiting for
+	// an approval to finish, and that is not Okta failing.
+	cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), oktaCheckTimeout)
+	defer cancel()
 	msg := ""
-	if err := s.Okta.Check(ctx); err != nil {
+	if err := s.Okta.Check(cctx); err != nil {
 		msg = err.Error()
 	}
 	h.mu.Lock()
@@ -297,20 +366,29 @@ type OktaProblem struct {
 	Text      string
 }
 
-// OktaProblems lists what an admin should know about Okta right now: the
-// credentials do not work, a removal is stuck, or an unfinished approval
-// could not be taken back. Empty when all is well.
+// OktaProblems lists what an admin should know about Okta right now: Okta
+// is off while memberships jitd added are still in place, the credentials
+// do not work, a removal is stuck, or an unfinished approval could not be
+// taken back. Empty when all is well.
 func (s *Service) OktaProblems() []OktaProblem {
-	if !s.oktaEnabled() {
+	if s.Okta == nil {
 		return nil
 	}
 	var out []OktaProblem
-	h := &s.okHealth
-	h.mu.Lock()
-	if h.err != "" {
-		out = append(out, OktaProblem{Text: "jitd cannot use the Okta API, so it cannot add or remove group memberships: " + h.err})
+	if !s.oktaEnabled() {
+		n := s.oktaOwed()
+		if n == 0 {
+			return nil // Okta is not in use
+		}
+		out = append(out, OktaProblem{Text: fmt.Sprintf("Okta is off, but %d request(s) still have Okta group memberships that jitd added. jitd cannot remove them until Okta is configured again: %s", n, s.oktaWhyOff())})
+	} else {
+		h := &s.okHealth
+		h.mu.Lock()
+		if h.err != "" {
+			out = append(out, OktaProblem{Text: "jitd cannot use the Okta API, so it cannot add or remove group memberships: " + h.err})
+		}
+		h.mu.Unlock()
 	}
-	h.mu.Unlock()
 	var rs []*AccessRequest
 	s.Store.View(func(d *Data) {
 		for _, r := range d.Requests {
@@ -326,7 +404,7 @@ func (s *Service) OktaProblems() []OktaProblem {
 				r.Okta.Login, strings.Join(r.OktaAddedLabels(), ", "), r.WorkflowName, r.Okta.Error)})
 		}
 		if a := r.OktaAdding; a != nil && a.Error != "" {
-			out = append(out, OktaProblem{RequestID: r.ID, Text: fmt.Sprintf("an approval through %q did not finish and left %s in %s. Taking that back keeps failing: %s",
+			out = append(out, OktaProblem{RequestID: r.ID, Text: fmt.Sprintf("an approval through %q did not finish and may have left %s in %s. Taking that back keeps failing: %s",
 				r.WorkflowName, a.Login, strings.Join(r.oktaLabels(a.Groups), ", "), a.Error)})
 		}
 	}

@@ -645,8 +645,20 @@ func TestGlobMatch(t *testing.T) {
 	if l := ParseOktaAllowlist(map[string]string{EnvOktaGrantAllowlist: " jit.* , ,On-Call"}); fmt.Sprint(l.Grant) != "[jit.* On-Call]" || fmt.Sprint(l.Read) != "[*]" {
 		t.Errorf("parse = %+v", l)
 	}
-	if l := ParseOktaAllowlist(map[string]string{EnvOktaReadAllowlist: " , "}); fmt.Sprint(l.Grant) != "[*]" || fmt.Sprint(l.Read) != "[*]" || !AllowsAll(l.Grant) {
-		t.Errorf("defaults = %+v", l)
+	// A list that is not set allows every group; one that is set with
+	// nothing in it allows none.
+	if l := ParseOktaAllowlist(map[string]string{EnvOktaReadAllowlist: " , "}); fmt.Sprint(l.Grant) != "[*]" || !AllowsAll(l.Grant) ||
+		l.Read == nil || len(l.Read) != 0 || AllowsAll(l.Read) || allowed(l.Read, gAdmin, "AWS-Prod-Admin") {
+		t.Errorf("set but empty = %+v", l)
+	}
+	if l := ParseOktaAllowlist(map[string]string{EnvOktaGrantAllowlist: ""}); AllowsAll(l.Grant) || allowed(l.Grant, gAdmin, "x") || !AllowsAll(l.Read) {
+		t.Errorf("empty value = %+v", l)
+	}
+	if l := NoOktaGroups(); allowed(l.Grant, gAdmin, "x") || allowed(l.Read, gAdmin, "x") {
+		t.Errorf("NoOktaGroups allows a group")
+	}
+	if l := (OktaAllowlist{}); !allowed(l.Grant, gAdmin, "x") || !AllowsAll(l.Read) {
+		t.Errorf("the zero allowlist (never set) must allow every group")
 	}
 	if AllowsAll([]string{"jit.*"}) {
 		t.Error("AllowsAll(jit.*)")

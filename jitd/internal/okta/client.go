@@ -50,8 +50,16 @@ func (u User) Key() string {
 	return strings.ToLower(u.Profile.Login)
 }
 
-// Matches reports whether g is the group ref names, by ID or exact name.
-func (g Group) Matches(ref string) bool { return g.ID == ref || g.Profile.Name == ref }
+// Active reports whether the user can sign in: jitd gives no access to, and
+// takes no group membership from, a user who is suspended, deactivated or
+// not yet activated. (An empty status is one Okta did not send.)
+func (u User) Active() bool {
+	switch u.Status {
+	case "", "ACTIVE", "PASSWORD_EXPIRED", "RECOVERY":
+		return true
+	}
+	return false
+}
 
 // User is the part of an Okta user jitd looks at.
 type User struct {
@@ -103,6 +111,14 @@ func IsNotFound(err error) bool {
 	return errors.As(err, &ae) && ae.Status == http.StatusNotFound
 }
 
+// IsRefusal reports whether err is Okta answering that it did not do what
+// was asked (a 4xx). Any other failure (no answer, a timeout, a 5xx) leaves
+// open whether a change was applied.
+func IsRefusal(err error) bool {
+	var ae *APIError
+	return errors.As(err, &ae) && ae.Status >= 400 && ae.Status < 500
+}
+
 // ErrNotFound is returned by FindUser and FindGroup when nothing matches.
 var ErrNotFound = errors.New("not found in Okta")
 
@@ -119,6 +135,11 @@ var CredentialVars = []string{"OKTA_ORG_URL", "OKTA_API_TOKEN", "OKTA_CLIENT_ID"
 func Configured(vars map[string]string) bool {
 	return vars["OKTA_ORG_URL"] != "" && (vars["OKTA_API_TOKEN"] != "" || vars["OKTA_CLIENT_ID"] != "" || vars["OKTA_PRIVATE_KEY"] != "")
 }
+
+// noRedirect is the HTTP client for Okta. Its API does not redirect, and
+// following one would post the signed client assertion (or, within the same
+// domain, send the token) to wherever the answer points.
+var noRedirect = &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 
 // HTTP implements Client over net/http, signed in with either an Okta API
 // token (SSWS) or, when OAuth is set, as an OAuth service app.
@@ -150,7 +171,7 @@ func NewFromValues(vars map[string]string) (*HTTP, error) {
 	if u.Scheme != "https" && u.Hostname() != "localhost" && u.Hostname() != "127.0.0.1" {
 		return nil, fmt.Errorf("OKTA_ORG_URL %q must use https", base)
 	}
-	c := &HTTP{BaseURL: base, Token: token, HC: http.DefaultClient, Timeout: 15 * time.Second}
+	c := &HTTP{BaseURL: base, Token: token, HC: noRedirect, Timeout: 15 * time.Second}
 	if app {
 		o, err := newOAuth(base, vars)
 		if err != nil {
@@ -246,7 +267,10 @@ func (c *HTTP) UserGroups(ctx context.Context, userID string) ([]Group, error) {
 			return nil, err
 		}
 		out = append(out, gs...)
-		next = c.nextPath(link)
+		var err error
+		if next, err = c.nextPath(link); err != nil {
+			return nil, err // a partial list would read as "not a member"
+		}
 	}
 	return out, nil
 }
@@ -261,7 +285,10 @@ func (c *HTTP) GroupMembers(ctx context.Context, groupID string) ([]User, error)
 			return nil, err
 		}
 		out = append(out, us...)
-		next = c.nextPath(link)
+		var err error
+		if next, err = c.nextPath(link); err != nil {
+			return nil, err
+		}
 	}
 	if len(out) > MaxGroupMembers {
 		out = out[:MaxGroupMembers]
@@ -273,8 +300,9 @@ func memberPath(groupID, userID string) string {
 	return "/api/v1/groups/" + url.PathEscape(groupID) + "/users/" + url.PathEscape(userID)
 }
 
-// Check lists one group: it needs the same rights as the rest of jitd's
-// calls, and it counts as use of the token.
+// Check lists one group. It shows that the org URL and the credential are
+// accepted and it counts as use of the token; it does not show that the
+// credential may change group members (a read-only one passes).
 func (c *HTTP) Check(ctx context.Context) error {
 	var gs []Group
 	return c.do(ctx, http.MethodGet, "/api/v1/groups?limit=1", nil, &gs, nil)
@@ -284,28 +312,54 @@ func (c *HTTP) AddMember(ctx context.Context, groupID, userID string) error {
 	return c.do(ctx, http.MethodPut, memberPath(groupID, userID), nil, nil, nil)
 }
 
+// RemoveMember removes user from group. Okta answers 204 for a user who is
+// not a member, and 404 when it does not know the group or the user at this
+// URL. A 404 alone is therefore not proof the membership is gone (the org
+// URL may be wrong, or the group out of the credential's sight), so it
+// counts as removed only once Okta confirms it another way.
 func (c *HTTP) RemoveMember(ctx context.Context, groupID, userID string) error {
 	err := c.do(ctx, http.MethodDelete, memberPath(groupID, userID), nil, nil, nil)
-	if IsNotFound(err) {
-		return nil
+	if !IsNotFound(err) {
+		return err
 	}
-	return err
+	member, merr := c.IsMember(ctx, groupID, userID)
+	switch {
+	case merr == nil && !member:
+		return nil // the user exists and is not in the group (it may be deleted)
+	case merr == nil:
+		return fmt.Errorf("%w; the user is still listed as a member of the group", err)
+	case !IsNotFound(merr):
+		return fmt.Errorf("%w; checking whether the membership is gone failed too: %v", err, merr)
+	}
+	// Okta does not know the user either. If it answers at all with this
+	// URL and credential, the user was deleted, and their memberships with
+	// them.
+	if cerr := c.Check(ctx); cerr != nil {
+		return fmt.Errorf("%w; Okta does not know the user either, and a test call fails, so the org URL or the credential is probably wrong: %v", err, cerr)
+	}
+	return nil
 }
 
 // nextPath extracts the rel="next" URL from a Link header, as a path on
-// BaseURL; links pointing anywhere else are ignored.
-func (c *HTTP) nextPath(link string) string {
+// BaseURL. A next link that points anywhere else is an error: following it
+// would send the credential elsewhere, and dropping it would cut the
+// listing short without saying so.
+func (c *HTTP) nextPath(link string) (string, error) {
 	for _, part := range strings.Split(link, ",") {
 		target, params, ok := strings.Cut(part, ";")
 		if !ok || !strings.Contains(params, `rel="next"`) {
 			continue
 		}
 		target = strings.Trim(strings.TrimSpace(target), "<>")
-		if p, ok := strings.CutPrefix(target, c.BaseURL); ok && strings.HasPrefix(p, "/") {
-			return p
+		u, err := url.Parse(target)
+		base, berr := url.Parse(c.BaseURL)
+		if err != nil || berr != nil || !strings.HasPrefix(u.Path, "/") ||
+			(u.Host != "" && (!strings.EqualFold(u.Host, base.Host) || u.Scheme != base.Scheme)) {
+			return "", fmt.Errorf("okta API: the next page of a listing is on %q, not on %s: not following it, so the listing is incomplete", u.Host, c.BaseURL)
 		}
+		return u.RequestURI(), nil
 	}
-	return ""
+	return "", nil
 }
 
 func (c *HTTP) do(ctx context.Context, method, path string, in, out any, link *string) error {
@@ -324,10 +378,11 @@ func (c *HTTP) do(ctx context.Context, method, path string, in, out any, link *s
 	}
 	hc := c.HC
 	if hc == nil {
-		hc = http.DefaultClient
+		hc = noRedirect
 	}
 	var resp *http.Response
 	var b []byte
+	var rerr error
 	// A service app's token can be rejected before it expires (its key or
 	// grants changed): fetch a fresh one and try once more. Every call jitd
 	// makes is safe to repeat.
@@ -357,7 +412,7 @@ func (c *HTTP) do(ctx context.Context, method, path string, in, out any, link *s
 		if err != nil {
 			return fmt.Errorf("okta API %s %s: %w", method, logPath(path), err)
 		}
-		b, _ = io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+		b, rerr = io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 		resp.Body.Close()
 		if resp.StatusCode == http.StatusUnauthorized && c.OAuth != nil && attempt == 0 {
 			c.OAuth.forget(tok)
@@ -384,7 +439,15 @@ func (c *HTTP) do(ctx context.Context, method, path string, in, out any, link *s
 	if link != nil {
 		*link = strings.Join(resp.Header.Values("Link"), ",")
 	}
-	if out != nil && len(b) > 0 {
+	if out != nil {
+		// A body that was cut off, or is missing, must not read as "no
+		// groups" or "no members".
+		if rerr != nil {
+			return fmt.Errorf("okta API %s %s: reading response: %w", method, logPath(path), rerr)
+		}
+		if len(b) == 0 {
+			return fmt.Errorf("okta API %s %s: %d with an empty body", method, logPath(path), resp.StatusCode)
+		}
 		if err := json.Unmarshal(b, out); err != nil {
 			return fmt.Errorf("okta API %s %s: decoding response: %w", method, logPath(path), err)
 		}
@@ -401,25 +464,69 @@ func logPath(p string) string {
 // Dynamic is a Client that (re)builds its backing HTTP client from Load on
 // each call, so editing the env file takes effect without a restart. Until
 // Load returns a complete credential, every call fails with ErrUnconfigured.
+//
+// If Load fails (the env file cannot be read: a bad line, a permission),
+// Dynamic carries on with the settings it read last, and says so through
+// OnLoadError: an edit that went wrong must not switch Okta off while
+// memberships are waiting to be removed.
 type Dynamic struct {
-	Load func() map[string]string
+	Load func() (map[string]string, error)
+	// OnLoadError, if set, is called when Load starts failing (with the
+	// error) and when it works again (with nil).
+	OnLoadError func(err error)
 
 	mu   sync.Mutex
+	last map[string]string // what Load returned when it last worked
+	lerr string            // the Load error last reported
 	key  string
 	c    Client
 	berr error
 }
 
-// Enabled reports whether Okta credentials are present (not whether they work).
-func (d *Dynamic) Enabled() bool {
+// Enabled reports whether Okta credentials are present and usable (not
+// whether Okta accepts them).
+func (d *Dynamic) Enabled() bool { return d.Err() == nil }
+
+// Err says why Okta is off: ErrUnconfigured, or what is wrong with the
+// credentials or the env file. It is nil while Okta is on.
+func (d *Dynamic) Err() error {
 	_, err := d.get()
-	return err == nil
+	return err
+}
+
+// Vars returns the settings in force: what Load returns, or, while Load
+// fails, what it returned last. It fails only if Load never worked.
+func (d *Dynamic) Vars() (map[string]string, error) {
+	if d.Load == nil {
+		return map[string]string{}, nil
+	}
+	vars, err := d.Load()
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	msg := ""
+	if err != nil {
+		msg = err.Error()
+	}
+	if msg != d.lerr {
+		d.lerr = msg
+		if d.OnLoadError != nil {
+			d.OnLoadError(err)
+		}
+	}
+	if err == nil {
+		d.last = vars
+		return vars, nil
+	}
+	if d.last != nil {
+		return d.last, nil
+	}
+	return nil, fmt.Errorf("reading the Okta settings: %w", err)
 }
 
 func (d *Dynamic) get() (Client, error) {
-	vars := map[string]string{}
-	if d.Load != nil {
-		vars = d.Load()
+	vars, err := d.Vars()
+	if err != nil {
+		return nil, err
 	}
 	var parts []string
 	for _, k := range CredentialVars {

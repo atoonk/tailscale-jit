@@ -230,9 +230,15 @@ type OktaGrant struct {
 	// Preexisting are groups the user was already in, outside jitd, when
 	// access was approved. jitd never removes these.
 	Preexisting []string `json:"preexisting,omitempty"`
-	// RemovedAt is when every Added membership was confirmed removed
-	// after the request ended.
+	// RemovedAt is when, after the request ended, it stopped holding its
+	// Added memberships: each was removed in Okta, or is listed in Kept.
 	RemovedAt *time.Time `json:"removed_at,omitempty"`
+	// Kept are the Added groups jitd did not take the user out of when
+	// the request ended, because another running request of the same user
+	// holds them. That request removes them when it ends.
+	Kept []string `json:"kept,omitempty"`
+	// TriedAt is when jitd last tried to remove the memberships.
+	TriedAt *time.Time `json:"tried_at,omitempty"`
 	// Error is the last failure to remove a membership; jitd keeps retrying.
 	Error string `json:"error,omitempty"`
 	// FailingSince is when removal first failed, for as long as it keeps
@@ -257,8 +263,10 @@ type OktaGrant struct {
 type OktaIntent struct {
 	UserID string `json:"user_id"`
 	Login  string `json:"login,omitempty"`
-	// Groups are the IDs of the groups jitd set out to add the user to.
-	// The user was in none of them when the intent was written.
+	// Groups are the IDs of the groups to take the user out of if the
+	// approval does not finish: the ones jitd set out to add the user to
+	// (the user was in none of those when the intent was written) and the
+	// ones an earlier, unfinished attempt for this request had added.
 	Groups []string  `json:"groups"`
 	At     time.Time `json:"at"`
 	// Error is the last failure to take the memberships back.
@@ -481,6 +489,30 @@ func (r *AccessRequest) OktaRemovalPending() bool { return r.oktaPendingRemoval(
 // for long enough that jitd told the admins.
 func (r *AccessRequest) OktaStuck() bool {
 	return r.oktaPendingRemoval() && r.Okta.AlertedAt != nil
+}
+
+// OktaKeptLabels names the Okta groups r's requester stayed in when r
+// ended, because another running request holds them.
+func (r *AccessRequest) OktaKeptLabels() []string {
+	if r.Okta == nil || r.Okta.RemovedAt == nil {
+		return nil
+	}
+	return r.oktaLabels(r.Okta.Kept)
+}
+
+// OktaRemovedLabels names the Okta groups jitd took r's requester out of
+// when r ended.
+func (r *AccessRequest) OktaRemovedLabels() []string {
+	if r.Okta == nil || r.Okta.RemovedAt == nil {
+		return nil
+	}
+	var ids []string
+	for _, g := range r.Okta.Added {
+		if !slices.Contains(r.Okta.Kept, g) {
+			ids = append(ids, g)
+		}
+	}
+	return r.oktaLabels(ids)
 }
 
 // OktaAddedLabels names the Okta groups jitd added r's requester to.
