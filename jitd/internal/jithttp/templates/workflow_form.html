@@ -20,7 +20,7 @@
     {{if or $okta .OktaGroups}}
     <label>Okta groups <span class="opt">optional</span>
       <input name="okta_groups" value="{{oktagroups .OktaGroups}}" placeholder="AWS-Prod-ReadOnly, 00g1abcdEFGHijkl2345">
-      <span class="hint">Group names or IDs, separated by commas. An approval adds the requester's Okta user (matched by login, then by email) to each group, and jitd removes them when the access ends. Okta memberships have no expiry of their own, so removal needs jitd running; a group the person was already in stays as it was. Only Okta-mastered groups can be used.{{if not $okta}} <b>Okta is not configured</b>: set <code>OKTA_ORG_URL</code> and <code>OKTA_API_TOKEN</code> in jitd's env file.{{end}}</span>
+      <span class="hint">Group names or IDs, separated by commas. An approval adds the requester's Okta user (matched by login, then by email) to each group, and jitd removes them when the access ends. Okta memberships have no expiry of their own, so removal needs jitd running; a group the person was already in stays as it was. Only Okta-mastered groups can be used.{{if not $okta}} <b>Okta is not configured</b>: set <code>OKTA_ORG_URL</code> and either <code>OKTA_API_TOKEN</code> or <code>OKTA_CLIENT_ID</code> and <code>OKTA_PRIVATE_KEY</code> in jitd's env file.{{end}}</span>
     </label>
     {{end}}
     <div class="field">
