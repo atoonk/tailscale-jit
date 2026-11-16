@@ -102,17 +102,19 @@ func main() {
 	// an admin re-runs it, so fixing the credentials needs no restart.
 	ts := &tsapi.Switchable{}
 	svc.TS = ts
-	// Okta, for flows that grant Okta group membership: OKTA_ORG_URL and
-	// OKTA_API_TOKEN from the env file (re-read on use, so no restart is
-	// needed after editing it) or the environment.
-	svc.Okta = &okta.Dynamic{Load: func() map[string]string {
+	// Okta, for flows that grant Okta group membership and for okta:
+	// principals: OKTA_ORG_URL and OKTA_API_TOKEN, plus the optional
+	// OKTA_GRANT_ALLOWLIST and OKTA_READ_ALLOWLIST, from the env file
+	// (re-read on use, so editing it needs no restart) or the environment.
+	oktaKeys := append(slices.Clone(okta.CredentialVars), jit.EnvOktaGrantAllowlist, jit.EnvOktaReadAllowlist)
+	oktaVars := func() map[string]string {
 		vars := map[string]string{}
-		for _, k := range okta.CredentialVars {
+		for _, k := range oktaKeys {
 			vars[k] = os.Getenv(k)
 		}
 		if *envFile != "" {
 			if fromFile, err := setup.ReadEnvFile(*envFile); err == nil {
-				for _, k := range okta.CredentialVars {
+				for _, k := range oktaKeys {
 					if v := fromFile[k]; v != "" {
 						vars[k] = v
 					}
@@ -120,9 +122,16 @@ func main() {
 			}
 		}
 		return vars
-	}}
+	}
+	svc.Okta = &okta.Dynamic{Load: oktaVars}
+	svc.OktaLimits = func() jit.OktaAllowlist { return jit.ParseOktaAllowlist(oktaVars()) }
 	if svc.OktaEnabled() {
-		log.Info("okta group grants enabled")
+		lim := svc.OktaLimits()
+		log.Info("okta enabled", "grant_allowlist", lim.Grant, "read_allowlist", lim.Read)
+		if jit.AllowsAll(lim.Grant) || jit.AllowsAll(lim.Read) {
+			log.Info("an Okta allowlist is \"*\": jitd may use any Okta group its token can reach for that purpose (" +
+				jit.EnvOktaGrantAllowlist + ", " + jit.EnvOktaReadAllowlist + ")")
+		}
 	}
 	svc.PolicyCache = &jit.PolicyCache{TS: ts, TTL: time.Minute, Log: log}
 	for _, a := range strings.Split(*admins, ",") {

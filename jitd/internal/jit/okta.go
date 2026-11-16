@@ -66,6 +66,9 @@ func (s *Service) resolveOktaGroups(ctx context.Context, w *Workflow) error {
 			return badRequest("Okta group %q is a %s group: its members come from a directory or app, so Okta does not let jitd change them", og.Name(), og.Type)
 		}
 		w.OktaGroups[i] = OktaGroup{ID: og.ID, Name: og.Name()}
+		if !s.grantAllowed(w.OktaGroups[i]) {
+			return forbidden("Okta group %q is not on jitd's grant allowlist (%s)", og.Name(), EnvOktaGrantAllowlist)
+		}
 	}
 	w.OktaGroups = cleanOktaGroups(w.OktaGroups) // a name and an ID may name the same group
 	return nil
@@ -127,6 +130,11 @@ func (s *Service) grantOkta(ctx context.Context, r *AccessRequest) error {
 	}
 	if u.Status != "" && u.Status != "ACTIVE" && u.Status != "PASSWORD_EXPIRED" && u.Status != "RECOVERY" {
 		return fmt.Errorf("the Okta user %s is %s, not active", u.Profile.Login, strings.ToLower(u.Status))
+	}
+	for _, grp := range r.OktaGroups {
+		if !s.grantAllowed(grp) {
+			return fmt.Errorf("Okta group %s is no longer on jitd's grant allowlist (%s)", grp.Label(), EnvOktaGrantAllowlist)
+		}
 	}
 	g := &OktaGrant{UserID: u.ID, Login: u.Profile.Login}
 	held := s.oktaHolders(u.ID, r.ID)

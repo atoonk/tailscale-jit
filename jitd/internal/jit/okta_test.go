@@ -398,3 +398,97 @@ func TestOktaPrincipalSnippet(t *testing.T) {
 		t.Errorf("snippet:\n%s", snip)
 	}
 }
+
+func TestGlobMatch(t *testing.T) {
+	for _, tc := range []struct {
+		pat, s string
+		want   bool
+	}{
+		{"On-Call", "On-Call", true},
+		{"On-Call", "On-Call-2", false},
+		{"jit.*", "jit.db.admin", true},
+		{"jit.*", "xjit.a", false},
+		{"Team-*-Admins", "Team-Infra-Admins", true},
+		{"*Crew*", "Pit Crew / On Call", true},
+		{"*", "anything", true},
+		{"ab*ba", "aba", false},
+		{"a*b*c", "abxc", true},
+	} {
+		if got := globMatch(tc.pat, tc.s); got != tc.want {
+			t.Errorf("globMatch(%q, %q) = %v", tc.pat, tc.s, got)
+		}
+	}
+	if !allowed(nil, "x", "y") || allowed([]string{"a"}, "", "") || !allowed([]string{gAdmin}, gAdmin, "whatever") {
+		t.Error("allowed")
+	}
+	if l := ParseOktaAllowlist(map[string]string{EnvOktaGrantAllowlist: " jit.* , ,On-Call"}); fmt.Sprint(l.Grant) != "[jit.* On-Call]" || fmt.Sprint(l.Read) != "[*]" {
+		t.Errorf("parse = %+v", l)
+	}
+	if l := ParseOktaAllowlist(map[string]string{EnvOktaReadAllowlist: " , "}); fmt.Sprint(l.Grant) != "[*]" || fmt.Sprint(l.Read) != "[*]" || !AllowsAll(l.Grant) {
+		t.Errorf("defaults = %+v", l)
+	}
+	if AllowsAll([]string{"jit.*"}) {
+		t.Error("AllowsAll(jit.*)")
+	}
+}
+
+func TestOktaGrantAllowlist(t *testing.T) {
+	h, f := oktaHarness(t)
+	lim := OktaAllowlist{Grant: []string{"AWS-Prod-*"}}
+	h.svc.OktaLimits = func() OktaAllowlist { return lim }
+
+	f.AddGroup("00gOTHER00000000009", "Finance-Admins", "")
+	if _, err := h.svc.CreateWorkflow(oktaFlow(OktaGroup{Name: "Finance-Admins"})); code(err) != "forbidden" || !strings.Contains(err.Error(), EnvOktaGrantAllowlist) {
+		t.Errorf("save outside allowlist: %v", err)
+	}
+	w := h.workflow(t, oktaFlow(OktaGroup{Name: "AWS-Prod-Admin"}, OktaGroup{ID: gRead}))
+
+	// Approved while allowed; then the list narrows.
+	a, _ := h.svc.Submit(ctx, alice, NewRequest{WorkflowID: w.ID, Reason: "a"})
+	if _, err := h.svc.Approve(ctx, bob, a.ID, ""); err != nil {
+		t.Fatal(err)
+	}
+	lim = OktaAllowlist{Grant: []string{"AWS-Prod-ReadOnly"}}
+	c, _ := h.svc.Submit(ctx, carol, NewRequest{WorkflowID: w.ID, Reason: "c"})
+	f.Mutations()
+	got, err := h.svc.Approve(ctx, bob, c.ID, "")
+	if err == nil || got.Status != StatusPending || !strings.Contains(got.LastError, "allowlist") {
+		t.Errorf("approve after narrowing = %v %+v", err, got)
+	}
+	if m := f.Mutations(); len(m) != 0 {
+		t.Errorf("narrowed approval touched Okta: %v", m)
+	}
+	// Removal of what was already granted still works.
+	if _, err := h.svc.Revoke(ctx, alice, a.ID, ""); err != nil {
+		t.Fatal(err)
+	}
+	if f.Member(gAdmin, uAlice) || f.Member(gRead, uAlice) {
+		t.Error("revoke blocked by the allowlist")
+	}
+}
+
+func TestOktaReadAllowlist(t *testing.T) {
+	h, _ := oktaPrincipalHarness(t)
+	lim := OktaAllowlist{Read: []string{"Eng*"}}
+	h.svc.OktaLimits = func() OktaAllowlist { return lim }
+
+	fl := oktaGated()
+	fl.Approvers = []Principal{"okta:AWS-Prod-Admin"}
+	if _, err := h.svc.CreateWorkflow(fl); code(err) != "forbidden" || !strings.Contains(err.Error(), EnvOktaReadAllowlist) {
+		t.Errorf("save outside allowlist: %v", err)
+	}
+	w := h.workflow(t, oktaGated()) // Engineering and Eng-Leads: allowed
+	if _, err := h.svc.Submit(ctx, alice, NewRequest{WorkflowID: w.ID, Reason: "x"}); err != nil {
+		t.Fatalf("allowed group: %v", err)
+	}
+	// Narrowed: Engineering no longer matches anyone, and Eng-Leads members
+	// are no longer listed as approvers.
+	lim = OktaAllowlist{Read: []string{"Nothing"}}
+	h.now = h.now.Add(OktaCacheTTL + time.Second)
+	if h.svc.matches(ctx, w.Requesters, alice) {
+		t.Error("group outside the read allowlist matched")
+	}
+	if logins, err := h.svc.ApproverLogins(ctx, w); len(logins) != 0 || err == nil {
+		t.Errorf("approver logins = %v, %v", logins, err)
+	}
+}

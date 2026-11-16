@@ -28,7 +28,10 @@ type Service struct {
 	Store *Store
 	TS    tsapi.Client
 	// Okta, if set, lets flows grant time-limited Okta group membership.
-	Okta        okta.Client
+	Okta okta.Client
+	// OktaLimits, if set, returns the Okta group allowlists (see
+	// OktaAllowlist). Nil allows every group.
+	OktaLimits  func() OktaAllowlist
 	PolicyCache *PolicyCache
 	Now         func() time.Time
 	Log         *slog.Logger

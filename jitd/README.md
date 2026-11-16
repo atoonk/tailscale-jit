@@ -579,6 +579,32 @@ groups.
 - The token needs read access to users and groups (Read-Only Administrator
   is enough for this part).
 
+**Limit which groups jitd uses.** Two optional allowlists in the env file,
+re-read on use like the credentials:
+
+```sh
+# Groups a flow may add people to.
+OKTA_GRANT_ALLOWLIST=jit.*,On-Call
+# Groups an okta: principal may name.
+OKTA_READ_ALLOWLIST=Team-*,On-Call
+```
+
+Entries are group names or IDs, separated by commas; `*` matches any run
+of characters. Both default to `*`, every group; jitd logs the lists in
+effect at startup.
+
+- A flow that grants a group outside `OKTA_GRANT_ALLOWLIST` can't be
+  saved, and each approval checks the list again before adding anyone, so
+  removing a group from the list stops new grants through existing flows.
+  Removal is never blocked: jitd can always take back what it gave.
+- An `okta:` principal naming a group outside `OKTA_READ_ALLOWLIST` can't
+  be saved, and if the list changes later it matches nobody.
+- These limit what jitd does, not what its token can do. The real boundary
+  is the Okta account behind the token: give it a custom admin role scoped
+  to a resource set holding only these groups (manage members for the grant
+  groups, read for the others), never Super Admin or Read-Only Admin.
+
+
 
 ### Slack
 
