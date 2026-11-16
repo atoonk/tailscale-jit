@@ -259,3 +259,142 @@ func TestOktaOnlyFlowsSkipPolicy(t *testing.T) {
 		t.Errorf("policy use = %+v", u)
 	}
 }
+
+const (
+	gEng   = "00gENG00000000000004"
+	gLeads = "00gLEADS000000000005"
+	uBob   = "00uBOB"
+)
+
+// oktaPrincipalHarness: alice is in Engineering, carol in Eng-Leads, bob
+// has an Okta user in neither.
+func oktaPrincipalHarness(t *testing.T) (*harness, *okta.Fake) {
+	t.Helper()
+	h, f := oktaHarness(t)
+	f.AddUser(uBob, "bob@example.com")
+	f.AddGroup(gEng, "Engineering", "APP_GROUP") // pushed from a directory: fine to read
+	f.AddGroup(gLeads, "Eng-Leads", "")
+	f.SetMember(gEng, uAlice)
+	f.SetMember(gLeads, uCarol)
+	return h, f
+}
+
+func oktaGated() Workflow {
+	return Workflow{
+		Name: "DB", Attribute: "db",
+		Requesters: []Principal{"okta:Engineering"}, Approvers: []Principal{"okta:Eng-Leads"},
+		MaxDuration: Duration(time.Hour),
+	}
+}
+
+func TestOktaPrincipalSyntax(t *testing.T) {
+	for _, p := range []Principal{"okta:Engineering", "okta:Pit Crew / On Call", "okta:" + gLeads} {
+		if err := ValidatePrincipal(p); err != nil {
+			t.Errorf("%s: %v", p, err)
+		}
+		if p.IsLogin() || !p.IsOkta() {
+			t.Errorf("%s: IsLogin=%v IsOkta=%v", p, p.IsLogin(), p.IsOkta())
+		}
+	}
+	for _, p := range []Principal{"okta:", "okta: ", "okta:a,b"} {
+		if ValidatePrincipal(p) == nil {
+			t.Errorf("%q accepted", p)
+		}
+	}
+	if Principal("okta:ops@example.com").IsLogin() {
+		t.Error("okta: with an @ is not a login")
+	}
+}
+
+func TestOktaPrincipalFlowSave(t *testing.T) {
+	h, _ := oktaPrincipalHarness(t)
+	w := oktaGated()
+	w.Approvers = []Principal{"okta:Nope"}
+	if _, err := h.svc.CreateWorkflow(w); code(err) != "bad_request" || !strings.Contains(err.Error(), "Nope") {
+		t.Errorf("unknown group: %v", err)
+	}
+	if _, err := h.svc.CreateWorkflow(oktaGated()); err != nil {
+		t.Errorf("valid flow: %v", err)
+	}
+	h.svc.Okta = nil
+	if _, err := h.svc.CreateWorkflow(oktaGated()); code(err) != "conflict" {
+		t.Errorf("unconfigured: %v", err)
+	}
+}
+
+func TestOktaPrincipalGates(t *testing.T) {
+	h, f := oktaPrincipalHarness(t)
+	w := h.workflow(t, oktaGated())
+
+	if _, err := h.svc.Submit(ctx, bob, NewRequest{WorkflowID: w.ID, Reason: "x"}); code(err) != "forbidden" {
+		t.Errorf("bob (not in Engineering) submitted: %v", err)
+	}
+	if _, err := h.svc.Submit(ctx, agent, NewRequest{WorkflowID: w.ID, Reason: "x"}); code(err) != "forbidden" {
+		t.Errorf("tagged device submitted: %v", err)
+	}
+	r, err := h.svc.Submit(ctx, alice, NewRequest{WorkflowID: w.ID, Reason: "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.svc.Approve(ctx, bob, r.ID, ""); code(err) != "forbidden" && code(err) != "not_found" {
+		t.Errorf("bob (not a lead) approved: %v", err)
+	}
+	logins, err := h.svc.ApproverLogins(ctx, w)
+	if err != nil || fmt.Sprint(logins) != "[carol@example.com]" {
+		t.Errorf("approver logins = %v, %v", logins, err)
+	}
+	if got, err := h.svc.Approve(ctx, carol, r.ID, ""); err != nil || got.Status != StatusApproved {
+		t.Fatalf("carol approve = %v %+v", err, got)
+	}
+
+	// Bob joins Engineering in Okta: jitd sees it once the cache expires.
+	f.SetMember(gEng, uBob)
+	if _, err := h.svc.Submit(ctx, bob, NewRequest{WorkflowID: w.ID, Reason: "x"}); code(err) != "forbidden" {
+		t.Errorf("cache not used: %v", err)
+	}
+	h.now = h.now.Add(OktaCacheTTL + time.Second)
+	if _, err := h.svc.Submit(ctx, bob, NewRequest{WorkflowID: w.ID, Reason: "x"}); err != nil {
+		t.Errorf("bob after joining: %v", err)
+	}
+}
+
+func TestOktaPrincipalFailsClosed(t *testing.T) {
+	h, f := oktaPrincipalHarness(t)
+	w := h.workflow(t, oktaGated())
+	f.Fail["usergroups:"+uAlice] = errors.New("okta down")
+	if _, err := h.svc.Submit(ctx, alice, NewRequest{WorkflowID: w.ID, Reason: "x"}); code(err) != "forbidden" {
+		t.Errorf("submit while Okta fails: %v", err)
+	}
+	// A login listed alongside still works.
+	w2 := *w
+	w2.Requesters = append(w2.Requesters, "alice@example.com")
+	h.svc.UpdateWorkflow(w.ID, w2)
+	if _, err := h.svc.Submit(ctx, alice, NewRequest{WorkflowID: w.ID, Reason: "x"}); err != nil {
+		t.Errorf("login requester while Okta fails: %v", err)
+	}
+}
+
+func TestOktaPrincipalQuorumAndAdmin(t *testing.T) {
+	h, _ := oktaPrincipalHarness(t)
+	// carol is the only lead: she cannot approve her own request, so the
+	// flow has nobody to approve it for her.
+	fl := oktaGated()
+	fl.Requesters = []Principal{"autogroup:member"}
+	w := h.workflow(t, fl)
+	if _, err := h.svc.Submit(ctx, carol, NewRequest{WorkflowID: w.ID, Reason: "x"}); code(err) != "conflict" {
+		t.Errorf("unreachable quorum: %v", err)
+	}
+	h.svc.Admins = []Principal{"okta:Eng-Leads"}
+	if !h.svc.IsAdmin(ctx, carol) || h.svc.IsAdmin(ctx, alice) {
+		t.Error("okta: admins")
+	}
+}
+
+func TestOktaPrincipalSnippet(t *testing.T) {
+	h, _ := oktaPrincipalHarness(t)
+	h.workflow(t, oktaGated())
+	snip := h.svc.PolicySnippet("tag:jit")
+	if strings.Contains(snip, "okta:") || !strings.Contains(snip, `"src": ["autogroup:member"]`) {
+		t.Errorf("snippet:\n%s", snip)
+	}
+}

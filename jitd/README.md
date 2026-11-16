@@ -557,6 +557,29 @@ How it behaves:
 - **Policy.** A flow with only Okta groups needs nothing in the tailnet
   policy file, and the policy snippet leaves it out.
 
+**Okta groups as requesters and approvers.** With Okta configured, a
+principal can also be `okta:<group>`, by exact group name or ID: for
+example, requesters `okta:Engineering` and approvers
+`okta:Eng-Leads`. It works anywhere a principal
+does, including `-admins`, and for any flow, not only ones that grant Okta
+groups.
+
+- A person matches when their Okta user (Tailscale login, then email) is
+  a member. Any group type counts, including groups pushed from a
+  directory: jitd only reads them.
+- Lookups are cached for a minute, so a membership change in Okta reaches
+  jitd within about a minute. If Okta can't be read, `okta:` principals
+  match nobody (and jitd logs why); logins and other principals still work.
+- Saving a flow checks that each `okta:` group exists. Renaming the group
+  in Okta later breaks the match; use its ID to avoid that.
+- Tagged devices never match an `okta:` principal.
+- The policy snippet can't name an Okta group in a grant's `src`, so it
+  uses `autogroup:member` instead. The posture still gates access, since
+  jitd sets it only for approved requesters.
+- The token needs read access to users and groups (Read-Only Administrator
+  is enough for this part).
+
+
 ### Slack
 
 jitd can post access requests to Slack and let approvers approve or decline

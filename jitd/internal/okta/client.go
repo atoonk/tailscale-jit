@@ -30,7 +30,26 @@ type Client interface {
 	AddMember(ctx context.Context, groupID, userID string) error
 	// RemoveMember removes user from group. Removing a non-member is a no-op.
 	RemoveMember(ctx context.Context, groupID, userID string) error
+	// UserGroups lists every group user is a member of, of any type.
+	UserGroups(ctx context.Context, userID string) ([]Group, error)
+	// GroupMembers lists the members of group, up to MaxGroupMembers.
+	GroupMembers(ctx context.Context, groupID string) ([]User, error)
 }
+
+// MaxGroupMembers caps GroupMembers, so one huge group cannot stall jitd.
+const MaxGroupMembers = 2000
+
+// Key is how a user is matched against a Tailscale login: their primary
+// email, or their login if they have none, lowercased.
+func (u User) Key() string {
+	if u.Profile.Email != "" {
+		return strings.ToLower(u.Profile.Email)
+	}
+	return strings.ToLower(u.Profile.Login)
+}
+
+// Matches reports whether g is the group ref names, by ID or exact name.
+func (g Group) Matches(ref string) bool { return g.ID == ref || g.Profile.Name == ref }
 
 // User is the part of an Okta user jitd looks at.
 type User struct {
@@ -184,21 +203,49 @@ func (c *HTTP) FindGroup(ctx context.Context, ref string) (Group, error) {
 }
 
 func (c *HTTP) IsMember(ctx context.Context, groupID, userID string) (bool, error) {
+	gs, err := c.UserGroups(ctx, userID)
+	if err != nil {
+		return false, err
+	}
+	for _, g := range gs {
+		if g.ID == groupID {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (c *HTTP) UserGroups(ctx context.Context, userID string) ([]Group, error) {
+	var out []Group
 	next := "/api/v1/users/" + url.PathEscape(userID) + "/groups"
 	for next != "" {
 		var gs []Group
 		var link string
 		if err := c.do(ctx, http.MethodGet, next, nil, &gs, &link); err != nil {
-			return false, err
+			return nil, err
 		}
-		for _, g := range gs {
-			if g.ID == groupID {
-				return true, nil
-			}
-		}
+		out = append(out, gs...)
 		next = c.nextPath(link)
 	}
-	return false, nil
+	return out, nil
+}
+
+func (c *HTTP) GroupMembers(ctx context.Context, groupID string) ([]User, error) {
+	var out []User
+	next := "/api/v1/groups/" + url.PathEscape(groupID) + "/users?limit=200"
+	for next != "" && len(out) < MaxGroupMembers {
+		var us []User
+		var link string
+		if err := c.do(ctx, http.MethodGet, next, nil, &us, &link); err != nil {
+			return nil, err
+		}
+		out = append(out, us...)
+		next = c.nextPath(link)
+	}
+	if len(out) > MaxGroupMembers {
+		out = out[:MaxGroupMembers]
+	}
+	return out, nil
 }
 
 func memberPath(groupID, userID string) string {
@@ -368,6 +415,22 @@ func (d *Dynamic) AddMember(ctx context.Context, groupID, userID string) error {
 		return err
 	}
 	return c.AddMember(ctx, groupID, userID)
+}
+
+func (d *Dynamic) UserGroups(ctx context.Context, userID string) ([]Group, error) {
+	c, err := d.get()
+	if err != nil {
+		return nil, err
+	}
+	return c.UserGroups(ctx, userID)
+}
+
+func (d *Dynamic) GroupMembers(ctx context.Context, groupID string) ([]User, error) {
+	c, err := d.get()
+	if err != nil {
+		return nil, err
+	}
+	return c.GroupMembers(ctx, groupID)
 }
 
 func (d *Dynamic) RemoveMember(ctx context.Context, groupID, userID string) error {

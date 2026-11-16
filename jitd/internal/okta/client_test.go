@@ -54,6 +54,13 @@ func (o *fakeOrg) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case r.Method == "GET" && p == "/api/v1/groups":
 		// q is a prefix match: return near misses too.
 		fmt.Fprint(w, `[{"id":"00gAAAAAAAAAAAA1","type":"OKTA_GROUP","profile":{"name":"AWS-Admin"}},{"id":"00gAAAAAAAAAAAA2","type":"OKTA_GROUP","profile":{"name":"AWS-Admin-Old"}}]`)
+	case r.Method == "GET" && p == "/api/v1/groups/00gAAAAAAAAAAAA1/users":
+		if r.URL.Query().Get("after") == "" {
+			w.Header().Add("Link", `<http://`+r.Host+`/api/v1/groups/00gAAAAAAAAAAAA1/users?after=x>; rel="next"`)
+			fmt.Fprint(w, `[{"id":"00uA","status":"ACTIVE","profile":{"login":"alice","email":"Alice@Example.com"}}]`)
+			return
+		}
+		fmt.Fprint(w, `[{"id":"00uC","status":"ACTIVE","profile":{"login":"carol@example.com"}}]`)
 	case r.Method == "GET" && p == "/api/v1/groups/00gAAAAAAAAAAAA1":
 		fmt.Fprint(w, `{"id":"00gAAAAAAAAAAAA1","type":"OKTA_GROUP","profile":{"name":"AWS-Admin"}}`)
 	case r.Method == "GET" && strings.HasPrefix(p, "/api/v1/groups/"):
@@ -137,6 +144,11 @@ func TestHTTPClient(t *testing.T) {
 	}
 	if err := c.RemoveMember(ctx, gid, "00uA"); err != nil {
 		t.Errorf("removing a non-member should be a no-op: %v", err)
+	}
+
+	ms, err := c.GroupMembers(ctx, gid)
+	if err != nil || len(ms) != 2 || ms[0].Key() != "alice@example.com" || ms[1].Key() != "carol@example.com" {
+		t.Errorf("GroupMembers = %+v, %v", ms, err)
 	}
 
 	for _, a := range o.auth {

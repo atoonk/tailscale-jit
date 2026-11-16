@@ -47,11 +47,11 @@
     <h2>People</h2>
     <label>Who can request
       <input name="requesters" value="{{principals .Requesters}}" placeholder="autogroup:member" required>
-      <span class="hint">Logins, <code>group:</code> from the policy file, <code>tag:</code>, or <code>autogroup:member</code> for everyone.</span>
+      <span class="hint">Logins, <code>group:</code> from the policy file, <code>okta:</code> and an Okta group name, <code>tag:</code>, or <code>autogroup:member</code> for everyone.</span>
     </label>
     <label>Who can approve
       <input name="approvers" value="{{principals .Approvers}}" placeholder="you@example.com, group:security" required>
-      <span class="hint">Logins, <code>group:</code>, <code>tag:</code> or <code>autogroup:member</code>. A <code>tag:</code> approver counts every tagged device as a separate person: whoever can tag two devices can meet a quorum of 2 alone, or approve their own request from a tagged device.</span>
+      <span class="hint">Logins, <code>group:</code>, <code>okta:</code> and an Okta group name, <code>tag:</code> or <code>autogroup:member</code>. A <code>tag:</code> approver counts every tagged device as a separate person: whoever can tag two devices can meet a quorum of 2 alone, or approve their own request from a tagged device.</span>
     </label>
     <div class="row2">
       <label>Approvals required

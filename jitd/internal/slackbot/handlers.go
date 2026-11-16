@@ -370,7 +370,7 @@ func (b *Bot) Check(ctx context.Context) ([]FlowCheck, error) {
 			switch {
 			case p == jit.AutogroupMember:
 				fc.Members = true
-			case !p.IsLogin() && !strings.HasPrefix(string(p), "group:"):
+			case !p.IsLogin() && !p.IsOkta() && !strings.HasPrefix(string(p), "group:"):
 				fc.OtherApprovers = append(fc.OtherApprovers, string(p))
 			}
 		}

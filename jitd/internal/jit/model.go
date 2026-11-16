@@ -18,7 +18,8 @@ import (
 
 // Principal names who may request or approve: a user login
 // ("alice@example.com"), a device tag ("tag:x"), a policy-file group
-// ("group:x"), or "autogroup:member" (any user, not tagged devices).
+// ("group:x"), an Okta group ("okta:Name" or "okta:00g…"), or
+// "autogroup:member" (any user, not tagged devices).
 type Principal string
 
 const AutogroupMember Principal = "autogroup:member"
@@ -445,7 +446,7 @@ func AttrKey(name string) string {
 // autogroup).
 func (p Principal) IsLogin() bool {
 	s := string(p)
-	return strings.Contains(s, "@") && !strings.HasPrefix(s, "group:") && !strings.HasPrefix(s, "tag:") && !strings.HasPrefix(s, "autogroup:")
+	return strings.Contains(s, "@") && !strings.HasPrefix(s, "group:") && !strings.HasPrefix(s, "tag:") && !strings.HasPrefix(s, "autogroup:") && !strings.HasPrefix(s, OktaPrefix)
 }
 
 // ValidatePrincipal checks principal syntax.
@@ -455,9 +456,10 @@ func ValidatePrincipal(p Principal) error {
 	case p == AutogroupMember:
 	case strings.HasPrefix(s, "tag:") && len(s) > 4:
 	case strings.HasPrefix(s, "group:") && len(s) > 6:
+	case strings.HasPrefix(s, OktaPrefix) && strings.TrimSpace(s[len(OktaPrefix):]) != "" && !strings.ContainsAny(s, ",\"\n\t"):
 	case strings.Count(s, "@") == 1 && !strings.ContainsAny(s, " ,"):
 	default:
-		return fmt.Errorf("invalid principal %q: use a login email, tag:<name>, group:<name>, or autogroup:member", s)
+		return fmt.Errorf("invalid principal %q: use a login email, tag:<name>, group:<name>, okta:<Okta group>, or autogroup:member", s)
 	}
 	return nil
 }

@@ -42,7 +42,8 @@ type Service struct {
 	// it is saved (see Notifier).
 	Notify Notifier
 
-	mu sync.Mutex
+	mu     sync.Mutex
+	ocache oktaCache
 }
 
 // Notifier is told about access request changes: a new request, a vote, a
@@ -115,6 +116,9 @@ func (s *Service) CreateWorkflow(w Workflow) (*Workflow, error) {
 	if err := s.resolveOktaGroups(context.Background(), &w); err != nil {
 		return nil, err
 	}
+	if err := s.checkOktaPrincipals(context.Background(), &w); err != nil {
+		return nil, err
+	}
 	if err := w.Validate(); err != nil {
 		return nil, err
 	}
@@ -139,6 +143,9 @@ func (s *Service) UpdateWorkflow(id string, w Workflow) (*Workflow, error) {
 	defer s.mu.Unlock()
 	w.Normalize()
 	if err := s.resolveOktaGroups(context.Background(), &w); err != nil {
+		return nil, err
+	}
+	if err := s.checkOktaPrincipals(context.Background(), &w); err != nil {
 		return nil, err
 	}
 	if err := w.Validate(); err != nil {
@@ -414,6 +421,17 @@ func (s *Service) quorumReachable(ctx context.Context, w *Workflow, requester Id
 		switch {
 		case p.IsLogin():
 			people[strings.ToLower(string(p))] = true
+		case p.IsOkta():
+			if !s.oktaEnabled() {
+				continue // matches nobody
+			}
+			keys, err := s.oktaGroupMemberKeys(ctx, p.OktaRef())
+			if err != nil {
+				return true
+			}
+			for _, k := range keys {
+				people[k] = true
+			}
 		case strings.HasPrefix(string(p), "group:"):
 			if s.PolicyCache == nil {
 				return true
@@ -617,7 +635,7 @@ func (s *Service) ApproverLogins(ctx context.Context, w *Workflow) ([]string, er
 		}
 	}
 	var groups map[string][]string
-	var groupsErr error
+	var groupsErr, oktaErr error
 	loaded := false
 	for _, p := range w.Approvers {
 		switch {
@@ -631,10 +649,21 @@ func (s *Service) ApproverLogins(ctx context.Context, w *Workflow) ([]string, er
 			for _, m := range groups[string(p)] {
 				add(m)
 			}
+		case p.IsOkta() && s.oktaEnabled():
+			keys, err := s.oktaGroupMemberKeys(ctx, p.OktaRef())
+			if err != nil {
+				oktaErr = err
+			}
+			for _, k := range keys {
+				add(k)
+			}
 		}
 	}
 	if groupsErr != nil {
 		groupsErr = fmt.Errorf("group approvers left out, the policy file could not be read: %w", groupsErr)
+	}
+	if oktaErr != nil {
+		groupsErr = errors.Join(groupsErr, fmt.Errorf("okta group approvers left out: %w", oktaErr))
 	}
 	return out, groupsErr
 }
