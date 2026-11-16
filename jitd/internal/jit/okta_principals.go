@@ -171,7 +171,7 @@ func (s *Service) checkOktaPrincipals(ctx context.Context, w *Workflow) error {
 		return nil
 	}
 	if !s.oktaEnabled() {
-		return conflict("this approval flow names okta: principals, but Okta is not configured: set OKTA_ORG_URL and OKTA_API_TOKEN in jitd's env file")
+		return conflict("this approval flow names okta: principals, but Okta is not configured: set OKTA_ORG_URL and either OKTA_API_TOKEN or OKTA_CLIENT_ID and OKTA_PRIVATE_KEY in jitd's env file")
 	}
 	actx, cancel := apiContext(ctx)
 	defer cancel()

@@ -103,7 +103,8 @@ func main() {
 	ts := &tsapi.Switchable{}
 	svc.TS = ts
 	// Okta, for flows that grant Okta group membership and for okta:
-	// principals: OKTA_ORG_URL and OKTA_API_TOKEN, plus the optional
+	// principals: OKTA_ORG_URL and either OKTA_API_TOKEN or a service app
+	// (OKTA_CLIENT_ID, OKTA_PRIVATE_KEY, ...), plus the optional
 	// OKTA_GRANT_ALLOWLIST and OKTA_READ_ALLOWLIST, from the env file
 	// (re-read on use, so editing it needs no restart) or the environment.
 	oktaKeys := append(slices.Clone(okta.CredentialVars), jit.EnvOktaGrantAllowlist, jit.EnvOktaReadAllowlist)
@@ -125,11 +126,20 @@ func main() {
 	}
 	svc.Okta = &okta.Dynamic{Load: oktaVars}
 	svc.OktaLimits = func() jit.OktaAllowlist { return jit.ParseOktaAllowlist(oktaVars()) }
+	if vars := oktaVars(); okta.Configured(vars) {
+		if _, err := okta.NewFromValues(vars); err != nil {
+			log.Error("okta credentials are set but unusable; Okta stays off until they are fixed", "err", err)
+		}
+	}
 	if svc.OktaEnabled() {
 		lim := svc.OktaLimits()
-		log.Info("okta enabled", "grant_allowlist", lim.Grant, "read_allowlist", lim.Read)
+		auth := "api token"
+		if oktaVars()["OKTA_CLIENT_ID"] != "" {
+			auth = "service app " + oktaVars()["OKTA_CLIENT_ID"]
+		}
+		log.Info("okta enabled", "auth", auth, "grant_allowlist", lim.Grant, "read_allowlist", lim.Read)
 		if jit.AllowsAll(lim.Grant) || jit.AllowsAll(lim.Read) {
-			log.Info("an Okta allowlist is \"*\": jitd may use any Okta group its token can reach for that purpose (" +
+			log.Info("an Okta allowlist is \"*\": jitd may use any Okta group its credential can reach for that purpose (" +
 				jit.EnvOktaGrantAllowlist + ", " + jit.EnvOktaReadAllowlist + ")")
 		}
 	}

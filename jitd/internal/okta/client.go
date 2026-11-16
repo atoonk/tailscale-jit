@@ -106,28 +106,39 @@ var ErrNotFound = errors.New("not found in Okta")
 
 // ErrUnconfigured is returned by every call of a Dynamic client while no
 // Okta credentials are set.
-var ErrUnconfigured = errors.New("Okta is not configured: set OKTA_ORG_URL and OKTA_API_TOKEN in jitd's env file")
+var ErrUnconfigured = errors.New("Okta is not configured: set OKTA_ORG_URL and either OKTA_API_TOKEN or OKTA_CLIENT_ID and OKTA_PRIVATE_KEY in jitd's env file")
 
 // CredentialVars are the variables NewFromValues looks at.
-var CredentialVars = []string{"OKTA_ORG_URL", "OKTA_API_TOKEN"}
+var CredentialVars = []string{"OKTA_ORG_URL", "OKTA_API_TOKEN", "OKTA_CLIENT_ID", "OKTA_PRIVATE_KEY", "OKTA_PRIVATE_KEY_ID", "OKTA_SCOPES"}
 
-// Configured reports whether vars hold a complete Okta credential.
+// Configured reports whether vars set an Okta org and some credential for
+// it (an API token, or a service app). It does not check that they are
+// complete or valid: NewFromValues does.
 func Configured(vars map[string]string) bool {
-	return vars["OKTA_ORG_URL"] != "" && vars["OKTA_API_TOKEN"] != ""
+	return vars["OKTA_ORG_URL"] != "" && (vars["OKTA_API_TOKEN"] != "" || vars["OKTA_CLIENT_ID"] != "" || vars["OKTA_PRIVATE_KEY"] != "")
 }
 
-// HTTP implements Client over net/http with an Okta API token (SSWS).
+// HTTP implements Client over net/http, signed in with either an Okta API
+// token (SSWS) or, when OAuth is set, as an OAuth service app.
 type HTTP struct {
 	BaseURL string // https://example.okta.com
 	Token   string
+	OAuth   *OAuth
 	HC      *http.Client
 	Timeout time.Duration
 }
 
-// NewFromValues builds a client from OKTA_ORG_URL and OKTA_API_TOKEN.
+// NewFromValues builds a client from OKTA_ORG_URL and either OKTA_API_TOKEN
+// or a service app (OKTA_CLIENT_ID, OKTA_PRIVATE_KEY and the optional
+// OKTA_PRIVATE_KEY_ID and OKTA_SCOPES; see OAuth).
 func NewFromValues(vars map[string]string) (*HTTP, error) {
 	if !Configured(vars) {
 		return nil, ErrUnconfigured
+	}
+	token := strings.TrimSpace(vars["OKTA_API_TOKEN"])
+	app := vars["OKTA_CLIENT_ID"] != "" || vars["OKTA_PRIVATE_KEY"] != ""
+	if token != "" && app {
+		return nil, errors.New("set either OKTA_API_TOKEN or OKTA_CLIENT_ID and OKTA_PRIVATE_KEY, not both")
 	}
 	base := strings.TrimSuffix(strings.TrimSpace(vars["OKTA_ORG_URL"]), "/")
 	u, err := url.Parse(base)
@@ -137,7 +148,15 @@ func NewFromValues(vars map[string]string) (*HTTP, error) {
 	if u.Scheme != "https" && u.Hostname() != "localhost" && u.Hostname() != "127.0.0.1" {
 		return nil, fmt.Errorf("OKTA_ORG_URL %q must use https", base)
 	}
-	return &HTTP{BaseURL: base, Token: strings.TrimSpace(vars["OKTA_API_TOKEN"]), HC: http.DefaultClient, Timeout: 15 * time.Second}, nil
+	c := &HTTP{BaseURL: base, Token: token, HC: http.DefaultClient, Timeout: 15 * time.Second}
+	if app {
+		o, err := newOAuth(base, vars)
+		if err != nil {
+			return nil, err
+		}
+		c.OAuth = o
+	}
+	return c, nil
 }
 
 // groupIDRE is the shape of an Okta group ID.
@@ -286,32 +305,57 @@ func (c *HTTP) do(ctx context.Context, method, path string, in, out any, link *s
 		ctx, cancel = context.WithTimeout(ctx, c.Timeout)
 		defer cancel()
 	}
-	var body io.Reader
+	var payload []byte
 	if in != nil {
 		b, err := json.Marshal(in)
 		if err != nil {
 			return err
 		}
-		body = strings.NewReader(string(b))
+		payload = b
 	}
-	req, err := http.NewRequestWithContext(ctx, method, c.BaseURL+path, body)
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "SSWS "+c.Token)
-	req.Header.Set("User-Agent", "jitd")
 	hc := c.HC
 	if hc == nil {
 		hc = http.DefaultClient
 	}
-	resp, err := hc.Do(req)
-	if err != nil {
-		return fmt.Errorf("okta API %s %s: %w", method, logPath(path), err)
+	var resp *http.Response
+	var b []byte
+	// A service app's token can be rejected before it expires (its key or
+	// grants changed): fetch a fresh one and try once more. Every call jitd
+	// makes is safe to repeat.
+	for attempt := 0; ; attempt++ {
+		auth := "SSWS " + c.Token
+		var tok string
+		if c.OAuth != nil {
+			var err error
+			if tok, err = c.OAuth.token(ctx, hc); err != nil {
+				return err
+			}
+			auth = "Bearer " + tok
+		}
+		var body io.Reader
+		if payload != nil {
+			body = strings.NewReader(string(payload))
+		}
+		req, err := http.NewRequestWithContext(ctx, method, c.BaseURL+path, body)
+		if err != nil {
+			return err
+		}
+		req.Header.Set("Accept", "application/json")
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", auth)
+		req.Header.Set("User-Agent", "jitd")
+		resp, err = hc.Do(req)
+		if err != nil {
+			return fmt.Errorf("okta API %s %s: %w", method, logPath(path), err)
+		}
+		b, _ = io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+		resp.Body.Close()
+		if resp.StatusCode == http.StatusUnauthorized && c.OAuth != nil && attempt == 0 {
+			c.OAuth.forget(tok)
+			continue
+		}
+		break
 	}
-	defer resp.Body.Close()
-	b, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	if resp.StatusCode/100 != 2 {
 		ae := &APIError{Method: method, Path: logPath(path), Status: resp.StatusCode}
 		var oe struct {
@@ -368,7 +412,11 @@ func (d *Dynamic) get() (Client, error) {
 	if d.Load != nil {
 		vars = d.Load()
 	}
-	key := vars["OKTA_ORG_URL"] + "\x00" + vars["OKTA_API_TOKEN"]
+	var parts []string
+	for _, k := range CredentialVars {
+		parts = append(parts, vars[k])
+	}
+	key := strings.Join(parts, "\x00")
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if key != d.key || (d.c == nil && d.berr == nil) {

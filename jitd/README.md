@@ -517,18 +517,55 @@ roles through SSO, admin roles in SaaS apps, anything assigned by group.
 An approval adds the requester's Okta user to each of the flow's groups;
 when the access expires or is revoked, jitd takes them out again.
 
-**Set it up.** Create an API token in the Okta admin console
-(**Security → API → Tokens**), ideally while signed in as a dedicated
-service account that holds the **Group Administrator** role limited to the
-groups jitd should manage: the token can do whatever that account can.
-Then add two lines to jitd's env file:
+**Set it up.** jitd signs in to Okta in one of two ways.
+
+*As an API service app* (recommended). The app has its own identity in
+the Okta system log, only the scopes you grant it, and its own admin role,
+and its key can be rotated without touching anyone's account. In the Okta
+admin console:
+
+1. **Applications → Create App Integration → API Services**, named, say,
+   `jitd`.
+2. Under **Client Credentials**, choose **Public key / Private key** and
+   **Add key → Generate new key**; copy the **PEM** private key (and the key
+   ID if the app will have more than one key).
+3. Turn off **Require Demonstrating Proof of Possession (DPoP) header in
+   token requests**: jitd does not send DPoP proofs.
+4. **Okta API Scopes**: grant `okta.users.read` and `okta.groups.manage`.
+5. **Admin roles**: assign the **Group Administrator** role (or a custom
+   role with *Manage group membership*), limited to the groups jitd should
+   manage. Scopes say what kind of call the app may make; the role says on
+   which groups.
+
+Then add to jitd's env file:
+
+```sh
+OKTA_ORG_URL=https://example.okta.com
+OKTA_CLIENT_ID=0oa...
+OKTA_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\nMIIE...\n-----END PRIVATE KEY-----"
+# Optional: the key's kid, when the app has more than one key.
+# OKTA_PRIVATE_KEY_ID=...
+# Optional: scopes to ask for, instead of okta.users.read okta.groups.manage.
+# OKTA_SCOPES=...
+```
+
+The key can be RSA (2048 bits or more) or EC, in PKCS#8, PKCS#1 or SEC 1
+PEM; in a one-line env file, write its line breaks as `\n`. Set from the
+environment (a Kubernetes Secret, say), real line breaks work too.
+
+*With an API token.* Create one under **Security → API → Tokens**, ideally
+while signed in as a dedicated service account that holds the **Group
+Administrator** role limited to the groups jitd should manage: the token
+can do whatever that account can. Then:
 
 ```sh
 OKTA_ORG_URL=https://example.okta.com
 OKTA_API_TOKEN=00a...
 ```
 
-jitd re-reads the file on use, so no restart is needed. The flow form then
+Set one or the other, not both. jitd re-reads the file on use, so no
+restart is needed; at startup it logs which one it uses, or why the
+credentials it found are unusable. The flow form then
 shows an **Okta groups** field: group names or IDs (`00g…`), separated by
 commas. jitd looks each one up when you save, and stores its ID.
 
