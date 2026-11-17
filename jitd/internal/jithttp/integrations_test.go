@@ -82,21 +82,9 @@ func TestIntegrationsTabs(t *testing.T) {
 		t.Errorf("the Tailscale tab for a non-admin = %d, want 403", code)
 	}
 
-	// What is planned has a tab too, marked as not there yet.
-	for key, label := range map[string]string{"google": "Google Groups"} {
-		if want := `<a href="/admin/integrations/` + key + `" >` + label + ` <em>soon</em>`; !strings.Contains(body, want) {
-			t.Errorf("the tab strip lacks %q", want)
-		}
-		code, soon := getPage(t, srv, "root", "/admin/integrations/"+key)
-		if code != 200 || !strings.Contains(soon, "coming soon") || !strings.Contains(soon, `class="on">`+label+` <em>soon</em>`) {
-			t.Errorf("the %s tab = %d, or it does not say it is coming soon", label, code)
-		}
-		if strings.Contains(soon, "<form") {
-			t.Errorf("the %s tab has a form, and nothing behind it", label)
-		}
-		if code, _ := getPage(t, srv, "alice", "/admin/integrations/"+key); code != 403 {
-			t.Errorf("the %s tab for a non-admin = %d, want 403", label, code)
-		}
+	// No placeholders: a tab is there only when its page is.
+	if strings.Contains(body, "<em>soon</em>") || strings.Contains(body, `href="/admin/integrations/google"`) {
+		t.Error("the tab strip has a tab with no page behind it")
 	}
 
 	noFollow := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}

@@ -2,6 +2,11 @@ package google
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"encoding/json"
+	"encoding/pem"
 	"slices"
 	"strings"
 	"sync"
@@ -129,4 +134,35 @@ func (f *Fake) Mutations() []string {
 	out := slices.Clone(f.Calls)
 	f.Calls = nil
 	return out
+}
+
+var (
+	fakeKeyOnce sync.Once
+	fakeKeyPEM  string
+)
+
+// FakeKey returns a service account key file as Google writes one, with a
+// key made up on the spot: for the preview and for tests, which need
+// something ParseKey takes.
+func FakeKey(account, project string) string {
+	fakeKeyOnce.Do(func() {
+		k, err := rsa.GenerateKey(rand.Reader, 2048)
+		if err != nil {
+			panic(err)
+		}
+		der, err := x509.MarshalPKCS8PrivateKey(k)
+		if err != nil {
+			panic(err)
+		}
+		fakeKeyPEM = string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}))
+	})
+	b, _ := json.Marshal(map[string]string{
+		"type":           "service_account",
+		"project_id":     project,
+		"private_key_id": "fakekey0123456789",
+		"private_key":    fakeKeyPEM,
+		"client_email":   account,
+		"token_uri":      "https://oauth2.googleapis.com/token",
+	})
+	return string(b)
 }

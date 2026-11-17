@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -178,7 +179,7 @@ func statusLine(r *jit.AccessRequest, counted int) string {
 		if r.Enforcement.RemovedAt != nil {
 			s += "\nAccess confirmed gone from the device"
 		}
-		return s + oktaStuckLine(r) + oktaKeptLine(r)
+		return s + groupsStuckLine(r) + groupsKeptLine(r)
 	case jit.StatusExpired:
 		if !r.Granted() {
 			return "Expired without a decision"
@@ -190,72 +191,60 @@ func statusLine(r *jit.AccessRequest, counted int) string {
 		if r.Enforcement.RemovedAt != nil {
 			s += "\nAccess confirmed gone from the device"
 		}
-		return s + oktaStuckLine(r) + oktaKeptLine(r)
+		return s + groupsStuckLine(r) + groupsKeptLine(r)
 	}
 	return string(r.Status)
 }
 
-// oktaStuckLine warns, on an ended request, that its Okta memberships are
-// still in place after jitd kept failing to remove them.
-func oktaStuckLine(r *jit.AccessRequest) string {
-	if !r.OktaStuck() {
-		return ""
+// groupsStuckLine warns, on an ended request, that its Okta or Google
+// memberships are still in place after jitd kept failing to remove them.
+func groupsStuckLine(r *jit.AccessRequest) string {
+	s := ""
+	for _, set := range r.GroupSets() {
+		if set.Stuck() {
+			s += "\n:warning: still in the " + set.Label + " group " + esc(strings.Join(set.Added(), ", ")) + "; jitd keeps trying to remove it"
+		}
 	}
-	return "\n:warning: still in the Okta group " + esc(strings.Join(r.OktaAddedLabels(), ", ")) + "; jitd keeps trying to remove it"
+	return s
 }
 
-// oktaKeptLine says, on an ended request, which Okta groups the requester
+// groupsKeptLine says, on an ended request, which groups the requester
 // stayed in when it ended because another running request of theirs held
 // them. It is a record of that moment, so it is worded in the past.
-func oktaKeptLine(r *jit.AccessRequest) string {
-	kept := r.OktaKeptLabels()
-	if len(kept) == 0 {
-		return ""
+func groupsKeptLine(r *jit.AccessRequest) string {
+	s := ""
+	for _, set := range r.GroupSets() {
+		if kept := set.Kept(); len(kept) > 0 {
+			s += "\nWhen this ended, another running request still held the " + set.Label + " group " + esc(strings.Join(kept, ", ")) + ", so the membership stayed; that request removes it when it ends"
+		}
 	}
-	return "\nWhen this ended, another running request still held the Okta group " + esc(strings.Join(kept, ", ")) + ", so the membership stayed; that request removes it when it ends"
+	return s
 }
 
-// renderOktaAlert builds the direct message to an admin about a request
-// whose Okta memberships jitd cannot remove. Like the request message it is
-// rebuilt from the request, so it turns into the all-clear once the removal
-// goes through.
-func renderOktaAlert(r *jit.AccessRequest, url string) slack.Message {
-	who, groups := "the requester", "its Okta groups"
-	if r.Okta != nil {
-		who = "`" + esc(r.Okta.Login) + "`"
-		groups = esc(strings.Join(r.OktaAddedLabels(), ", "))
-	}
+// renderGroupAlert builds the direct message to an admin about a request
+// whose Okta or Google memberships jitd cannot remove. Like the request
+// message it is rebuilt from the request, so it turns into the all-clear
+// once the removal goes through. It speaks of every kind the admins were
+// alerted about, each under its own name.
+func renderGroupAlert(r *jit.AccessRequest, url string) slack.Message {
 	link := fmt.Sprintf("<%s|%s>", url, esc(r.WorkflowName))
-	var text, plain string
-	if r.OktaStuck() {
-		plain = fmt.Sprintf("Okta removal is failing: %s is still in %s", r.Requester.Actor(), strings.Join(r.OktaAddedLabels(), ", "))
-		text = fmt.Sprintf(":warning: *Okta removal is failing · %s*\nThe access of %s has ended, but the Okta user is still in *%s*. jitd keeps trying; take the user out in Okta if this cannot wait.",
-			link, who, groups)
-		if e := r.Okta.Error; e != "" {
-			if len(e) > 600 {
-				e = e[:600] + "…"
-			}
-			text += "\n" + quote(e)
+	var texts, plains []string
+	sets := r.GroupSets()
+	alerted := func(set jit.GroupSet) bool { return set.Grant != nil && set.Grant.AlertedAt != nil }
+	some := slices.ContainsFunc(sets, alerted)
+	for _, set := range sets {
+		if set.Grant == nil || some && !alerted(set) {
+			continue
 		}
-	} else {
-		// Say only what is true: a group another running request holds
-		// was not removed, and the user is still in it.
-		removed, kept := r.OktaRemovedLabels(), r.OktaKeptLabels()
-		later := "another running request of theirs holds it and removes it when it ends"
-		switch {
-		case len(kept) == 0:
-			plain = fmt.Sprintf("Okta removal went through: %s is out of %s", r.Requester.Actor(), strings.Join(r.OktaAddedLabels(), ", "))
-			text = fmt.Sprintf(":white_check_mark: *Okta removal went through · %s*\nThe Okta user %s is out of *%s*.", link, who, groups)
-		case len(removed) == 0:
-			plain = fmt.Sprintf("Okta removal is no longer failing: %s stays in %s through another running request", r.Requester.Actor(), strings.Join(kept, ", "))
-			text = fmt.Sprintf(":white_check_mark: *Okta removal is no longer failing · %s*\nThe Okta user %s is still in *%s*: %s.",
-				link, who, esc(strings.Join(kept, ", ")), later)
-		default:
-			plain = fmt.Sprintf("Okta removal went through: %s is out of %s and stays in %s through another running request", r.Requester.Actor(), strings.Join(removed, ", "), strings.Join(kept, ", "))
-			text = fmt.Sprintf(":white_check_mark: *Okta removal went through · %s*\nThe Okta user %s is out of *%s*, and still in *%s*: %s.",
-				link, who, esc(strings.Join(removed, ", ")), esc(strings.Join(kept, ", ")), later)
-		}
+		text, plain := groupAlert(r, set, link)
+		texts, plains = append(texts, text), append(plains, plain)
 	}
+	if len(texts) == 0 {
+		// The record of the alert is gone; the request still says how it ended.
+		texts = []string{fmt.Sprintf(":white_check_mark: *Group removal is no longer failing · %s*", link)}
+		plains = []string{"Group removal is no longer failing for " + r.Requester.Actor()}
+	}
+	text, plain := strings.Join(texts, "\n\n"), strings.Join(plains, "; ")
 	return slack.Message{Text: plain, Blocks: []slack.Block{
 		slack.Section(slack.Mrkdwn(text)),
 		slack.Context(slack.Mrkdwn("`" + r.ID + "`")),
@@ -292,4 +281,40 @@ func digest(m slack.Message) string {
 	b, _ := json.Marshal(m)
 	h := sha256.Sum256(b)
 	return hex.EncodeToString(h[:8])
+}
+
+// groupAlert words the alert, or the all-clear, for one kind of group.
+func groupAlert(r *jit.AccessRequest, set jit.GroupSet, link string) (text, plain string) {
+	l, g := set.Label, set.Grant
+	who, added := "`"+esc(g.Login)+"`", strings.Join(set.Added(), ", ")
+	if set.Stuck() {
+		plain = fmt.Sprintf("%s removal is failing: %s is still in %s", l, r.Requester.Actor(), added)
+		text = fmt.Sprintf(":warning: *%s removal is failing · %s*\nThe access of %s has ended, but the %s user is still in *%s*. jitd keeps trying; take the user out in %s if this cannot wait.",
+			l, link, who, l, esc(added), l)
+		if e := g.Error; e != "" {
+			if len(e) > 600 {
+				e = e[:600] + "…"
+			}
+			text += "\n" + quote(e)
+		}
+		return text, plain
+	}
+	// Say only what is true: a group another running request holds was
+	// not removed, and the user is still in it.
+	removed, kept := strings.Join(set.Removed(), ", "), strings.Join(set.Kept(), ", ")
+	later := "another running request of theirs holds it and removes it when it ends"
+	switch {
+	case kept == "":
+		plain = fmt.Sprintf("%s removal went through: %s is out of %s", l, r.Requester.Actor(), added)
+		text = fmt.Sprintf(":white_check_mark: *%s removal went through · %s*\nThe %s user %s is out of *%s*.", l, link, l, who, esc(added))
+	case removed == "":
+		plain = fmt.Sprintf("%s removal is no longer failing: %s stays in %s through another running request", l, r.Requester.Actor(), kept)
+		text = fmt.Sprintf(":white_check_mark: *%s removal is no longer failing · %s*\nThe %s user %s is still in *%s*: %s.",
+			l, link, l, who, esc(kept), later)
+	default:
+		plain = fmt.Sprintf("%s removal went through: %s is out of %s and stays in %s through another running request", l, r.Requester.Actor(), removed, kept)
+		text = fmt.Sprintf(":white_check_mark: *%s removal went through · %s*\nThe %s user %s is out of *%s*, and still in *%s*: %s.",
+			l, link, l, who, esc(removed), esc(kept), later)
+	}
+	return text, plain
 }

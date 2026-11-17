@@ -81,8 +81,18 @@ var oktaKind = &groupKind{
 	idRE: oktaGroupIDRE,
 }
 
-// groupKinds lists every kind, in the order a grant writes them.
-var groupKinds = []*groupKind{oktaKind}
+var googleKind = &groupKind{
+	key: "google", label: "Google",
+	flowGroups: func(w *Workflow) *[]GroupRef { return &w.GoogleGroups },
+	reqGroups:  func(r *AccessRequest) *[]GroupRef { return &r.GoogleGroups },
+	grant:      func(r *AccessRequest) **GroupGrant { return &r.Google },
+	adding:     func(r *AccessRequest) **GroupIntent { return &r.GoogleAdding },
+	stuck:      EventGoogleStuck, cleared: EventGoogleCleared,
+	idRE: googleGroupIDRE,
+}
+
+// groupKinds lists every kind, in the order they are shown.
+var groupKinds = []*groupKind{oktaKind, googleKind}
 
 func (k *groupKind) groups(r *AccessRequest) []GroupRef   { return *k.reqGroups(r) }
 func (k *groupKind) granted(r *AccessRequest) *GroupGrant { return *k.grant(r) }
@@ -222,10 +232,13 @@ type groupProvider struct {
 	health   *groupHealth
 }
 
-// providers lists the group providers, in the order a grant writes them.
-// It is built on each call: the clients are fields a caller may change.
+// providers lists the group providers, in the order a grant writes them:
+// Google first, whose changes take longest and are the likeliest to be
+// refused (an address outside the organisation, say), so that a grant that
+// will not go through fails before anything else was touched. It is built
+// on each call: the clients are fields a caller may change.
 func (s *Service) providers() []*groupProvider {
-	return []*groupProvider{s.oktaProvider()}
+	return []*groupProvider{s.googleProvider(), s.oktaProvider()}
 }
 
 func (p *groupProvider) grantAllowed(g GroupRef) bool {

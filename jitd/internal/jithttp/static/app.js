@@ -69,6 +69,7 @@ function workflowBody(f) {
     description: f.description.value,
     attribute: f.attribute.value.trim(),
     okta_groups: f.okta_groups ? list(f.okta_groups.value).map((name) => ({ name })) : undefined,
+    google_groups: f.google_groups ? list(f.google_groups.value).map((name) => ({ name })) : undefined,
     resources: resources(f),
     requesters: list(f.requesters.value),
     approvers: list(f.approvers.value),
@@ -124,6 +125,12 @@ document.addEventListener("submit", async (ev) => {
       await credSave(f, "/v1/setup/credentials", "Trying it against Tailscale…");
     } else if (f.dataset.form === "okta-check") {
       await oktaGroup(f);
+    } else if (f.dataset.form === "google-save") {
+      await credSave(f, "/v1/google", "Signing in to Google…");
+    } else if (f.dataset.form === "google-limits") {
+      await credSave(f, "/v1/google", "Saving…");
+    } else if (f.dataset.form === "google-check") {
+      await googleGroup(f);
     }
   } catch (e) {
     flash(e.message);
@@ -436,11 +443,12 @@ document.addEventListener("click", (ev) => {
   });
 })();
 
-// Okta and Tailscale pages: try the credentials and save them. What went
-// wrong stays in the form, next to what has to be fixed.
+// Okta, Google and Tailscale pages: try the credentials and save them.
+// What went wrong stays in the form, next to what has to be fixed. A
+// disabled field is one jitd's environment sets: it is not sent.
 async function credSave(f, path, busy) {
   const body = {};
-  for (const el of f.querySelectorAll("input[name], textarea[name]")) body[el.name] = el.value.trim();
+  for (const el of f.querySelectorAll("input[name], textarea[name]")) if (!el.disabled) body[el.name] = el.value.trim();
   const err = f.querySelector(".formerr"), b = f.querySelector("button[type=submit]"), label = b.textContent;
   err.hidden = true;
   b.disabled = true;
@@ -456,9 +464,10 @@ async function credSave(f, path, busy) {
   }
 }
 
-// Okta page: what jitd can tell about one group.
-async function oktaGroup(f) {
-  const out = document.getElementById("oktacheck-result");
+// groupCheck asks jitd about one group and lists what tell(group, line)
+// makes of the answer.
+async function groupCheck(f, kind, tell) {
+  const out = document.getElementById(kind + "check-result");
   const line = (ok, text) => {
     const li = document.createElement("li");
     li.className = ok ? "ok" : "bad";
@@ -468,7 +477,15 @@ async function oktaGroup(f) {
   out.replaceChildren();
   out.hidden = false;
   try {
-    const g = (await api("POST", "/v1/okta/check", { group: f.group.value.trim() })).group;
+    tell((await api("POST", "/v1/" + kind + "/check", { group: f.group.value.trim() })).group, line);
+  } catch (e) {
+    line(false, (e.data && e.data.error && e.data.error.message) || e.message);
+  }
+}
+
+// Okta page: what jitd can tell about one group.
+function oktaGroup(f) {
+  return groupCheck(f, "okta", (g, line) => {
     line(true, "Found " + g.name + " (" + g.id + ").");
     if (g.manageable) line(true, "Okta manages its members itself, so they can be changed through the API.");
     else line(false, "It is a " + g.type + " group: its members come from a directory, an app or a rule, so Okta does not let jitd change them. A flow cannot grant it.");
@@ -478,20 +495,46 @@ async function oktaGroup(f) {
     else line(false, "It is not on the read allowlist (OKTA_READ_ALLOWLIST): it cannot be used as an okta: requester or approver.");
     if (g.members_error) line(false, "jitd cannot list its members: " + g.members_error);
     else line(true, "jitd can list its members: " + g.members + (g.members_capped ? " or more." : "."));
-  } catch (e) {
-    line(false, (e.data && e.data.error && e.data.error.message) || e.message);
-  }
+  });
 }
 
-// Okta page: try the credentials again, and remove them with a second
-// click to confirm.
-(() => {
-  const check = document.getElementById("oktacheck");
+// Google page: what jitd can tell about one group.
+function googleGroup(f) {
+  return groupCheck(f, "google", (g, line) => {
+    line(true, "Found " + g.email + (g.name && g.name !== g.email ? " (" + g.name + ")." : "."));
+    if (g.manageable) line(true, "Its members are added by hand, so jitd can add and remove them.");
+    else line(false, "It is a dynamic group: its members come from a query, so Google does not let jitd change them. A flow cannot grant it.");
+    if (g.grant_allowed) line(true, "It is among the groups a flow may grant.");
+    else line(false, "It is not among the groups a flow may grant, as set on this page.");
+  });
+}
+
+// Google page: choosing the key file fills the box, and the box says
+// which service account the key is for, before anything is sent.
+for (const f of document.querySelectorAll('form[data-form="google-save"]')) {
+  const box = f.querySelector("textarea[name=key]"), who = f.querySelector("[data-keyaccount]"), file = f.querySelector("[data-keyfile]");
+  const show = () => {
+    let email = "";
+    try { email = JSON.parse(box.value).client_email || ""; } catch (e) { /* not a key yet */ }
+    who.textContent = email ? "This key is for " + email + ": the address that needs the Groups Admin role." : "";
+  };
+  box.addEventListener("input", show);
+  if (file) file.addEventListener("change", async () => {
+    if (!file.files[0]) return;
+    box.value = await file.files[0].text();
+    show();
+  });
+}
+
+// Okta and Google pages: try the credentials again, and remove them with
+// a second click to confirm.
+for (const kind of ["okta", "google"]) (() => {
+  const check = document.getElementById(kind + "check");
   if (check) check.addEventListener("click", async () => {
     check.disabled = true;
     check.textContent = "Checking…";
     try {
-      await api("POST", "/v1/okta/check", {});
+      await api("POST", "/v1/" + kind + "/check", {});
       location.reload();
     } catch (e) {
       flash(e.message);
@@ -499,20 +542,20 @@ async function oktaGroup(f) {
       check.textContent = "Check again";
     }
   });
-  const b = document.getElementById("oktaremove");
+  const b = document.getElementById(kind + "remove");
   if (!b) return;
   b.addEventListener("click", async () => {
     if (b.dataset.armed !== "1") {
       b.dataset.armed = "1";
       b.textContent = "Click again to remove";
-      const warn = document.getElementById("oktaremove-warn");
+      const warn = document.getElementById(kind + "remove-warn");
       if (warn) warn.hidden = false;
       return;
     }
     b.disabled = true;
     try {
       // force: the page said how many memberships jitd still looks after.
-      await api("DELETE", "/v1/okta" + (Number(b.dataset.held) > 0 ? "?force=1" : ""));
+      await api("DELETE", "/v1/" + kind + (Number(b.dataset.held) > 0 ? "?force=1" : ""));
       location.reload();
     } catch (e) {
       flash(e.message);

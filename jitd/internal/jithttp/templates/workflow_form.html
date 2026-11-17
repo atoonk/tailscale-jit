@@ -1,9 +1,9 @@
 {{define "content"}}
-{{$policy := .Data.Policy}}{{$slack := .Data.Slack}}{{$okta := .Data.Okta}}{{$oktapage := .Data.OktaPage}}
+{{$policy := .Data.Policy}}{{$slack := .Data.Slack}}{{$okta := .Data.Okta}}{{$oktapage := .Data.OktaPage}}{{$google := .Data.Google}}{{$googlepage := .Data.GooglePage}}
 {{with .Data.Flow}}
 <div class="crumbs"><a href="/admin/workflows">Approval flows</a> › {{if .ID}}{{.Name}}{{else}}New{{end}}</div>
 <h1>{{if .ID}}Edit approval flow{{else}}New approval flow{{end}}</h1>
-<p class="sub">Who can ask, who says yes, and what an approval grants: a posture attribute, Okta groups, or both.</p>
+<p class="sub">Who can ask, who says yes, and what an approval grants: a posture attribute, Okta or Google groups, or both.</p>
 <form class="form" data-form="workflow" data-id="{{.ID}}">
   <div class="card fields">
     <h2>About</h2>
@@ -13,8 +13,9 @@
 
   <div class="card fields">
     <h2>Access</h2>
-    <label>Posture attribute{{if or $okta .OktaGroups}} <span class="opt">optional with Okta groups</span>{{end}}
-      <span class="prefixed"><span class="prefix">custom:jit_</span><input name="attribute" value="{{attrname .Attribute}}" placeholder="db_ro" class="short" {{if not (or $okta .OktaGroups)}}required{{end}} pattern="[a-z0-9_]{1,32}" title="1-32 of a-z, 0-9, _"></span>
+    {{$groups := or $okta $google .OktaGroups .GoogleGroups}}
+    <label>Posture attribute{{if $groups}} <span class="opt">optional with groups</span>{{end}}
+      <span class="prefixed"><span class="prefix">custom:jit_</span><input name="attribute" value="{{attrname .Attribute}}" placeholder="db_ro" class="short" {{if not $groups}}required{{end}} pattern="[a-z0-9_]{1,32}" title="1-32 of a-z, 0-9, _"></span>
       <span class="hint">An approval sets this attribute on the requester's device, with an expiry. What it unlocks is decided by the tailnet policy, through a grant with <code>srcPosture</code> on <code>posture:jit_&lt;name&gt;</code>.</span>
     </label>
     {{if or $okta .OktaGroups}}
@@ -24,6 +25,14 @@
     </label>
     {{else if $oktapage}}
     <p class="hint">An approval can also put the requester in Okta groups, for what Okta gates (AWS roles through single sign-on, say). <a href="/admin/integrations/okta">Connect Okta</a> first.</p>
+    {{end}}
+    {{if or $google .GoogleGroups}}
+    <label>Google groups <span class="opt">optional</span>
+      <input name="google_groups" value="{{oktagroups .GoogleGroups}}" placeholder="aws-prod-readonly@example.com">
+      <span class="hint">Group email addresses, separated by commas. An approval adds the requester to each group, under their Tailscale login as the email address, and jitd removes them when the access ends. Google memberships have no expiry here, so removal needs jitd running; someone who was in the group already stays as they were. Use this for what Google gates by group: Google Cloud roles, apps signed in to through Google, shared drives. <b>Not for opening Tailscale access:</b> Tailscale reads Google groups only every 40 minutes, so the access would start late and end late. Use the posture attribute for that.{{if not $google}} <b>Google is not connected</b>{{if $googlepage}}: <a href="/admin/integrations/google">set it up</a>{{end}}.{{end}}</span>
+    </label>
+    {{else if $googlepage}}
+    <p class="hint">An approval can also put the requester in Google groups, for what Google gates (Google Cloud roles, say). <a href="/admin/integrations/google">Connect Google</a> first.</p>
     {{end}}
     <div class="field">
       <span class="label">Gives access to <span class="opt">optional</span></span>

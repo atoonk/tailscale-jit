@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/atoonk/tailscale-jit/jitd/internal/googlesetup"
 	"github.com/atoonk/tailscale-jit/jitd/internal/jit"
 	"github.com/atoonk/tailscale-jit/jitd/internal/oktasetup"
 	"github.com/atoonk/tailscale-jit/jitd/internal/setup"
@@ -29,7 +30,10 @@ type Server struct {
 	Slack    *slackbot.Bot  // the Slack integration behind /admin/integrations/slack; nil hides it
 	// Okta is the Okta credentials behind /admin/integrations/okta; nil
 	// hides the page.
-	Okta    *oktasetup.Manager
+	Okta *oktasetup.Manager
+	// Google is the Google settings behind /admin/integrations/google; nil
+	// hides the page.
+	Google  *googlesetup.Manager
 	MCP     http.Handler // the MCP server at /mcp (jitmcp); nil leaves it out
 	JITTag  string       // tag used in the policy snippet, e.g. "tag:jit"
 	BaseURL string       // e.g. "http://jit"; used for approval links in responses
@@ -276,6 +280,43 @@ func (s *Server) Handler() http.Handler {
 		writeJSON(w, http.StatusOK, map[string]any{"status": s.Okta.Status(), "group": g})
 	}))
 
+	mux.HandleFunc("GET /v1/google", s.withGoogle(func(w http.ResponseWriter, r *http.Request, _ jit.Identity) {
+		writeJSON(w, http.StatusOK, s.Google.Status())
+	}))
+	mux.HandleFunc("PUT /v1/google", s.withGoogle(func(w http.ResponseWriter, r *http.Request, id jit.Identity) {
+		var in googlesetup.Input
+		if !decode(w, r, &in) {
+			return
+		}
+		out, err := s.Google.Save(r.Context(), id, in)
+		s.reply(w, http.StatusOK, out, err)
+	}))
+	mux.HandleFunc("DELETE /v1/google", s.withGoogle(func(w http.ResponseWriter, r *http.Request, id jit.Identity) {
+		out, err := s.Google.Remove(r.Context(), id, r.URL.Query().Get("force") == "1")
+		s.reply(w, http.StatusOK, out, err)
+	}))
+	// With a group: what jitd can tell about it, reading only. Without:
+	// try the key now.
+	mux.HandleFunc("POST /v1/google/check", s.withGoogle(func(w http.ResponseWriter, r *http.Request, id jit.Identity) {
+		var in struct {
+			Group string `json:"group"`
+		}
+		if !decode(w, r, &in) {
+			return
+		}
+		if strings.TrimSpace(in.Group) == "" {
+			s.Svc.GoogleCheckNow(r.Context())
+			writeJSON(w, http.StatusOK, map[string]any{"status": s.Google.Status()})
+			return
+		}
+		g, err := s.Svc.CheckGoogleGroup(r.Context(), in.Group)
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"status": s.Google.Status(), "group": g})
+	}))
+
 	mux.HandleFunc("GET /v1/slack", s.withSlack(func(w http.ResponseWriter, r *http.Request, _ jit.Identity) {
 		writeJSON(w, http.StatusOK, s.Slack.Status())
 	}))
@@ -487,6 +528,17 @@ func (s *Server) withOkta(h func(http.ResponseWriter, *http.Request, jit.Identit
 	return s.withAdmin(func(w http.ResponseWriter, r *http.Request, id jit.Identity) {
 		if s.Okta == nil {
 			writeErr(w, &jit.Error{Code: "not_found", Status: http.StatusNotFound, Message: "no Okta setup in this build"})
+			return
+		}
+		h(w, r, id)
+	})
+}
+
+// withGoogle is withAdmin for the endpoints behind the Google page.
+func (s *Server) withGoogle(h func(http.ResponseWriter, *http.Request, jit.Identity)) http.HandlerFunc {
+	return s.withAdmin(func(w http.ResponseWriter, r *http.Request, id jit.Identity) {
+		if s.Google == nil {
+			writeErr(w, &jit.Error{Code: "not_found", Status: http.StatusNotFound, Message: "no Google setup in this build"})
 			return
 		}
 		h(w, r, id)

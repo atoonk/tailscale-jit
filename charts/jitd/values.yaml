@@ -56,6 +56,7 @@ extraArgs: []
 #     logs a login URL)
 #   SLACK_BOT_TOKEN, SLACK_APP_TOKEN: Slack (optional)
 #   OKTA_API_TOKEN, or OKTA_CLIENT_ID and OKTA_PRIVATE_KEY: Okta (optional)
+#   GOOGLE_SERVICE_ACCOUNT_JSON: Google groups (optional), the JSON key file
 credentials:
   # Name of an existing Secret holding the keys above. Recommended: create it
   # with your secrets tooling (External Secrets, Sealed Secrets, ...).

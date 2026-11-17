@@ -13,6 +13,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/atoonk/tailscale-jit/jitd/internal/google"
 	"github.com/atoonk/tailscale-jit/jitd/internal/okta"
 	"github.com/atoonk/tailscale-jit/jitd/internal/tsapi"
 )
@@ -36,10 +37,17 @@ type Service struct {
 	Okta okta.Client
 	// OktaLimits, if set, returns the Okta group allowlists (see
 	// OktaAllowlist). Nil allows every group.
-	OktaLimits  func() OktaAllowlist
-	PolicyCache *PolicyCache
-	Now         func() time.Time
-	Log         *slog.Logger
+	OktaLimits func() OktaAllowlist
+	// Google, if set, lets flows grant time-limited Google group
+	// membership.
+	Google google.Client
+	// GoogleLimits, if set, returns which groups a flow may grant and
+	// whose logins may be added (see GoogleLimits). Nil lets nobody be
+	// added.
+	GoogleLimits func() GoogleLimits
+	PolicyCache  *PolicyCache
+	Now          func() time.Time
+	Log          *slog.Logger
 	// Admins may manage approval flows, see every request and revoke any
 	// access. Empty means nobody is an admin.
 	Admins []Principal
@@ -66,6 +74,7 @@ type Service struct {
 	// DefaultGroupAlertAfter.
 	OktaAlertAfter time.Duration
 	okHealth       groupHealth
+	ggHealth       groupHealth
 }
 
 // Notifier is told about access request changes: a new request, a vote, a
@@ -424,7 +433,8 @@ type Requestable struct {
 	Description       string      `json:"description,omitempty"`
 	Attribute         string      `json:"attribute"`             // the posture attribute an approval sets
 	OktaGroups        []OktaGroup `json:"okta_groups,omitempty"` // Okta groups an approval adds the requester to
-	Resources         []Resource  `json:"resources"`             // "Gives access to", as told by the admin
+	GoogleGroups      []GroupRef  `json:"google_groups,omitempty"`
+	Resources         []Resource  `json:"resources"` // "Gives access to", as told by the admin
 	Policy            *PolicyUse  `json:"policy,omitempty"`
 	MaxDuration       Duration    `json:"max_duration"`
 	DefaultDuration   Duration    `json:"default_duration"`
@@ -451,7 +461,7 @@ func (s *Service) Requestable(ctx context.Context, id Identity) []Requestable {
 		}
 		out = append(out, Requestable{
 			WorkflowID: w.ID, WorkflowName: w.Name, Description: w.Description,
-			Attribute: w.Attribute, OktaGroups: w.OktaGroups, Resources: OrEmpty(w.Resources), Policy: s.PolicyUse(ctx, w),
+			Attribute: w.Attribute, OktaGroups: w.OktaGroups, GoogleGroups: w.GoogleGroups, Resources: OrEmpty(w.Resources), Policy: s.PolicyUse(ctx, w),
 			MaxDuration: w.MaxDuration, DefaultDuration: w.DefaultDuration, Approvers: OrEmpty(w.Approvers),
 			AllowSelfApproval: w.AllowSelfApproval, ApprovalsRequired: w.ApprovalsRequired, AutoApprove: w.AutoApprove,
 		})

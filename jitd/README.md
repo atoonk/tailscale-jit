@@ -401,7 +401,7 @@ A credential set there wins over one saved on the page, and the page then
 shows the check without the form. A changed file needs no restart: click
 **Check again**.
 
-The other tabs under Integrations (Slack, Okta) are optional and work the
+The other tabs under Integrations (Slack, Okta, Google Groups) are optional and work the
 same way: steps, a form, and a test before anything is saved.
 
 ### 5. Create an approval flow
@@ -551,7 +551,8 @@ access.
 - **My requests:** cancel a pending request, or end your access early.
 - **Approvals** show up on the overview: approve, or decline with a reason.
 - **Manage** (admins): every request, the approval flows, the policy
-  snippet, Integrations (Tailscale, Slack, Okta), and the API docs.
+  snippet, Integrations (Tailscale, Slack, Okta, Google Groups), and the API
+  docs.
 - **Help** (`/help`) explains all of this inside the app.
 
 Pages update on their own when something changes.
@@ -777,7 +778,92 @@ fixed. jitd logs the lists in effect at startup.
   to a resource set holding only these groups (manage members for the grant
   groups, read for the others), never Super Admin or Read-Only Admin.
 
+### Google groups
 
+A flow can grant time-limited membership in **Google groups** the same
+way, with or without a posture attribute and next to Okta groups if you
+use both. That reaches whatever Google gates by group: Google Cloud IAM
+roles, apps people sign in to through Google, shared drives. An approval
+adds the requester to each of the flow's groups; when the access expires
+or is revoked, jitd takes them out again.
+
+**Not for opening Tailscale access.** Tailscale reads Google groups only
+every 40 minutes, so a group used in the tailnet policy would open access
+late and close it late. Keep using the flow's posture attribute for that.
+
+**Set it up.** As an admin, open **Integrations → Google Groups** in jitd.
+The page walks through the steps, takes the key in a form (paste it or
+choose the file) and signs in to Google with it before it saves anything;
+if Google refuses, it says which step to look at again. Nothing needs a
+restart. In short:
+
+1. In the Google Cloud console, pick or create a project and enable the
+   **Cloud Identity API** in it.
+2. **IAM & Admin → Service accounts → Create service account**. It needs
+   no roles in the project.
+3. On the service account: **Keys → Add key → Create new key → JSON**.
+   Organisations created since May 2024 block this by default (the policy
+   *Disable service account key creation*,
+   `iam.disableServiceAccountKeyCreation`); an organisation policy
+   administrator can turn it off for the one project.
+4. In the Google Admin console, as a super admin: **Account → Admin roles
+   → Groups Admin → Assign admin → Assign service accounts**, and add the
+   service account's address. It can take a few minutes to apply.
+5. Paste the key on the page, with the email domains jitd may add and the
+   groups flows may grant.
+
+jitd uses the Cloud Identity Groups API as that service account. There is
+no domain-wide delegation, so the key reaches groups and nothing else: no
+mail, no files, no user accounts. There is no API key for this; Google's
+group APIs only take OAuth.
+
+The key saved on the page is kept in jitd's database and is never shown
+again, on the page or in the API. To keep it out of the database, put it
+in the env file or the environment instead. The env file takes it on one
+line (`jq -c . key.json` prints it that way); a key set there wins over
+the saved one, and the page then shows the status and the test only.
+
+```sh
+GOOGLE_SERVICE_ACCOUNT_JSON={"type":"service_account","project_id":"…","private_key_id":"…","private_key":"-----BEGIN PRIVATE KEY-----\n…","client_email":"jitd@….iam.gserviceaccount.com",…}
+# Optional. Both are normally set on the page; set here, they win and the
+# page shows them read-only.
+# GOOGLE_ALLOWED_DOMAINS=example.com
+# GOOGLE_GRANT_ALLOWLIST=aws-*@example.com,gcp-*@example.com
+```
+
+The flow form then shows a **Google groups** field: group addresses,
+separated by commas. jitd looks each one up when you save, and stores its
+ID. **Test a group** on the page tells you beforehand whether a flow could
+use a group.
+
+How it differs from Okta groups (everything else under "How it behaves"
+above holds: standing and shared memberships, recorded first, all or
+nothing, retries, the admins' banner and Slack message, the hourly check
+of the key):
+
+- **Who.** The requester's Tailscale login is used as their Google
+  address; there is no lookup. If the two differ, Google refuses the add
+  and the approval fails with Google's answer. A tagged device cannot
+  request through a flow with Google groups.
+- **Allowed domains.** jitd adds only logins in the email domains set on
+  the page. Without that limit, someone who signs in to Tailscale from
+  outside your Google account could be added as an external member
+  wherever a group allows those. With no domain set, jitd adds nobody.
+- **Groups a flow may grant.** The Groups Admin role reaches every group
+  in the account, so the page has a list of the groups (addresses, `*` as
+  a wildcard) flows may use. It is checked when a flow is saved and again
+  at each approval. Removal is never blocked.
+- **Dynamic groups** get their members from a query and cannot be changed;
+  jitd refuses them when the flow is saved.
+- **Removal needs jitd**, as with Okta. Google's own membership expiry
+  exists only in some editions and jitd does not use it.
+- **Both kinds on one flow.** The grant is all or nothing across Okta and
+  Google: if one fails, jitd takes back what the other added. When the
+  access ends each is removed on its own, with its own retries.
+- **Going back to an older jitd.** A jitd from before Google groups does
+  not know these fields and drops them when it next saves a request, which
+  leaves people in the groups with nothing to take them out. End every
+  request that holds a Google group before you roll back.
 
 ### Slack
 
@@ -1086,7 +1172,7 @@ expired attribute about a minute after the expiry time (we measured about
 | `-admins` | none | who may manage flows and see every request: logins, `group:`, `tag:` (not `autogroup:admin`; use a group such as `group:jit-admins`). With a group, adding an admin is a policy edit that takes effect within a minute, no restart |
 | `-state-dir` | `tsnet-state` | the node's identity; keep it |
 | `-data` | `jit.db` | the SQLite database with the approval flows and access requests. Name an older jitd's `.json` file and jitd uses the `.db` of the same name, filled from the `.json` the first time |
-| `-env-file` | `~/.config/jitd/env` (Linux), `~/Library/Application Support/jitd/env` (macOS) | optional: credentials you would rather keep out of the database. They win over what is saved on the Integrations pages. Tailscale API: `TS_OAUTH_CLIENT_ID` and `TS_OAUTH_CLIENT_SECRET`, or `TS_API_KEY`. Also `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN` and `SLACK_ALLOWED_DOMAINS` (see Slack) |
+| `-env-file` | `~/.config/jitd/env` (Linux), `~/Library/Application Support/jitd/env` (macOS) | optional: credentials you would rather keep out of the database. They win over what is saved on the Integrations pages. Tailscale API: `TS_OAUTH_CLIENT_ID` and `TS_OAUTH_CLIENT_SECRET`, or `TS_API_KEY`. Also `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN` and `SLACK_ALLOWED_DOMAINS` (see Slack), the `OKTA_*` settings (see Okta groups) and `GOOGLE_SERVICE_ACCOUNT_JSON` (see Google groups) |
 | `-hostname` | `jit` | the machine name on the tailnet |
 | `-tag` | `tag:jit` | the tag jitd runs as, used in the policy snippet |
 | `-https` | off | serve :443 with a Tailscale certificate and redirect :80; needs HTTPS turned on for the tailnet (admin console → DNS) |
@@ -1189,6 +1275,10 @@ jitd/internal/jithttp    HTTP API, web UI (templates/, static/), OpenAPI spec
 jitd/internal/jitmcp     the MCP server at /mcp: the request tools and the MCP Apps view (app.html)
 jitd/internal/tsapi      Tailscale API client: posture attributes, policy file, device list
 jitd/internal/setup      the Tailscale API credential and its check (Integrations → Tailscale)
+jitd/internal/okta       Okta API client, okta.Fake
+jitd/internal/oktasetup  the Okta credentials saved on Integrations → Okta
+jitd/internal/google     Cloud Identity Groups API client (service account key), google.Fake
+jitd/internal/googlesetup the Google key and limits saved on Integrations → Google Groups
 jitd/internal/slack      Slack Web API and Socket Mode client, Block Kit helpers, slack.Fake
 jitd/internal/slackbot   the Slack integration: request messages, Approve/Decline, /jit, identity by email
 jitd/preview             the UI preview

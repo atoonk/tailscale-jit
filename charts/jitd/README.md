@@ -32,6 +32,7 @@ The keys jitd reads:
 | `TS_AUTHKEY` | Joining the tailnet on first start. Optional: without it, jitd logs a login URL. |
 | `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN` | Slack (optional) |
 | `OKTA_API_TOKEN`, or `OKTA_CLIENT_ID` and `OKTA_PRIVATE_KEY` | Okta groups (optional) |
+| `GOOGLE_SERVICE_ACCOUNT_JSON` | Google groups (optional): the service account's JSON key file, whole |
 
 ## Install
 

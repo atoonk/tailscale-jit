@@ -149,7 +149,6 @@ h1 .status { font-size: 13px; }
 .tabs a { padding: 8px 12px; color: var(--muted); text-transform: capitalize; border-bottom: 2px solid transparent; margin-bottom: -1px; }
 .tabs a:hover { color: var(--ink); text-decoration: none; }
 .tabs a.on { color: var(--ink); border-bottom-color: var(--ink); font-weight: 500; }
-.tabs em { font-style: normal; font-size: 12px; color: var(--faint); margin-left: 3px; }
 
 /* forms */
 .form { display: flex; flex-direction: column; gap: 0; max-width: 820px; }
@@ -303,7 +302,6 @@ nav.tabs a { padding: 8px 14px; color: var(--muted); font-weight: 500; border-bo
 nav.tabs a:hover { color: var(--ink); text-decoration: none; }
 nav.tabs a.on { color: var(--ink); border-bottom-color: var(--accent); }
 nav.tabs a { text-transform: none; }
-nav.tabs em { margin-left: 2px; padding: 1px 6px; border-radius: 999px; background: var(--grey-bg); color: var(--muted); font-size: 11px; }
 details.more > summary { cursor: pointer; color: var(--accent); font-weight: 500; }
 details.more[open] > summary { margin-bottom: 10px; }
 .oktaresult { margin-top: 12px; }

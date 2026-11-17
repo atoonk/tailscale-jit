@@ -23,7 +23,7 @@
     <a href="/admin/requests" {{if eq .Nav "admin-requests"}}class="on"{{end}}>All requests</a>
     <a href="/admin/workflows" {{if eq .Nav "admin-workflows"}}class="on"{{end}}>Approval flows</a>
     <a href="/admin/policy" {{if eq .Nav "admin-policy"}}class="on"{{end}}>Policy snippet</a>
-    <a href="/admin/integrations" {{if eq .Nav "admin-integrations"}}class="on"{{end}}>Integrations{{if or .SetupBad .OktaDot .SlackBad}} <span class="dot bad" title="An integration needs a look"></span>{{end}}</a>
+    <a href="/admin/integrations" {{if eq .Nav "admin-integrations"}}class="on"{{end}}>Integrations{{if or .SetupBad .OktaDot .GoogleDot .SlackBad}} <span class="dot bad" title="An integration needs a look"></span>{{end}}</a>
     <a href="/api/docs">API docs</a>
     {{end}}
   </nav>
@@ -41,12 +41,12 @@
 </aside>
 <main data-changes="{{.Changes}}">
   <div id="flash" class="flash" hidden></div>
-  {{if .OktaBad}}<div class="flash error" id="okta-problems"><b>Okta needs a look.</b>
-    {{range .OktaBad}}<div>{{.Text}}{{with .RequestID}} · <a href="/requests/{{.}}">open the request</a>{{end}}</div>{{end}}
-    {{if and .OktaOn (ne .Tab "okta")}}<div><a href="/admin/integrations/okta">Open the Okta page</a> to see what to fix.</div>{{end}}
+  {{range $b := .Banners}}<div class="flash error" id="{{$b.Key}}-problems"><b>{{$b.Label}} needs a look.</b>
+    {{range $b.Bad}}<div>{{.Text}}{{with .RequestID}} · <a href="/requests/{{.}}">open the request</a>{{end}}</div>{{end}}
+    {{if and $b.Page (ne $.Tab $b.Key)}}<div><a href="/admin/integrations/{{$b.Key}}">Open the {{$b.Label}} page</a> to see what to fix.</div>{{end}}
   </div>{{end}}
   {{if .Tab}}<nav class="tabs" aria-label="Integrations">
-    {{range .Tabs}}<a href="/admin/integrations/{{.Key}}" {{if eq $.Tab .Key}}class="on"{{end}}>{{.Label}}{{if .Soon}} <em>soon</em>{{end}}{{with .Bad}} <span class="dot bad" title="{{.}}"></span>{{end}}</a>
+    {{range .Tabs}}<a href="/admin/integrations/{{.Key}}" {{if eq $.Tab .Key}}class="on"{{end}}>{{.Label}}{{with .Bad}} <span class="dot bad" title="{{.}}"></span>{{end}}</a>
     {{end}}
   </nav>{{end}}
   {{template "content" .}}

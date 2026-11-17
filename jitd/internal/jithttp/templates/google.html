@@ -1,0 +1,158 @@
+{{define "content"}}
+{{$st := .Data.Status}}
+<div class="head">
+  <div>
+    <h1>Google Groups {{if $st.Configured}}{{if $st.Working}}<span class="status approved">working</span>{{else if $st.Error}}<span class="status declined">needs a look</span>{{else}}<span class="status pending">not checked yet</span>{{end}}{{end}}</h1>
+    <p class="sub">Let an approval put the requester in Google groups for as long as the access lasts. jitd takes people out again when the access ends.</p>
+  </div>
+  {{if $st.Configured}}<button class="btn" type="button" id="googlecheck">Check again</button>{{end}}
+</div>
+
+{{if not $st.Configured}}
+{{with $st.Error}}<div class="flash error">{{.}}</div>{{end}}
+<div class="grid2 wide-left">
+<div>
+<section class="card prose">
+  <h2>Connect Google</h2>
+  <p>jitd signs in to Google as a <b>service account</b> that holds the <b>Groups Admin</b> role in your Workspace or Cloud Identity account. It can manage groups and nothing else: no mail, no files, no users, and no domain-wide delegation. Steps 1 to 3 are in the Google Cloud console; step 4 is in the Google Admin console and needs a super admin.</p>
+  <ol class="steps">
+    <li><b>Enable the Cloud Identity API.</b> In the <a href="https://console.cloud.google.com/" target="_blank" rel="noopener">Google Cloud console</a>, pick the project that will hold jitd's service account, or create one. Then open <a href="{{$st.EnableURL}}" target="_blank" rel="noopener">the Cloud Identity API</a> in that project and click <b>Enable</b>.</li>
+    <li><b>Create a service account.</b> Open <b>IAM &amp; Admin → Service accounts</b> and click <b>Create service account</b>. Name it <i>jitd</i> and click <b>Done</b>: it needs no roles in the project, so skip the optional steps. Copy its address from the list, something like <code>jitd@my-project.iam.gserviceaccount.com</code>.</li>
+    <li><b>Make a key.</b> Click the service account, open its <b>Keys</b> tab, then <b>Add key → Create new key → JSON</b>. A file downloads; that file is the key.
+      <details class="more">
+        <summary>Google says key creation is disabled</summary>
+        <p>Organisations created since May 2024 start with the organisation policy <b>Disable service account key creation</b> (<code>iam.disableServiceAccountKeyCreation</code>) switched on. Someone with the Organization Policy Administrator role can turn it off for this one project, under <b>IAM &amp; Admin → Organization policies</b>.</p>
+      </details>
+    </li>
+    <li><b>Give it the Groups Admin role.</b> In the <a href="https://admin.google.com/ac/roles" target="_blank" rel="noopener">Google Admin console</a>, signed in as a super admin, open <b>Account → Admin roles</b>. Point at <b>Groups Admin</b> and click <b>Assign admin</b>, then <b>Assign service accounts</b>. Paste the service account's address, click <b>Add</b>, then <b>Assign role</b>. Google can take a few minutes to apply it.</li>
+    <li><b>Paste the key here.</b>
+      <form class="form oktaform" data-form="google-save">
+        {{template "googlekey" .}}
+        {{template "googlelimits" .}}
+        <div class="flash error formerr" hidden></div>
+        <div class="actions"><button class="btn primary" type="submit">Test and save</button><span class="muted small">jitd signs in to Google with the key first. Nothing is saved unless that works.</span></div>
+      </form>
+    </li>
+  </ol>
+  {{template "googlekept" .}}
+</section>
+</div>
+<div>
+{{template "googlehow" .}}
+</div>
+</div>
+
+{{else}}
+{{if $st.Error}}
+<div class="flash error"><b>{{$st.Error}}</b>{{with $st.Fix}} {{.}}{{end}}{{if not $st.CheckedAt.IsZero}} <span class="small">Checked {{ago $st.CheckedAt}}.</span>{{end}}</div>
+{{else if $st.Working}}
+<div class="flash ok">Google accepts jitd's key, and the service account can read groups. Checked {{ago $st.CheckedAt}}.</div>
+{{end}}
+{{if and $st.Enabled (not $st.Domains)}}<div class="flash error"><b>No email domain is allowed, so jitd adds nobody to a Google group.</b> Fill in the domains below.</div>{{end}}
+
+<div class="grid2 wide-left">
+<div>
+<section class="card">
+  <h2>Test a group</h2>
+  <form class="actions" data-form="google-check">
+    <input name="group" class="grow" required placeholder="aws-prod-readonly@example.com" autocomplete="off">
+    <button class="btn" type="submit">Test</button>
+  </form>
+  <ul class="results oktaresult" id="googlecheck-result" hidden></ul>
+  <p class="muted small">This looks the group up with jitd's key and says whether a flow could use it. It only reads. Whether jitd may add and remove members shows at the first approval: Google has no way to ask without changing something.</p>
+</section>
+
+<section class="card prose">
+  <h2>Who and what</h2>
+  <form class="form oktaform" data-form="google-limits">
+    {{template "googlelimits" .}}
+    <div class="flash error formerr" hidden></div>
+    {{if not (and $st.DomainsFromEnv $st.GrantFromEnv)}}<div class="actions"><button class="btn primary" type="submit">Save</button></div>{{end}}
+  </form>
+</section>
+
+{{if eq $st.Source "ui"}}
+<section class="card prose">
+  <h2>Replace the key</h2>
+  <p>For a new key or another service account. jitd signs in with the new one first and keeps the one it has if that fails.</p>
+  <details class="more">
+    <summary>Paste a new key</summary>
+    <form class="form oktaform" data-form="google-save">
+      {{template "googlekey" .}}
+      <div class="flash error formerr" hidden></div>
+      <div class="actions"><button class="btn primary" type="submit">Test and save</button></div>
+    </form>
+  </details>
+  {{template "googlekept" .}}
+</section>
+{{else}}
+<section class="card prose">
+  <h2>Key set outside this page</h2>
+  <p>The key comes from jitd's environment{{if $st.EnvFile}} or its env file, <code>{{$st.EnvFile}}</code>{{end}} (<code>GOOGLE_SERVICE_ACCOUNT_JSON</code>), so it is changed there, not here. jitd reads the file again on its own; a change to the environment needs a restart.</p>
+  <p>To manage it on this page instead, take that line out there.</p>
+  {{if $st.Shadowed}}<p class="warn">A key was also saved on this page earlier. jitd ignores it while the environment or the env file sets its own.</p>
+  <div class="actions"><button class="btn sm danger" type="button" id="googleremove" data-held="0">Remove what is saved here</button></div>{{end}}
+</section>
+{{end}}
+</div>
+
+<div>
+<section class="card">
+  <h2>Connection</h2>
+  <table class="plain">
+    <tr><td>Signs in as</td><td>{{if $st.Account}}<code id="googleaccount">{{$st.Account}}</code> <button class="btn sm" type="button" data-copy="googleaccount">Copy</button><div class="muted small">The service account that holds the Groups Admin role.</div>{{else}}<span class="warn">unreadable key</span>{{end}}</td></tr>
+    {{with $st.Project}}<tr><td>Project</td><td><code>{{.}}</code> <a class="small" href="{{$st.EnableURL}}" target="_blank" rel="noopener">Cloud Identity API</a></td></tr>{{end}}
+    {{with $st.KeyID}}<tr><td>Key ID</td><td><code>{{.}}</code></td></tr>{{end}}
+    <tr><td>Key</td><td>{{if eq $st.Source "env"}}from the environment{{if $st.EnvFile}} or <code>{{$st.EnvFile}}</code>{{end}}{{else}}saved here{{if $st.SavedBy}} by {{$st.SavedBy}}, {{ago $st.SavedAt}}{{end}}{{end}}</td></tr>
+    <tr><td>Last check</td><td>{{if $st.CheckedAt.IsZero}}<span class="muted">not yet</span>{{else if $st.Error}}<span class="status declined">failed</span> <span class="muted small">{{ago $st.CheckedAt}}</span>{{else}}<span class="status approved">passed</span> <span class="muted small">{{ago $st.CheckedAt}}</span>{{end}}</td></tr>
+    <tr><td>Memberships</td><td>{{if $st.Held}}jitd looks after Google memberships for {{$st.Held}} request{{if ne $st.Held 1}}s{{end}}{{else}}<span class="muted">none held right now</span>{{end}}<div class="muted small">{{.Data.Flows}} approval flow{{if ne .Data.Flows 1}}s{{end}} grant{{if eq .Data.Flows 1}}s{{end}} Google groups</div></td></tr>
+  </table>
+  {{if eq $st.Source "ui"}}
+  <div class="actions"><button class="btn sm danger right-push" type="button" id="googleremove" data-held="{{$st.Held}}">Remove</button></div>
+  <p class="hint bad" id="googleremove-warn" hidden>{{if $st.Held}}jitd still looks after Google memberships for {{$st.Held}} request{{if ne $st.Held 1}}s{{end}}. Without a key it cannot take those people out when their access ends: they stay in the groups until Google is set up again. {{end}}Removing stops new Google grants and forgets the domains and groups saved here. Click again to remove.</p>
+  {{end}}
+</section>
+{{template "googlehow" .}}
+</div>
+</div>
+{{end}}
+{{end}}
+
+{{define "googlekey"}}
+<label>Service account key
+  <textarea name="key" rows="7" required spellcheck="false" autocomplete="off" placeholder="{&#10;  &quot;type&quot;: &quot;service_account&quot;,&#10;  …&#10;}"></textarea>
+  <span class="hint">The whole JSON file Google downloaded, from <code>{</code> to <code>}</code>. <b data-keyaccount></b></span>
+</label>
+<div class="hint">Or choose the file: <input type="file" accept=".json,application/json" data-keyfile></div>
+{{end}}
+
+{{define "googlelimits"}}
+{{$st := .Data.Status}}
+<label>Email domains jitd may add
+  <input name="allowed_domains" value="{{if $st.Domains}}{{join $st.Domains}}{{else if not $st.Configured}}{{.Data.Domain}}{{end}}" placeholder="example.com" autocomplete="off" {{if $st.DomainsFromEnv}}disabled{{else}}required{{end}}>
+  <span class="hint">{{if $st.DomainsFromEnv}}Set with <code>GOOGLE_ALLOWED_DOMAINS</code> in jitd's environment or env file, so it is changed there.{{else}}Separated by commas. A requester is added to a group under their Tailscale login, and only when that address is in one of these domains. Without this, someone from outside your Google account could be added as an external member wherever a group allows those.{{end}}</span>
+</label>
+<label>Groups a flow may grant
+  <input name="grant_allowlist" value="{{join $st.GrantAllowlist}}" placeholder="*" autocomplete="off" {{if $st.GrantFromEnv}}disabled{{else}}required{{end}}>
+  <span class="hint">{{if $st.GrantFromEnv}}Set with <code>GOOGLE_GRANT_ALLOWLIST</code> in jitd's environment or env file, so it is changed there.{{else}}<code>*</code> for every group, or addresses separated by commas, where <code>*</code> stands for any run of characters: <code>aws-*@example.com</code>. The Groups Admin role reaches every group in the account; this is what keeps a flow from granting one it should not.{{end}}</span>
+</label>
+{{end}}
+
+{{define "googlekept"}}
+<p class="muted small">The key is kept in jitd's database and is never shown again, here or in the API. To keep it out of the database, put the file's contents, on one line, in <code>GOOGLE_SERVICE_ACCOUNT_JSON</code> in {{if .Data.Status.EnvFile}}<code>{{.Data.Status.EnvFile}}</code>{{else}}jitd's env file{{end}} or in jitd's environment (a Kubernetes Secret, say) instead. A key set there wins over the one saved here.</p>
+{{end}}
+
+{{define "googlehow"}}
+<section class="card prose">
+  <h2>How it works</h2>
+  <ul>
+    <li>An approval flow can name Google groups, with or without a posture attribute: fill in <b>Google groups</b> on the flow's page, by group address. An approval adds the requester to each group; jitd takes them out when the access expires or is revoked.</li>
+    <li>That reaches whatever Google gates by group: Google Cloud roles, apps people sign in to through Google, shared drives.</li>
+    <li><b>Not Tailscale access.</b> Tailscale reads Google groups only every 40 minutes, so a group would open access late and close it late. Use a flow's posture attribute for that.</li>
+    <li>The requester's Tailscale login is used as their Google address. There is no lookup: if the two differ, Google refuses the add and the approval fails.</li>
+    <li>Someone who was in the group already stays in it: jitd only removes what it added.</li>
+    <li>Dynamic groups, whose members come from a query, cannot be granted.</li>
+    <li>jitd removes members itself, so it has to be running to do it. If a removal keeps failing, admins see it on every page.</li>
+  </ul>
+</section>
+{{end}}

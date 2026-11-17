@@ -25,6 +25,8 @@ import (
 
 	"tailscale.com/tsnet"
 
+	"github.com/atoonk/tailscale-jit/jitd/internal/google"
+	"github.com/atoonk/tailscale-jit/jitd/internal/googlesetup"
 	"github.com/atoonk/tailscale-jit/jitd/internal/jit"
 	"github.com/atoonk/tailscale-jit/jitd/internal/jithttp"
 	"github.com/atoonk/tailscale-jit/jitd/internal/jitmcp"
@@ -194,6 +196,81 @@ func main() {
 				jit.EnvOktaGrantAllowlist + ", " + jit.EnvOktaReadAllowlist + ")")
 		}
 	}
+	// Google, for flows that grant Google group membership. Its settings
+	// are made on the Google page and kept in the database: the service
+	// account's key, the domains whose users may be added, and the groups
+	// flows may grant. Each of GOOGLE_SERVICE_ACCOUNT_JSON (the key file on
+	// one line), GOOGLE_ALLOWED_DOMAINS and GOOGLE_GRANT_ALLOWLIST in the
+	// env file or the environment wins over the page, for whoever runs
+	// jitd from a Secret. The key counts when it is not empty, a list as
+	// soon as its name is there; the file wins over the environment.
+	googleLists := []string{google.EnvDomains, google.EnvGrantAllowlist}
+	googleVars := func() (map[string]string, error) {
+		vars := map[string]string{}
+		if v := os.Getenv(google.EnvKey); strings.TrimSpace(v) != "" {
+			vars[google.EnvKey] = v
+		}
+		for _, k := range googleLists {
+			if v, set := os.LookupEnv(k); set {
+				vars[k] = v
+			}
+		}
+		if *envFile == "" {
+			return vars, nil
+		}
+		fromFile, err := setup.ReadEnvFile(*envFile)
+		if err != nil {
+			return nil, err
+		}
+		if v := fromFile[google.EnvKey]; v != "" {
+			vars[google.EnvKey] = v
+		}
+		for _, k := range googleLists {
+			if v, set := fromFile[k]; set {
+				vars[k] = v
+			}
+		}
+		return vars, nil
+	}
+	googleSetup := &googlesetup.Manager{Store: store, Svc: svc, Env: googleVars, EnvFile: *envFile, Log: log}
+	if err := googleSetup.Load(); err != nil {
+		log.Error("cannot read the Google settings saved on the Google page from the database", "err", err)
+	}
+	// As with Okta: while the env file cannot be read, Google carries on
+	// with the settings read last, and if it was never readable Google is
+	// off and no group is allowed.
+	googleClient := &google.Dynamic{Load: googleSetup.Vars, OnLoadError: func(err error) {
+		if err != nil {
+			log.Error("cannot read the Google settings; carrying on with the ones read last, if any", "env_file", *envFile, "err", err)
+		} else {
+			log.Info("the Google settings are readable again", "env_file", *envFile)
+		}
+	}}
+	svc.Google = googleClient
+	svc.GoogleLimits = func() jit.GoogleLimits {
+		vars, err := googleClient.Vars()
+		if err != nil {
+			return jit.NoGoogleGroups()
+		}
+		return jit.ParseGoogleLimits(vars)
+	}
+	if vars, err := googleClient.Vars(); err == nil && google.Configured(vars) {
+		if _, err := google.NewFromValues(vars); err != nil {
+			log.Error("the Google service account key is set but unusable; Google stays off until it is fixed", "err", err)
+		}
+	}
+	if svc.GoogleEnabled() {
+		lim := svc.GoogleLimits()
+		st := googleSetup.Status()
+		from := "the environment or the env file"
+		if st.Source == googlesetup.SourceUI {
+			from = "the Google page (jitd's database)"
+		}
+		log.Info("google enabled", "service_account", st.Account, "key_from", from, "allowed_domains", lim.Domains, "grant_allowlist", lim.Grant)
+		if len(lim.Domains) == 0 {
+			log.Warn("no allowed domains are set for Google: jitd adds nobody to a Google group until an admin names them on the Google page")
+		}
+	}
 	svc.PolicyCache = &jit.PolicyCache{TS: ts, TTL: time.Minute, Log: log}
 	for _, a := range strings.Split(*admins, ",") {
 		if a = strings.TrimSpace(a); a != "" {
@@ -311,6 +388,7 @@ func main() {
 		TS:       ts,
 		Setup:    checker,
 		Okta:     oktaSetup,
+		Google:   googleSetup,
 		JITTag:   *jitTag,
 		BaseURL:  scheme + "://" + cmp.Or(dns, *hostname),
 		Hosts:    append([]string{*hostname, dns, strings.Split(dns, ".")[0]}, ips...),

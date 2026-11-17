@@ -129,7 +129,7 @@ func ParseDuration(s string) (time.Duration, error) {
 
 // Workflow is an approval flow: who may request it, who approves, and what
 // an approval grants: a posture attribute on the requester's device, time
-// limited membership in Okta groups, or both.
+// limited membership in Okta or Google groups, or a mix.
 type Workflow struct {
 	ID          string `json:"id"`
 	Name        string `json:"name"`
@@ -139,13 +139,17 @@ type Workflow struct {
 	// thing jitd does; what it unlocks is decided by the tailnet policy
 	// (grants with srcPosture on posture:jit_<name>).
 	//
-	// It may be empty when the flow grants Okta groups instead.
+	// It may be empty when the flow grants groups instead.
 	Attribute string `json:"attribute"`
 	// OktaGroups are the Okta groups an approval adds the requester (the
 	// Okta user with their login or email) to, until the access ends. Okta
 	// has no expiring membership, so jitd removes them itself: unlike the
 	// posture attribute, this needs jitd running to end on time.
 	OktaGroups []OktaGroup `json:"okta_groups,omitempty"`
+	// GoogleGroups are the Google groups an approval adds the requester
+	// (their login, as a Google address) to, until the access ends. Like
+	// Okta groups, jitd removes them itself.
+	GoogleGroups []GroupRef `json:"google_groups,omitempty"`
 	// Resources is "Gives access to": what the policy unlocks for this
 	// attribute, as told by the admin. Discovery only, for people and agents
 	// choosing what to request; it grants nothing.
@@ -336,6 +340,9 @@ func (w *Workflow) Posture() string {
 // OktaGroupLabels lists the flow's Okta group names.
 func (w *Workflow) OktaGroupLabels() []string { return groupLabels(w.OktaGroups) }
 
+// GoogleGroupLabels lists the flow's Google groups, by address.
+func (w *Workflow) GoogleGroupLabels() []string { return groupLabels(w.GoogleGroups) }
+
 func groupLabels(gs []GroupRef) []string {
 	out := make([]string, len(gs))
 	for i, g := range gs {
@@ -455,6 +462,9 @@ const (
 	// while, or went through after that.
 	EventOktaStuck   = "okta_stuck"
 	EventOktaCleared = "okta_cleared"
+	// The same for its Google memberships.
+	EventGoogleStuck   = "google_stuck"
+	EventGoogleCleared = "google_cleared"
 )
 
 // AccessRequest is a request for time-limited access through one workflow.
@@ -467,6 +477,7 @@ type AccessRequest struct {
 	// request stays readable after its flow changes.
 	Attribute      string      `json:"attribute"`
 	OktaGroups     []OktaGroup `json:"okta_groups,omitempty"`
+	GoogleGroups   []GroupRef  `json:"google_groups,omitempty"`
 	Resources      []Resource  `json:"resources"`
 	Requester      Identity    `json:"requester"`
 	TargetDeviceID string      `json:"target_device_id"`
@@ -490,6 +501,9 @@ type AccessRequest struct {
 	// OktaAdding is set while an approval is adding the requester to Okta
 	// groups, and stays if that approval did not finish (see OktaIntent).
 	OktaAdding *OktaIntent `json:"okta_adding,omitempty"`
+	// Google and GoogleAdding are the same for flows with GoogleGroups.
+	Google       *GroupGrant  `json:"google,omitempty"`
+	GoogleAdding *GroupIntent `json:"google_adding,omitempty"`
 	// Slack lists the Slack messages posted about this request.
 	Slack     []SlackMessage `json:"slack,omitempty"`
 	CreatedAt time.Time      `json:"created_at"`
@@ -657,7 +671,7 @@ func (w *Workflow) Validate() error {
 		return badRequest("name is required")
 	}
 	if w.Attribute == "" && !w.grantsGroups() {
-		return badRequest("an approval flow must grant something: a posture attribute, Okta groups, or both")
+		return badRequest("an approval flow must grant something: a posture attribute, Okta or Google groups, or a mix")
 	}
 	if w.Attribute != "" {
 		name := strings.TrimPrefix(w.Attribute, AttrPrefix)
@@ -768,6 +782,10 @@ func cleanGroups(k *groupKind, in []GroupRef) []GroupRef {
 
 // oktaGroupIDRE is the shape of an Okta group ID (00g…).
 var oktaGroupIDRE = regexp.MustCompile(`^00g[A-Za-z0-9]{10,}$`)
+
+// googleGroupIDRE is the shape of a Google group ID. A flow names a
+// Google group by its address, which has an @ and so never looks like one.
+var googleGroupIDRE = regexp.MustCompile(`^[A-Za-z0-9_-]{4,64}$`)
 
 // MaxResourceDescription caps a resource description.
 const MaxResourceDescription = 200
