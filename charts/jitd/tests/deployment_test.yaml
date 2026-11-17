@@ -144,3 +144,57 @@ tests:
       - equal:
           path: spec.template.spec.volumes[2].emptyDir
           value: {}
+
+  - it: authenticates to the Tailscale API with a federated identity when one is set
+    template: templates/deployment.yaml
+    set:
+      federatedIdentity.clientId: kTEST11CNTRL
+      federatedIdentity.audience: api.tailscale.com/kTEST11CNTRL
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: TS_OAUTH_CLIENT_ID
+            value: kTEST11CNTRL
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: TS_ID_TOKEN
+            value: file:/var/run/secrets/tailscale/token
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: tailscale-oidc
+            mountPath: /var/run/secrets/tailscale
+            readOnly: true
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: tailscale-oidc
+            projected:
+              sources:
+                - serviceAccountToken:
+                    audience: api.tailscale.com/kTEST11CNTRL
+                    expirationSeconds: 3600
+                    path: token
+      # Only the projected token; the default token stays unmounted.
+      - equal:
+          path: spec.template.spec.automountServiceAccountToken
+          value: false
+
+  - it: requires the audience with a federated identity
+    template: templates/deployment.yaml
+    set:
+      federatedIdentity.clientId: kTEST11CNTRL
+    asserts:
+      - failedTemplate:
+          errorMessage: federatedIdentity.audience is required with federatedIdentity.clientId
+
+  - it: mounts no token without a federated identity
+    template: templates/deployment.yaml
+    asserts:
+      - notContains:
+          path: spec.template.spec.volumes
+          content:
+            name: tailscale-oidc
+          any: true

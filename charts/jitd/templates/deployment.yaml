@@ -113,8 +113,17 @@ spec:
             {{- toYaml . | nindent 12 }}
             {{- end }}
           {{- end }}
-          {{- if or .Values.env .Values.extraEnv }}
+          {{- $federated := .Values.federatedIdentity.clientId }}
+          {{- if or .Values.env .Values.extraEnv $federated }}
           env:
+            {{- if $federated }}
+            # Federated identity: jitd exchanges the projected service account
+            # token below for Tailscale API tokens, re-reading it as it rotates.
+            - name: TS_OAUTH_CLIENT_ID
+              value: {{ $federated | quote }}
+            - name: TS_ID_TOKEN
+              value: file:/var/run/secrets/tailscale/token
+            {{- end }}
             {{- range $k, $v := .Values.env }}
             - name: {{ $k }}
               value: {{ $v | toString | quote }}
@@ -139,6 +148,11 @@ spec:
             # tsnet and SQLite may write temporary files.
             - name: tmp
               mountPath: /tmp
+            {{- if .Values.federatedIdentity.clientId }}
+            - name: tailscale-oidc
+              mountPath: /var/run/secrets/tailscale
+              readOnly: true
+            {{- end }}
       volumes:
         - name: bin
           emptyDir:
@@ -146,6 +160,17 @@ spec:
         - name: tmp
           emptyDir:
             sizeLimit: 64Mi
+        {{- if .Values.federatedIdentity.clientId }}
+        # The service account's token, issued for the federated identity's
+        # audience. The kubelet rotates it; jitd reads it for each exchange.
+        - name: tailscale-oidc
+          projected:
+            sources:
+              - serviceAccountToken:
+                  audience: {{ required "federatedIdentity.audience is required with federatedIdentity.clientId" .Values.federatedIdentity.audience | quote }}
+                  expirationSeconds: 3600
+                  path: token
+        {{- end }}
         - name: data
           {{- if .Values.persistence.enabled }}
           persistentVolumeClaim:
