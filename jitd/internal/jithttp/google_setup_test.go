@@ -505,9 +505,21 @@ func TestGoogleProblemsShown(t *testing.T) {
 	if _, err := h.Svc.Approve(t.Context(), people["bob"], r.ID, ""); err != nil {
 		t.Fatal(err)
 	}
+	// While the removal is under way the page says so, without a warning:
+	// the revoke is recorded first, and the call to Google follows.
 	gf.Fail["remove:"+googleAdmins] = errors.New("403 forbidden")
+	during := ""
+	gf.Hook = func(call string) {
+		if call == "remove" && during == "" {
+			_, during = getPage(t, srv, "alice", "/requests/"+r.ID)
+		}
+	}
 	if _, err := h.Svc.Revoke(t.Context(), people["bob"], r.ID, ""); err != nil {
 		t.Fatal(err)
+	}
+	gf.Hook = nil
+	if !strings.Contains(during, "out of the Google group now") || strings.Contains(during, "not yet removed") {
+		t.Errorf("the request page, while Google is being called, does not say the removal is under way")
 	}
 	_, body := getPage(t, srv, "alice", "/requests/"+r.ID)
 	if !strings.Contains(body, "Google group membership not yet removed, failing since") || !strings.Contains(body, "403 forbidden") {

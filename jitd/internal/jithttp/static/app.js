@@ -11,6 +11,10 @@ function flash(msg, ok) {
   window.scrollTo(0, 0);
 }
 
+// acting is true while a button's own call is on its way, so that the live
+// reload does not show the half-way state of it.
+let acting = false;
+
 async function api(method, url, body) {
   const opts = { method, headers: {} };
   if (body !== undefined) {
@@ -162,10 +166,12 @@ document.addEventListener("click", async (ev) => {
         note = (window.prompt(b.dataset.needsNote) || "").trim();
         if (!note) { b.disabled = false; return; }
       }
+      acting = true;
       await api("POST", b.dataset.action, { note });
       location.reload();
     }
   } catch (e) {
+    acting = false;
     flash(e.message);
     // Failed approvals are still recorded; show the updated timeline.
     if (e.data && e.data.request) setTimeout(() => location.reload(), 2500);
@@ -414,7 +420,7 @@ document.addEventListener("click", (ev) => {
   if (!main || !live) return;
   let seen = main.dataset.changes;
   setInterval(async () => {
-    if (document.hidden) return;
+    if (document.hidden || acting) return;
     const note = document.getElementById("note");
     if (note && note.value) return;
     try {

@@ -61,6 +61,12 @@ func (g GroupSet) Labels() []string { return groupLabels(g.Groups) }
 // still in groups of this kind that jitd added them to.
 func (g GroupSet) RemovalPending() bool { return g.r != nil && g.k.pendingRemoval(g.r) }
 
+// RemovalFailing reports whether jitd tried to take them out and could
+// not. Until then a pending removal is one that is under way.
+func (g GroupSet) RemovalFailing() bool {
+	return g.RemovalPending() && g.Grant != nil && g.Grant.Error != ""
+}
+
 // Stuck reports whether removing them has been failing for long enough
 // that jitd told the admins.
 func (g GroupSet) Stuck() bool { return g.r != nil && g.k.stuckOn(g.r) }
