@@ -324,3 +324,57 @@ func TestFederatedIdentityErrors(t *testing.T) {
 		t.Errorf("rejected exchange: no oauth2.RetrieveError in %v", err)
 	}
 }
+
+func TestCreateAuthKey(t *testing.T) {
+	srv, got := fakeAPI(t, 200, `{"id":"kABC","key":"tskey-auth-kABC-secret"}`)
+	c, err := NewFromValues(context.Background(), srv.URL, map[string]string{"TS_API_KEY": "tskey-api-x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	k, err := c.CreateAuthKey(context.Background(), []string{"tag:jit"}, 10*time.Minute, "jitd node")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if k.ID != "kABC" || k.Key != "tskey-auth-kABC-secret" {
+		t.Fatalf("key = %+v", k)
+	}
+	call := (*got)[0]
+	if call.method != "POST" || call.path != "/api/v2/tailnet/-/keys" {
+		t.Fatalf("call = %s %s", call.method, call.path)
+	}
+	create := call.body["capabilities"].(map[string]any)["devices"].(map[string]any)["create"].(map[string]any)
+	if create["reusable"] != false || create["ephemeral"] != false || create["preauthorized"] != true {
+		t.Errorf("create = %v", create)
+	}
+	if tags := create["tags"].([]any); len(tags) != 1 || tags[0] != "tag:jit" {
+		t.Errorf("tags = %v", tags)
+	}
+	if call.body["expirySeconds"] != float64(600) || call.body["description"] != "jitd node" {
+		t.Errorf("body = %v", call.body)
+	}
+}
+
+func TestCreateAuthKeyEmptyResponse(t *testing.T) {
+	srv, _ := fakeAPI(t, 200, `{}`)
+	c, _ := NewFromValues(context.Background(), srv.URL, map[string]string{"TS_API_KEY": "tskey-api-x"})
+	if _, err := c.CreateAuthKey(context.Background(), []string{"tag:jit"}, time.Minute, "x"); err == nil {
+		t.Fatal("no error for a response without a key")
+	}
+}
+
+func TestDeleteAuthKey(t *testing.T) {
+	for _, tc := range []struct {
+		status  int
+		wantErr bool
+	}{{200, false}, {404, false}, {403, true}} {
+		srv, got := fakeAPI(t, tc.status, `{}`)
+		c, _ := NewFromValues(context.Background(), srv.URL, map[string]string{"TS_API_KEY": "tskey-api-x"})
+		err := c.DeleteAuthKey(context.Background(), "kABC")
+		if (err != nil) != tc.wantErr {
+			t.Errorf("status %d: err = %v, wantErr %v", tc.status, err, tc.wantErr)
+		}
+		if call := (*got)[0]; call.method != "DELETE" || call.path != "/api/v2/tailnet/-/keys/kABC" {
+			t.Errorf("call = %s %s", call.method, call.path)
+		}
+	}
+}

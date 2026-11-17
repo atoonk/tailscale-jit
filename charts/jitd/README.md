@@ -62,8 +62,8 @@ Instead of an OAuth client secret, jitd can authenticate to the Tailscale API wi
 2. In the admin console, **Settings → Trust credentials → New credential → OpenID Connect → Custom issuer**:
    - issuer: that URL;
    - subject: `system:serviceaccount:<namespace>:<service account>` (`system:serviceaccount:jitd:jitd` for the install above);
-   - scopes: the OAuth client's (Devices → Posture attributes: Write, Devices → Core: Read, Policy file: Read).
-3. Install with its client ID and audience, and without `TS_OAUTH_CLIENT_SECRET` in the Secret:
+   - scopes: the OAuth client's (Devices → Posture attributes: Write, Devices → Core: Read, Policy file: Read), and Auth Keys: Write with jitd's tag (`tag:jit`) so the node joins the tailnet through it as well.
+3. Install with its client ID and audience, and without `TS_OAUTH_CLIENT_SECRET` or `TS_AUTHKEY` in the Secret:
 
 ```sh
 helm install jitd ./charts/jitd -n jitd \
@@ -73,6 +73,8 @@ helm install jitd ./charts/jitd -n jitd \
 ```
 
 The chart mounts the service account's token for that audience, and sets `TS_OAUTH_CLIENT_ID` and `TS_ID_TOKEN`. The kubelet rotates the token, and jitd re-reads it for each exchange. The default service account token stays unmounted.
+
+With the Auth Keys scope, jitd also joins the tailnet with a short-lived auth key it creates through the federated identity on each start and deletes once the node is up, so no auth key is stored anywhere.
 
 ## Values
 

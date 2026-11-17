@@ -72,8 +72,9 @@ credentials:
 # this cluster's OIDC issuer URL, subject
 # system:serviceaccount:<namespace>:<service account> and the same scopes as
 # the OAuth client (Devices -> Posture attributes: Write, Devices -> Core:
-# Read, Policy file: Read). jitd then exchanges its service account token,
-# issued for `audience`, for Tailscale API tokens. Leave the credentials
+# Read, Policy file: Read), plus Auth Keys: Write with tag:jit to also join
+# the tailnet without TS_AUTHKEY. jitd then exchanges its service account
+# token, issued for `audience`, for Tailscale API tokens. Leave the credentials
 # Secret without TS_OAUTH_CLIENT_SECRET / TS_API_KEY, which would win.
 federatedIdentity:
   # The federated identity's client ID. Empty: not used.
