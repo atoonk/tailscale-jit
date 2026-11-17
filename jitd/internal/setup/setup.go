@@ -499,15 +499,35 @@ func (c *Checker) Remove(ctx context.Context, by string) (*Result, error) {
 	return c.runAndKeep(ctx), nil
 }
 
-// ReadOptionalEnvFile is ReadEnvFile for a file that need not exist: one
-// that is missing reads as empty. A file that is there and cannot be read
-// is still an error, since nobody can tell what it sets.
-func ReadOptionalEnvFile(path string) (map[string]string, error) {
-	vars, err := ReadEnvFile(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return map[string]string{}, nil
+// OptionalEnvFile reads an env file that need not exist. One that has not
+// been there since jitd started reads as empty: the settings then come
+// from the pages and the environment. One that was read and is gone
+// afterwards is an error, like one that cannot be read: the lists it held
+// limit what jitd may do, so losing the file (a removed file, a volume that
+// did not mount) must not lift them. The caller carries on with what it
+// read last.
+type OptionalEnvFile struct {
+	Path string
+
+	mu   sync.Mutex
+	seen bool // the file was read at least once
+}
+
+// Read returns what the file sets.
+func (f *OptionalEnvFile) Read() (map[string]string, error) {
+	vars, err := ReadEnvFile(f.Path)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	switch {
+	case err == nil:
+		f.seen = true
+		return vars, nil
+	case !errors.Is(err, os.ErrNotExist):
+		return nil, err
+	case f.seen:
+		return nil, fmt.Errorf("the env file %s was there when jitd read it earlier and is gone now; put it back, or restart jitd to run without it", f.Path)
 	}
-	return vars, err
+	return map[string]string{}, nil
 }
 
 // ReadEnvFile parses KEY=VALUE lines. Blank lines and # comments are

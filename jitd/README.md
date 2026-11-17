@@ -792,10 +792,12 @@ OKTA_READ_ALLOWLIST=Team-*,On-Call
 Entries are group names or IDs, separated by commas; `*` matches any run
 of characters. A list that is left out means `*`, every group. A list that
 is set but empty allows no group, and so does an env file jitd cannot read
-when it starts (one that does not exist is fine: it sets nothing). If the file becomes unreadable later (a bad line, a
-permission), jitd carries on with the Okta settings and lists it read
-last, and says so in the log and in the admins' banner until the file is
-fixed. jitd logs the lists in effect at startup.
+when it starts (one that does not exist then is fine: it sets nothing). If
+the file becomes unreadable later (a bad line, a permission) or goes away
+(deleted, a volume that is no longer mounted), jitd carries on with the
+Okta settings and lists it read last, and says so in the log and in the
+admins' banner until the file is fixed or put back. To run without the
+file from then on, restart jitd. jitd logs the lists in effect at startup.
 
 - A flow that grants a group outside `OKTA_GRANT_ALLOWLIST` can't be
   saved, and each approval checks the list again before adding anyone, so

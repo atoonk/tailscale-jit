@@ -156,26 +156,68 @@ func TestSavedSurvivesRestartAndFileWins(t *testing.T) {
 	}
 }
 
-// The env file is optional: one that does not exist reads as empty, so
+// The env file is optional: one that was never there reads as empty, so
 // Okta and Google work from what was saved on their pages. One that is
 // there and unreadable is an error, because nobody can tell what it sets.
-func TestReadOptionalEnvFile(t *testing.T) {
+func TestOptionalEnvFile(t *testing.T) {
 	dir := t.TempDir()
-	vars, err := ReadOptionalEnvFile(filepath.Join(dir, "missing"))
-	if err != nil || vars == nil || len(vars) != 0 {
-		t.Errorf("a missing file = %v, %v; want empty and no error", vars, err)
+	missing := &OptionalEnvFile{Path: filepath.Join(dir, "missing")}
+	for range 2 {
+		vars, err := missing.Read()
+		if err != nil || vars == nil || len(vars) != 0 {
+			t.Errorf("a file that was never there = %v, %v; want empty and no error", vars, err)
+		}
 	}
 	file := filepath.Join(dir, "env")
 	if err := os.WriteFile(file, []byte("OKTA_GRANT_ALLOWLIST=\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if vars, err = ReadOptionalEnvFile(file); err != nil {
+	if vars, err := (&OptionalEnvFile{Path: file}).Read(); err != nil {
 		t.Fatal(err)
 	} else if v, set := vars["OKTA_GRANT_ALLOWLIST"]; !set || v != "" {
 		t.Errorf("an empty allowlist = %q, set %v; want set and empty", v, set)
 	}
 	// A directory is there and is not a readable file.
-	if _, err = ReadOptionalEnvFile(dir); err == nil {
+	if _, err := (&OptionalEnvFile{Path: dir}).Read(); err == nil {
 		t.Error("a path that cannot be read as a file gave no error")
+	}
+}
+
+// An env file that was read and then goes away (deleted, renamed, a volume
+// that is no longer mounted) must not read as "sets nothing": an allowlist
+// that is absent allows every group. It is an error, so that the caller
+// keeps what it read last, until the file is back.
+func TestOptionalEnvFileGone(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "env")
+	write := func(s string) {
+		t.Helper()
+		if err := os.WriteFile(file, []byte(s), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f := &OptionalEnvFile{Path: file}
+	// It may appear after jitd started.
+	if vars, err := f.Read(); err != nil || len(vars) != 0 {
+		t.Fatalf("before the file exists = %v, %v; want empty and no error", vars, err)
+	}
+	write("OKTA_GRANT_ALLOWLIST=jit-*\n")
+	if vars, err := f.Read(); err != nil || vars["OKTA_GRANT_ALLOWLIST"] != "jit-*" {
+		t.Fatalf("read = %v, %v", vars, err)
+	}
+	if err := os.Remove(file); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		vars, err := f.Read()
+		if err == nil {
+			t.Fatalf("a file that went away read as %v with no error; its allowlist would now allow every group", vars)
+		}
+		if !strings.Contains(err.Error(), file) || !strings.Contains(err.Error(), "gone") {
+			t.Errorf("error = %q; want the path and that the file is gone", err)
+		}
+	}
+	write("OKTA_GRANT_ALLOWLIST=ops-*\n")
+	if vars, err := f.Read(); err != nil || vars["OKTA_GRANT_ALLOWLIST"] != "ops-*" {
+		t.Errorf("after the file is back = %v, %v", vars, err)
 	}
 }

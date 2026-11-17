@@ -118,6 +118,15 @@ func main() {
 	// is not empty. An allowlist counts as set as soon as its name is
 	// there, in the file first: "OKTA_GRANT_ALLOWLIST=" allows no group,
 	// and only a list that is absent everywhere allows all of them.
+	//
+	// The env file need not exist. One that was read and is gone later
+	// counts as unreadable, for Okta and Google alike.
+	optEnv := &setup.OptionalEnvFile{Path: *envFile}
+	if *envFile != "" {
+		if _, err := os.Stat(*envFile); errors.Is(err, os.ErrNotExist) {
+			log.Info("there is no env file; settings come from the pages and the environment", "env_file", *envFile)
+		}
+	}
 	oktaLists := []string{jit.EnvOktaGrantAllowlist, jit.EnvOktaReadAllowlist}
 	oktaVars := func() (map[string]string, error) {
 		vars := map[string]string{}
@@ -132,7 +141,7 @@ func main() {
 		if *envFile == "" {
 			return vars, nil
 		}
-		fromFile, err := setup.ReadOptionalEnvFile(*envFile)
+		fromFile, err := optEnv.Read()
 		if err != nil {
 			return nil, err
 		}
@@ -152,11 +161,12 @@ func main() {
 	if err := oktaSetup.Load(); err != nil {
 		log.Error("cannot read the Okta credentials saved on the Okta page from the database", "err", err)
 	}
-	// While the env file cannot be read (a bad line, a permission), Okta
-	// carries on with the settings read last, so that an edit gone wrong
-	// neither switches off the removal of memberships nor opens the
-	// allowlists. If it was never readable, Okta is off and no group is
-	// allowed.
+	// While the env file cannot be read (a bad line, a permission, a file
+	// that was there and is gone), Okta carries on with the settings read
+	// last, so that an edit gone wrong neither switches off the removal of
+	// memberships nor opens the allowlists. If it was there and never
+	// readable, Okta is off and no group is allowed. A file that has not
+	// been there since jitd started sets nothing.
 	oktaClient := &okta.Dynamic{Load: oktaSetup.Vars, OnLoadError: func(err error) {
 		if err != nil {
 			log.Error("cannot read the Okta settings; carrying on with the ones read last, if any", "env_file", *envFile, "err", err)
@@ -218,7 +228,7 @@ func main() {
 		if *envFile == "" {
 			return vars, nil
 		}
-		fromFile, err := setup.ReadOptionalEnvFile(*envFile)
+		fromFile, err := optEnv.Read()
 		if err != nil {
 			return nil, err
 		}
@@ -237,8 +247,8 @@ func main() {
 		log.Error("cannot read the Google settings saved on the Google page from the database", "err", err)
 	}
 	// As with Okta: while the env file cannot be read, Google carries on
-	// with the settings read last, and if it was never readable Google is
-	// off and no group is allowed.
+	// with the settings read last, and if it was there and never readable
+	// Google is off and no group is allowed.
 	googleClient := &google.Dynamic{Load: googleSetup.Vars, OnLoadError: func(err error) {
 		if err != nil {
 			log.Error("cannot read the Google settings; carrying on with the ones read last, if any", "env_file", *envFile, "err", err)
