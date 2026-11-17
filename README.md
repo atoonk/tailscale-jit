@@ -16,7 +16,7 @@ Kubernetes, RDP, VNC, HTTP, TCP and AWS S3.
 
 ## See it in action
 
-![Claude Code installs the plugin, asks for SSH access to check a disk, waits for the approval, then runs df on the host](docs/demo.gif)
+![Claude Code asks for SSH access to check a disk, waits for the approval, then runs df on the host](docs/demo.gif)
 
 **[Watch the full video (MP4, 2:20)](docs/demo.mp4)**: why agents need just-in-time access, the demo with the approval in the browser, and what you get.
 
@@ -26,8 +26,8 @@ Meanwhile, the approver opens the link and sees this:
 
 *Recorded with the real Claude Code, against jitd's demo mode: made-up
 people (Maya asks, Sam approves) and a stand-in for the ops host. The
-recording installs the earlier plugin; today it is the one `claude mcp add`
-command below.*
+recording is older than the setup below: connecting Claude Code is now the
+one `claude mcp add` command.*
 
 > **Experimental.** This is a working proof of concept, tested on a real
 > tailnet. Expect rough edges.
@@ -112,10 +112,6 @@ A few tips:
   when jitd runs with `-hostname` or `-https`. jitd's Help page (`/help`)
   prints the exact command for its own address; use that URL in place of
   `http://jit/mcp`.
-- **Installed the old tailscale-pam plugin?** It still works (it is only a
-  pointer to the same server), but the plain command above replaces it.
-  Remove it with `/plugin uninstall tailscale-pam@tailscale-jit` so the
-  tools don't show up twice.
 - **Curious what this machine can reach?** Run `tailscale service list`
   (add `--json`). Claude runs the same command.
 
@@ -193,9 +189,6 @@ for Linux and macOS (amd64 and arm64) and attaches the binaries, with
 checksums, to a GitHub release. A tag with a suffix (`v0.7.0-rc1`) becomes a
 prerelease; running the workflow by hand from the Actions tab builds the
 same binaries as a workflow artifact without releasing.
-
-The `plugins/` directory holds the retired Claude Code plugin: a pointer to
-`http://jit/mcp` kept so existing installs keep working.
 
 ## License
 
