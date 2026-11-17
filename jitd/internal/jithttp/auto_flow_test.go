@@ -20,7 +20,7 @@ func TestFlowRecordsWhoMadeItAutomatic(t *testing.T) {
 	if w.AutoApproveBy != "root@example.com" || w.UpdatedBy != "root@example.com" || w.AutoApproveAt == nil {
 		t.Errorf("made automatic by %q, saved by %q, at %v", w.AutoApproveBy, w.UpdatedBy, w.AutoApproveAt)
 	}
-	if _, page := getPage(t, srv, "root", "/admin/workflows"); !strings.Contains(page, "set by root@example.com") {
-		t.Error("the flows page does not say who made the flow automatic")
+	if _, page := getPage(t, srv, "root", "/admin/workflows"); !strings.Contains(page, "set by root@example.com") || !strings.Contains(page, `<div class="muted small" title="`) {
+		t.Error("the flows page does not say who made the flow automatic, and when")
 	}
 }

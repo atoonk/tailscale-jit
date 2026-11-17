@@ -426,7 +426,7 @@ func text(t string) *mcp.CallToolResult {
 func instructions(jitURL string) string {
 	return `Use jitd whenever you need to connect to infrastructure over Tailscale: SSH hosts, databases ` +
 		`(MySQL, PostgreSQL, MongoDB, MS SQL, CockroachDB, Elasticsearch), Kubernetes, RDP, VNC, HTTP, TCP or AWS S3. ` +
-		`Tailscale PAM puts those behind Tailscale Services; jitd (` + jitURL + `) grants just-in-time access to them after a human approves ` +
+		`Tailscale PAM puts those behind Tailscale Services; jitd (` + jitURL + `) grants just-in-time access to them after a human approves, or at once for the flows an admin made automatic ` +
 		`(tools: list_requestable, request_access, wait_for_access, get_access_request, cancel_access_request).
 
 What this device can reach right now comes from the local Tailscale client, not from jitd. Run in a shell:
@@ -474,6 +474,8 @@ Access requests:
 		`not after waiting: the user has to approve before any wait can succeed. For example:
     I've submitted an access request for "Database access (read-only)" (15m, reason: ...). It needs approval here:
     ` + jitURL + `/requests/req_...
+- A flow that list_requestable marks as approved automatically comes back approved: nobody has to approve. Tell the user ` +
+		`it was granted automatically and for how long, print the link, and carry on.
 - Then end your turn with that message. When the user replies (they approved it, or ask you to wait), call wait_for_access ` +
 		`with the request_id. If you call it before that, its first call for a pending request returns at once and tells you to ` +
 		`end your turn with the link. Later calls return when the request is decided and the access is in place, ` +

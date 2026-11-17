@@ -420,16 +420,25 @@ The fields:
   Things to know about such a flow:
   - Making a flow automatic is the approval of every request that follows,
     so jitd keeps who did it and when with the flow, shows it on the flows
-    page and names them in each grant's timeline. Every flow change is
-    logged with who made it.
+    page and names them in each grant's timeline. An admin who later
+    changes who may request it, what it grants or for how long takes that
+    over. Every flow change is logged with who made it.
   - Revoking ends that one grant. The requester can ask again and is
     granted again; to keep someone out, take them out of the flow's
     requesters or disable the flow.
   - It cannot hand out an Okta group whose members are approvers of a flow
     or jitd admins through an `okta:` principal: anyone who may request it
-    could then give themselves that role. jitd refuses to save either side.
-  - With **Decide in the browser only** set, it can only be requested in
-    the browser, since the request is the decision.
+    could then give themselves that role. jitd refuses to save either side,
+    going by the group's Okta ID, not its name. The same holds for a flow
+    where one approval is enough and people may approve their own request.
+    Requesters are not covered: if another flow lists that group as
+    `okta:` requesters, whoever may request this flow can request that one
+    too. Neither is an Okta group that reaches Tailscale through directory
+    sync and is used as a `group:` principal: jitd cannot tell it is the
+    same group, so keep such groups out of these flows yourself.
+  - With **Decide in the browser only** set, it cannot be requested from
+    Slack, since the request is the decision. The API and agents (MCP) can
+    still request it.
   - In Slack the channel gets one message when the access is granted, with
     no buttons, and approvers get no direct message.
 
@@ -603,8 +612,8 @@ How it behaves:
   group when access was approved, jitd records that and never removes them.
 - **Shared membership.** If two live requests hold the same group for one
   person (two flows, or two devices), the membership comes off only when
-  the last one ends. Until then the request that ended first says the
-  person is still in the group through the other one; it never claims the
+  the last one ends. The request that ended first says the membership
+  stayed because another running request held it; it never claims the
   membership was removed.
 - **Removal needs jitd.** Okta memberships have no expiry, so unlike a
   posture attribute, jitd removes them itself, on its expiry tick
@@ -629,7 +638,7 @@ How it behaves:
 - **Recorded first.** jitd writes down which memberships it is about to add
   before it adds the first one. If it stops halfway through an approval,
   or can't take a failed approval back, the next tick (the first thing a
-  restarted jitd does) removes them; until then admins see it in the
+  restarted jitd does) removes them; if that fails, admins see it in the
   banner.
 - **Checked while it runs.** Every ten minutes jitd compares the
   memberships of running requests with Okta. If someone removed the user
@@ -681,9 +690,11 @@ OKTA_READ_ALLOWLIST=Team-*,On-Call
 
 Entries are group names or IDs, separated by commas; `*` matches any run
 of characters. A list that is left out means `*`, every group. A list that
-is set but empty allows no group, and so does an env file jitd cannot read:
-when in doubt jitd grants nothing. jitd logs the lists in effect at
-startup.
+is set but empty allows no group, and so does an env file jitd cannot read
+when it starts. If the file becomes unreadable later (a bad line, a
+permission), jitd carries on with the Okta settings and lists it read
+last, and says so in the log and in the admins' banner until the file is
+fixed. jitd logs the lists in effect at startup.
 
 - A flow that grants a group outside `OKTA_GRANT_ALLOWLIST` can't be
   saved, and each approval checks the list again before adding anyone, so

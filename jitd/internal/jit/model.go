@@ -153,11 +153,21 @@ type Workflow struct {
 	// AutoApprove grants every request at once, with no approver: the
 	// request is still recorded, with its reason, and still expires and can
 	// be revoked. Approvers are optional then; any listed may still revoke.
+	//
+	// Whether a request is automatic is not stored on the request: it is
+	// read from the flow, in Service.submit and autoGrant, in expireDue (a
+	// pending request on such a flow that is not in Service.autoBusy is
+	// expired by the next tick), in UpdateWorkflow (a flip to automatic
+	// expires what was pending), in selfServeRole and Requestable, and in
+	// the Slack bot (no approval card, no direct messages). A flow that is
+	// automatic only for some requests has to change all of them.
 	AutoApprove bool `json:"auto_approve,omitempty"`
-	// AutoApproveBy and AutoApproveAt are who made the flow automatic and
+	// AutoApproveBy and AutoApproveAt are who made the flow automatic, or
+	// last changed who may request it, what it grants or for how long, and
 	// when: on such a flow that edit is the approval of every request that
-	// follows. UpdatedBy is who saved the flow last. jitd sets all three;
-	// what a caller sends is ignored.
+	// follows. Service sets both and ignores what a caller sends. UpdatedBy
+	// is who saved the flow last: the caller of CreateWorkflow and
+	// UpdateWorkflow sets it (the HTTP handlers, from the identity).
 	AutoApproveBy string     `json:"auto_approve_by,omitempty"`
 	AutoApproveAt *time.Time `json:"auto_approve_at,omitempty"`
 	UpdatedBy     string     `json:"updated_by,omitempty"`

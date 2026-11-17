@@ -29,8 +29,11 @@ const OktaPrefix = "okta:"
 // IsOkta reports whether p names an Okta group.
 func (p Principal) IsOkta() bool { return strings.HasPrefix(string(p), OktaPrefix) }
 
-// OktaRef is the group name or ID of an okta: principal.
-func (p Principal) OktaRef() string { return strings.TrimPrefix(string(p), OktaPrefix) }
+// OktaRef is the group name or ID of an okta: principal, without the
+// space people leave after the colon.
+func (p Principal) OktaRef() string {
+	return strings.TrimSpace(strings.TrimPrefix(string(p), OktaPrefix))
+}
 
 // OktaCacheTTL is how long Okta membership lookups are reused.
 const OktaCacheTTL = time.Minute

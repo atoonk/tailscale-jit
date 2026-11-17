@@ -19,8 +19,10 @@ import (
 //
 // Each entry is a group name or ID; "*" matches any run of characters
 // ("jit.*", "Team-*"). A list that is not set defaults to "*": every group.
-// A list that is set but has no entries allows no group, and so does a list
-// jitd could not read: a mistake in the env file must not open every group.
+// A list that is set but has no entries allows no group, and so does an env
+// file jitd has not been able to read since it started. If the file stops
+// being readable later, the lists read last stay in force (see main): a
+// mistake in the env file must not open every group.
 
 // OktaAllowlist holds the two lists. A nil list is one that was never set
 // and allows every group; an empty, non-nil list allows none.

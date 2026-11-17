@@ -98,7 +98,7 @@ func TestKeptOktaGroupShown(t *testing.T) {
 		t.Fatal("the group the second request holds was removed")
 	}
 	_, page := getPage(t, srv, "root", "/requests/"+ids[0])
-	if strings.Contains(page, "membership taken away") || !strings.Contains(page, "Still in the Okta group AWS-Prod-Admin through another running request") {
+	if strings.Contains(page, "membership taken away") || !strings.Contains(page, "another running request still held the Okta group AWS-Prod-Admin") {
 		t.Errorf("the ended request's page: kept group not shown, or claimed removed")
 	}
 	if _, err := h.Svc.Revoke(t.Context(), people["bob"], ids[1], ""); err != nil {

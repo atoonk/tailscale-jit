@@ -138,6 +138,7 @@ func (s *Service) CreateWorkflow(w Workflow) (*Workflow, error) {
 	if err := s.checkOktaPrincipals(context.Background(), &w); err != nil {
 		return nil, err
 	}
+	roleIDs := s.oktaRoleGroups(context.Background(), "", &w)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := w.Validate(); err != nil {
@@ -150,7 +151,7 @@ func (s *Service) CreateWorkflow(w Workflow) (*Workflow, error) {
 		if err := attributeFree(d, w.Attribute, ""); err != nil {
 			return err
 		}
-		if err := s.selfServeRole(d, &w); err != nil {
+		if err := s.selfServeRole(d, &w, roleIDs); err != nil {
 			return err
 		}
 		d.Workflows[w.ID] = clone(&w)
@@ -163,24 +164,84 @@ func (s *Service) CreateWorkflow(w Workflow) (*Workflow, error) {
 	return &w, nil
 }
 
-// markAutoApprove records on w who made it automatic and when. An edit that
-// leaves the flow automatic keeps the first record.
+// markAutoApprove records on w who made it automatic and when. On a flow
+// that stays automatic, an edit to who may request it, what it grants or
+// for how long approves what follows as much as the first one did, so it
+// takes the record over; any other edit keeps it.
 func markAutoApprove(old, w *Workflow, now time.Time) {
 	switch {
 	case !w.AutoApprove:
 		w.AutoApproveBy, w.AutoApproveAt = "", nil
-	case old != nil && old.AutoApprove:
+	case old != nil && old.AutoApprove && sameAutoScope(old, w):
 		w.AutoApproveBy, w.AutoApproveAt = old.AutoApproveBy, old.AutoApproveAt
 	default:
 		w.AutoApproveBy, w.AutoApproveAt = w.UpdatedBy, &now
 	}
 }
 
-// selfServeRole refuses to save w when an automatic flow would then hand
-// out an Okta group whose members, through an okta: principal, approve
-// requests in a flow or are jitd admins: whoever may request it could give
-// themselves that role with nobody deciding. d holds the other flows.
-func (s *Service) selfServeRole(d *Data, w *Workflow) error {
+// sameAutoScope reports whether a and b let the same people request the
+// same access for as long.
+func sameAutoScope(a, b *Workflow) bool {
+	return a.Attribute == b.Attribute && a.MaxDuration == b.MaxDuration &&
+		slices.Equal(a.Requesters, b.Requesters) &&
+		slices.EqualFunc(a.OktaGroups, b.OktaGroups, func(x, y OktaGroup) bool { return x.ID == y.ID })
+}
+
+// selfServe reports whether f hands out what it grants with nobody but the
+// requester deciding: it approves automatically, or one approval is enough
+// and people may approve their own request.
+func selfServe(f *Workflow) bool {
+	return f.AutoApprove || (f.AllowSelfApproval && f.ApprovalsRequired <= 1)
+}
+
+// oktaRoleGroups resolves the okta: principals that carry a role (the
+// admins, and the approvers of w and of every other stored flow) to Okta
+// group IDs, for selfServeRole: the text of a principal can differ from the
+// name a flow stored (a group renamed in Okta), the ID cannot. A principal
+// that cannot be looked up is left out and compared by its text. It calls
+// Okta, so it runs before the service lock is taken; id is w's ID, empty
+// for a new flow.
+func (s *Service) oktaRoleGroups(ctx context.Context, id string, w *Workflow) map[string]string {
+	if !s.oktaEnabled() {
+		return nil
+	}
+	var refs []string
+	add := func(ps []Principal) {
+		for _, p := range ps {
+			if p.IsOkta() {
+				refs = append(refs, p.OktaRef())
+			}
+		}
+	}
+	handsOut := selfServe(w) && len(w.OktaGroups) > 0
+	add(s.Admins)
+	add(w.Approvers)
+	s.Store.View(func(d *Data) {
+		for _, o := range d.Workflows {
+			if o.ID != id {
+				add(o.Approvers)
+				handsOut = handsOut || (selfServe(o) && len(o.OktaGroups) > 0)
+			}
+		}
+	})
+	if !handsOut || len(refs) == 0 {
+		return nil
+	}
+	ids := map[string]string{}
+	for _, ref := range refs {
+		if g, err := s.oktaGroup(ctx, ref); err == nil {
+			ids[ref] = g.ID
+		}
+	}
+	return ids
+}
+
+// selfServeRole refuses to save w when a flow that needs nobody but the
+// requester (selfServe) would then hand out an Okta group whose members,
+// through an okta: principal, approve requests in a flow or are jitd
+// admins: whoever may request it could give themselves that role. d holds
+// the other flows; ids is what oktaRoleGroups resolved.
+func (s *Service) selfServeRole(d *Data, w *Workflow, ids map[string]string) error {
 	flows := []*Workflow{w}
 	for _, o := range d.Workflows {
 		if o.ID != w.ID {
@@ -204,16 +265,27 @@ func (s *Service) selfServeRole(d *Data, w *Workflow) error {
 			}
 		}
 	}
+	means := func(ref string, g OktaGroup) bool {
+		if id, ok := ids[ref]; ok && g.ID != "" {
+			return id == g.ID
+		}
+		return g.named(ref)
+	}
 	for _, f := range flows {
-		if !f.AutoApprove {
+		if !selfServe(f) {
 			continue
 		}
 		for _, g := range f.OktaGroups {
 			for _, ro := range roles {
-				if g.named(ro.ref) && (f == w || ro.of == w) {
+				if !means(ro.ref, g) || (f != w && ro.of != w) {
+					continue
+				}
+				if f.AutoApprove {
 					return conflict("approval flow %q would hand out the Okta group %q automatically, and members of that group %s: anyone who may request it could give themselves that role with nobody deciding. Use another group, or let approvers decide requests for this one",
 						f.Name, g.Label(), ro.what)
 				}
+				return conflict("approval flow %q lets people approve their own request for the Okta group %q, and members of that group %s: one person could give themselves that role with nobody else deciding. Use another group, require a second approval, or do not allow approving your own request",
+					f.Name, g.Label(), ro.what)
 			}
 		}
 	}
@@ -230,6 +302,7 @@ func (s *Service) UpdateWorkflow(id string, w Workflow) (*Workflow, error) {
 	if err := s.checkOktaPrincipals(context.Background(), &w); err != nil {
 		return nil, err
 	}
+	roleIDs := s.oktaRoleGroups(context.Background(), id, &w)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := w.Validate(); err != nil {
@@ -250,7 +323,7 @@ func (s *Service) UpdateWorkflow(id string, w Workflow) (*Workflow, error) {
 		w.ID, w.CreatedAt, w.UpdatedAt = id, old.CreatedAt, now
 		wasAuto = old.AutoApprove
 		markAutoApprove(old, &w, now)
-		if err := s.selfServeRole(d, &w); err != nil {
+		if err := s.selfServeRole(d, &w, roleIDs); err != nil {
 			return err
 		}
 		d.Workflows[id] = clone(&w)
@@ -772,7 +845,7 @@ func (s *Service) autoGrant(ctx context.Context, id string, og *oktaOutcome) (_ 
 	r.UpdatedAt = s.now()
 	note := "approved automatically by the flow"
 	if w.AutoApproveBy != "" {
-		note += ", which " + w.AutoApproveBy + " made automatic"
+		note += ", as set by " + w.AutoApproveBy
 	}
 	return s.grant(ctx, r, w, Event{Actor: AutoActor}, note, false, og)
 }

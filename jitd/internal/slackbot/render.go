@@ -194,13 +194,14 @@ func oktaStuckLine(r *jit.AccessRequest) string {
 }
 
 // oktaKeptLine says, on an ended request, which Okta groups the requester
-// stays in because another running request of theirs holds them.
+// stayed in when it ended because another running request of theirs held
+// them. It is a record of that moment, so it is worded in the past.
 func oktaKeptLine(r *jit.AccessRequest) string {
 	kept := r.OktaKeptLabels()
 	if len(kept) == 0 {
 		return ""
 	}
-	return "\nStill in the Okta group " + esc(strings.Join(kept, ", ")) + " through another running request, which removes it when it ends"
+	return "\nWhen this ended, another running request still held the Okta group " + esc(strings.Join(kept, ", ")) + ", so the membership stayed; that request removes it when it ends"
 }
 
 // renderOktaAlert builds the direct message to an admin about a request

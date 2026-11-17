@@ -282,7 +282,7 @@ func TestAutoApproveRecordsWhoMadeItAutomatic(t *testing.T) {
 	if w.AutoApproveBy != "leo@example.com" || w.AutoApproveAt == nil {
 		t.Fatalf("made automatic by %q at %v", w.AutoApproveBy, w.AutoApproveAt)
 	}
-	// Another admin's edit that leaves it automatic keeps the record.
+	// Another admin's edit that leaves who gets what as it was keeps the record.
 	edit := *w
 	edit.UpdatedBy, edit.Description = "sam@example.com", "edited"
 	w2, err := h.svc.UpdateWorkflow(w.ID, edit)
@@ -293,8 +293,15 @@ func TestAutoApproveRecordsWhoMadeItAutomatic(t *testing.T) {
 	if err != nil || !r.AutoApproved() {
 		t.Fatalf("submit: %v", err)
 	}
-	if ev := r.Timeline[len(r.Timeline)-1]; ev.Type != "approved" || !strings.Contains(ev.Note, "leo@example.com made automatic") {
+	if ev := r.Timeline[len(r.Timeline)-1]; ev.Type != "approved" || !strings.Contains(ev.Note, "as set by leo@example.com") {
 		t.Errorf("grant recorded as %q: %q", ev.Type, ev.Note)
+	}
+	// Changing who gets what, or for how long, is that admin's approval of
+	// what follows.
+	wide := *w2
+	wide.UpdatedBy, wide.MaxDuration = "carol@example.com", Duration(2*time.Hour)
+	if w5, err := h.svc.UpdateWorkflow(w.ID, wide); err != nil || w5.AutoApproveBy != "carol@example.com" {
+		t.Fatalf("after a longer maximum: %v, by %q", err, w5.AutoApproveBy)
 	}
 	// Manual again, then automatic again: the record is the new one.
 	edit.AutoApprove, edit.Approvers = false, []Principal{"bob@example.com"}
@@ -357,5 +364,52 @@ func TestAutoApproveUnfinishedIsEnded(t *testing.T) {
 	}
 	if len(h.svc.autoBusy) != 0 {
 		t.Errorf("autoBusy not cleared: %v", h.svc.autoBusy)
+	}
+}
+
+// The guard goes by the group an okta: principal resolves to, not by its
+// text: a space after the colon, or a group renamed in Okta since the flow
+// was saved, is still the same group.
+func TestRoleGuardGoesByGroupID(t *testing.T) {
+	h, f := oktaHarness(t)
+	named := func(w Workflow, name string) Workflow { w.Name = name; return w }
+	refused := func(what string, err error) {
+		t.Helper()
+		if code(err) != "conflict" || !strings.Contains(err.Error(), "with nobody deciding") {
+			t.Errorf("%s: %v", what, err)
+		}
+	}
+
+	h.svc.Admins = []Principal{"okta: AWS-Prod-Admin"}
+	_, err := h.svc.CreateWorkflow(named(autoFlow(OktaGroup{ID: gAdmin}), "admin group"))
+	refused("admins written with a space after okta:", err)
+	h.svc.Admins = nil
+
+	// The automatic flow keeps the name the group had when it was saved.
+	if _, err := h.svc.CreateWorkflow(named(autoFlow(OktaGroup{ID: gRead}), "read group")); err != nil {
+		t.Fatal(err)
+	}
+	f.AddGroup(gRead, "AWS-Prod-Read-2", "")
+	gated := named(oktaFlow(OktaGroup{ID: gAdmin}), "gated")
+	gated.Approvers = []Principal{"okta:AWS-Prod-Read-2"}
+	_, err = h.svc.CreateWorkflow(gated)
+	refused("approvers by the group's new name", err)
+}
+
+// A flow where one person can file and approve their own request hands out
+// its groups with nobody else deciding, just as an automatic one does.
+func TestSelfApprovalCannotHandOutARole(t *testing.T) {
+	h, _ := oktaHarness(t)
+	h.svc.Admins = []Principal{"okta:AWS-Prod-Admin"}
+	w := oktaFlow(OktaGroup{ID: gAdmin})
+	w.Approvers, w.AllowSelfApproval = []Principal{"autogroup:member"}, true
+	_, err := h.svc.CreateWorkflow(w)
+	if code(err) != "conflict" || !strings.Contains(err.Error(), "with nobody else deciding") {
+		t.Errorf("self-approved flow granting the admins' group: %v", err)
+	}
+	// With a second approval needed, someone else decides.
+	w.ApprovalsRequired = 2
+	if _, err := h.svc.CreateWorkflow(w); err != nil {
+		t.Errorf("the same flow with two approvals: %v", err)
 	}
 }

@@ -140,9 +140,15 @@ func TestDynamicKeepsSettingsOnLoadError(t *testing.T) {
 			t.Fatal("a failed read switched Okta off")
 		}
 	}
+	if why := d.StaleSettings(); !strings.Contains(why, "permission denied") {
+		t.Errorf("StaleSettings = %q while running on the settings read last", why)
+	}
 	lerr, vars = nil, map[string]string{}
 	if d.Enabled() || !errors.Is(d.Err(), ErrUnconfigured) {
 		t.Errorf("settings without credentials: Err = %v, want ErrUnconfigured", d.Err())
+	}
+	if why := d.StaleSettings(); why != "" {
+		t.Errorf("StaleSettings = %q after the file was readable again", why)
 	}
 	// first failure, recovery, second failure, recovery: each reported once
 	if len(reported) != 4 || reported[0] == nil || reported[1] != nil || reported[2] == nil || reported[3] != nil {

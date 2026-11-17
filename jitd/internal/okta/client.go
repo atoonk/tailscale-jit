@@ -487,6 +487,18 @@ type Dynamic struct {
 // whether Okta accepts them).
 func (d *Dynamic) Enabled() bool { return d.Err() == nil }
 
+// StaleSettings returns why Load failed when it was last called, if Okta
+// is carrying on with the settings read before that. It is empty while the
+// settings in force are the ones in the file.
+func (d *Dynamic) StaleSettings() string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.last == nil {
+		return ""
+	}
+	return d.lerr
+}
+
 // Err says why Okta is off: ErrUnconfigured, or what is wrong with the
 // credentials or the env file. It is nil while Okta is on.
 func (d *Dynamic) Err() error {

@@ -11,7 +11,7 @@
   {{- else if $e.RemovedAt}}<div class="verify off"><i></i>Access removed · confirmed gone from the device <span class="muted" title="{{ts $e.RemovedAt}}">{{ago $e.RemovedAt}}</span></div>
   {{- else if .Attributes}}<div class="verify warn"><i></i>Ended · removal not yet confirmed on the device{{with $e.Error}} ({{.}}){{end}}</div>
   {{- else if .OktaRemovalPending}}<div class="verify warn"><i></i>Ended · Okta group membership not yet removed{{with .Okta.FailingSince}}, failing since {{ts .}}{{end}}{{with .Okta.Error}} ({{.}}){{end}}</div>{{end}}
-  {{- with .OktaKeptLabels}}<div class="verify warn"><i></i>Still in the Okta group{{if gt (len .) 1}}s{{end}} {{join .}} through another running request, which removes it when it ends.</div>{{end}}
+  {{- with .OktaKeptLabels}}<div class="verify warn"><i></i>When this ended, another running request still held the Okta group{{if gt (len .) 1}}s{{end}} {{join .}}, so the membership stayed. That request removes it when it ends.</div>{{end}}
   {{- if and .Attributes .OktaRemovalPending}}<div class="verify warn"><i></i>Okta group membership not yet removed{{with .Okta.FailingSince}}, failing since {{ts .}}{{end}}{{with .Okta.Error}} ({{.}}){{end}}</div>{{end}}
 {{- end -}}
 {{end}}

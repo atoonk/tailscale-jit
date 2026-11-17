@@ -31,7 +31,7 @@ func TestOktaAllClearNamesKeptGroups(t *testing.T) {
 	if strings.Contains(got, "is out of") || strings.Contains(got, "went through") || !strings.Contains(got, "stays in AWS-Prod-Admin, AWS-Prod-ReadOnly") {
 		t.Errorf("all kept: %s", got)
 	}
-	if s := statusLine(r, 0); !strings.Contains(s, "Still in the Okta group AWS-Prod-Admin, AWS-Prod-ReadOnly") {
+	if s := statusLine(r, 0); !strings.Contains(s, "still held the Okta group AWS-Prod-Admin, AWS-Prod-ReadOnly") {
 		t.Errorf("request message: %s", s)
 	}
 }

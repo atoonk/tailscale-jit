@@ -395,3 +395,26 @@ func TestOktaRemovalDeadlineStartsAfterTheLock(t *testing.T) {
 		t.Errorf("after waiting for the lock: member = %v, okta = %+v", f.Member(gAdmin, uAlice), g.Okta)
 	}
 }
+
+// staleOkta is an Okta client running on settings read before the env file
+// stopped being readable, as okta.Dynamic reports it.
+type staleOkta struct {
+	*okta.Fake
+	why string
+}
+
+func (s staleOkta) StaleSettings() string { return s.why }
+
+// An env file that cannot be read any more leaves Okta on with the settings
+// read last. The admins are told on the page, not only in the log.
+func TestOktaStaleSettingsAreInTheBanner(t *testing.T) {
+	h, f := oktaHarness(t)
+	if ps := h.svc.OktaProblems(); len(ps) != 0 {
+		t.Fatalf("problems with a healthy Okta: %+v", ps)
+	}
+	h.svc.Okta = staleOkta{f, "env line 3: expected KEY=VALUE"}
+	ps := h.svc.OktaProblems()
+	if len(ps) != 1 || !strings.Contains(ps[0].Text, "line 3") || !strings.Contains(ps[0].Text, "read last") {
+		t.Errorf("problems = %+v", ps)
+	}
+}

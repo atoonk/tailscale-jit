@@ -367,9 +367,9 @@ type OktaProblem struct {
 }
 
 // OktaProblems lists what an admin should know about Okta right now: Okta
-// is off while memberships jitd added are still in place, the credentials
-// do not work, a removal is stuck, or an unfinished approval could not be
-// taken back. Empty when all is well.
+// is off while memberships jitd added are still in place, the env file
+// cannot be read, the credentials do not work, a removal is stuck, or an
+// unfinished approval could not be taken back. Empty when all is well.
 func (s *Service) OktaProblems() []OktaProblem {
 	if s.Okta == nil {
 		return nil
@@ -382,6 +382,11 @@ func (s *Service) OktaProblems() []OktaProblem {
 		}
 		out = append(out, OktaProblem{Text: fmt.Sprintf("Okta is off, but %d request(s) still have Okta group memberships that jitd added. jitd cannot remove them until Okta is configured again: %s", n, s.oktaWhyOff())})
 	} else {
+		if st, ok := s.Okta.(interface{ StaleSettings() string }); ok {
+			if why := st.StaleSettings(); why != "" {
+				out = append(out, OktaProblem{Text: "jitd cannot read the Okta settings in its env file and carries on with the ones it read last, allowlists included: " + why})
+			}
+		}
 		h := &s.okHealth
 		h.mu.Lock()
 		if h.err != "" {
