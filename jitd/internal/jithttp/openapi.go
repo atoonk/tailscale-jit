@@ -160,7 +160,7 @@ const openAPISpec = `{
         "channel": {"type": "string", "description": "Channel ID; empty for none", "example": "C0123456789"}, "channel_name": {"type": "string", "example": "sre-oncall"},
         "dm_approvers": {"type": "boolean", "description": "Also send each approver a direct message"},
         "browser_only": {"type": "boolean", "description": "No Approve/Decline buttons in Slack; decide in the browser"}}},
-      "Status": {"type": "string", "enum": ["pending", "approved", "declined", "expired", "revoked", "cancelled"]},
+      "Status": {"type": "string", "enum": ["pending", "scheduled", "approved", "declined", "expired", "revoked", "cancelled"], "description": "scheduled: approved, for a window that has not started yet (nothing is granted until it does)"},
       "Principal": {"type": "string", "description": "A login (alice@example.com), group:<name> from the policy file, tag:<name>, or autogroup:member", "example": "group:sre"},
       "Duration": {"type": "string", "description": "Go duration (15m, 1h30m), optionally with leading whole days (3d, 1d12h); no signs. Responses use Go's form, e.g. 72h0m0s. A number is taken as nanoseconds", "example": "1h0m0s"},
       "Identity": {"type": "object", "properties": {
@@ -185,14 +185,15 @@ const openAPISpec = `{
       "NewRequest": {"type": "object", "required": ["workflow_id", "reason"], "properties": {
         "workflow_id": {"type": "string"},
         "duration": {"$ref": "#/components/schemas/Duration"},
-        "reason": {"type": "string", "description": "What you need to do and why; shown to the approver"}}},
+        "reason": {"type": "string", "description": "What you need to do and why; shown to the approver"},
+        "start_at": {"type": "string", "format": "date-time", "description": "Schedule the access for later (RFC 3339, at most 30 days ahead). Approvers can decide any time before; access starts then, for duration. Omit (or give a time within a minute of now) to start on approval"}}},
       "Approval": {"type": "object", "properties": {"actor": {"type": "string"}, "device_id": {"type": "string", "description": "The approver's device; tells tagged approvers apart"}, "note": {"type": "string"}, "via": {"type": "string", "enum": ["slack"]}, "slack_user": {"type": "string", "description": "With via slack: the Slack account, as <team ID>/<user ID>"}, "at": {"type": "string", "format": "date-time"}}},
       "Enforcement": {"type": "object", "description": "What was verified on the device, separate from what was requested", "properties": {
         "confirmed_at": {"type": "string", "format": "date-time", "description": "The attribute was read back present after approval"},
         "removed_at": {"type": "string", "format": "date-time", "description": "The attribute was read back absent after expiry or revoke"},
         "checked_at": {"type": "string", "format": "date-time"}, "error": {"type": "string"}}},
       "Event": {"type": "object", "properties": {
-        "type": {"type": "string", "enum": ["submitted", "approval", "approved", "approve_failed", "declined", "cancelled", "revoked", "revoke_failed", "expired"]},
+        "type": {"type": "string", "enum": ["submitted", "approval", "approved", "approve_failed", "started", "start_failed", "declined", "cancelled", "revoked", "revoke_failed", "expired"]},
         "actor": {"type": "string"}, "note": {"type": "string"}, "via": {"type": "string", "enum": ["slack"], "description": "The actor acted from Slack"}, "slack_user": {"type": "string", "description": "With via slack: the Slack account, as <team ID>/<user ID>"}, "at": {"type": "string", "format": "date-time"}}},
       "AccessRequest": {"type": "object", "properties": {
         "id": {"type": "string", "example": "req_ec77cc3939cd0d5d"}, "url": {"type": "string", "description": "The approval page; show this to the user"},
@@ -202,6 +203,7 @@ const openAPISpec = `{
         "resources": {"type": "array", "items": {"$ref": "#/components/schemas/Resource"}},
         "requester": {"$ref": "#/components/schemas/Identity"}, "target_device_id": {"type": "string"},
         "duration": {"$ref": "#/components/schemas/Duration"}, "reason": {"type": "string"},
+        "start_at": {"type": "string", "format": "date-time", "description": "When access starts, for a scheduled request; absent means on approval"},
         "status": {"$ref": "#/components/schemas/Status"},
         "approvals": {"type": "array", "items": {"$ref": "#/components/schemas/Approval"}}, "approvals_required": {"type": "integer"},
         "approvals_counted": {"type": "integer", "description": "how many of approvals still count under the flow as it is now (pending requests); otherwise every vote cast"},

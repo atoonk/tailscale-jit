@@ -549,8 +549,9 @@ access.
 
 - **Overview** (`/`): what you have access to now, what's waiting for
   approval, and what happened recently.
-- **New request:** pick a flow, a duration and a reason. You get a link to
-  send to an approver.
+- **New request:** pick a flow, a duration and a reason, and optionally a
+  start time to schedule it for later. You get a link to send to an
+  approver.
 - **My requests:** cancel a pending request, or end your access early.
 - **Approvals** show up on the overview: approve, or decline with a reason.
 - **Manage** (admins): every request, the approval flows, the policy
@@ -558,6 +559,41 @@ access.
 - **Help** (`/help`) explains all of this inside the app.
 
 Pages update on their own when something changes.
+
+### Scheduling access
+
+A request can start later instead of on approval: for a maintenance window
+tonight, or a change planned for next week. In the request form, choose
+**Starting at** and a time (up to 30 days ahead); through the API or MCP,
+pass `start_at` as an RFC 3339 time.
+
+- **Approve ahead.** Approvers decide any time before the start. An
+  approved request is **scheduled**: nothing is granted yet, and it shows
+  when it starts and ends.
+- **jitd starts it.** On its expiry tick (`-expiry-interval`, 30 seconds by
+  default), jitd sets the posture attribute and adds the Okta memberships
+  once the start has come, and the access ends at the start plus the
+  duration. Like Okta removals, this needs jitd running: if it is down at
+  the start, access begins when it is back, and still ends on time.
+- **A window, not a duration.** The access covers the window that was
+  asked for. Approved after the start, it begins at once and still ends
+  with the window.
+- **Approvers have until the window ends.** The flow's approval timeout
+  applies only to requests that start on approval; a request scheduled
+  days ahead stays open for a decision until its window ends, and then
+  expires if nobody decided.
+- **If starting fails** (an API error), the request stays scheduled with
+  the error shown, and jitd tries again on every tick until the window
+  ends. If the flow is disabled, deleted or changed to grant something
+  else before the start, jitd calls the request off instead.
+- **Calling it off.** The requester, an approver or an admin can revoke a
+  scheduled request before it starts; nothing was granted, so there is
+  nothing to remove.
+- **One at a time, per window.** A device can have one live request per
+  flow at a time, but a scheduled request only counts for its own window:
+  access today and a window next week can both be requested.
+- **Automatic approval** works the same way: a flow that approves
+  automatically schedules the request at once.
 
 ### Okta groups
 

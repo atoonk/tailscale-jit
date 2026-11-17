@@ -518,10 +518,11 @@ func (b *Bot) sync(ctx context.Context, api slack.API, id string) {
 	case w == nil || w.Slack == nil:
 	case r.Status == jit.StatusPending && !w.AutoApprove:
 		b.announce(cctx, api, r, w)
-	case r.Status == jit.StatusApproved && r.AutoApproved() && len(r.Slack) == 0:
+	case (r.Status == jit.StatusApproved || r.Status == jit.StatusScheduled) && r.AutoApproved() && len(r.Slack) == 0:
 		// An automatic flow asks nobody: no card with Approve and Decline
 		// while the grant is being made, and one message in the channel,
-		// for the record, once it is.
+		// for the record, once it is (or, for a request that starts later,
+		// once it is scheduled).
 		b.announce(cctx, api, r, w)
 	}
 	if r.OktaStuck() {
@@ -737,7 +738,7 @@ func (b *Bot) reconcile(ctx context.Context) {
 		if o := r.Okta; o != nil && o.AlertedAt != nil && o.RemovedAt != nil && o.RemovedAt.After(since) && len(r.Slack) > 0 {
 			return true // nor that it went through
 		}
-		if r.Status == jit.StatusApproved && len(r.Slack) == 0 && r.AutoApproved() && r.UpdatedAt.After(since) {
+		if (r.Status == jit.StatusApproved || r.Status == jit.StatusScheduled) && len(r.Slack) == 0 && r.AutoApproved() && r.UpdatedAt.After(since) {
 			return true // an automatic grant is posted once it is made, and that may have been missed
 		}
 		return r.Status == jit.StatusPending || (len(r.Slack) > 0 && r.UpdatedAt.After(since))

@@ -152,6 +152,7 @@ type requestAccessInput struct {
 	WorkflowID string `json:"workflow_id" jsonschema:"workflow_id from list_requestable"`
 	Reason     string `json:"reason" jsonschema:"what you need to do and why; shown to the approver"`
 	Duration   string `json:"duration,omitempty" jsonschema:"e.g. 15m, 2h or 3d (1d12h also works), at most the flow's max_duration; defaults to its default_duration. Ask for no more than you need"`
+	StartAt    string `json:"start_at,omitempty" jsonschema:"only to schedule the access for later, when the user asks for a specific time (e.g. a maintenance window): an RFC 3339 time such as 2026-11-20T02:00:00Z, at most 30 days ahead. Omit to start on approval"`
 }
 
 type getAccessRequestInput struct {
@@ -223,6 +224,13 @@ func (s *Server) addTools(srv *mcp.Server, id jit.Identity) {
 			}
 			nr.Duration = jit.Duration(d)
 		}
+		if in.StartAt != "" {
+			t, err := time.Parse(time.RFC3339, in.StartAt)
+			if err != nil {
+				return nil, accessRequest{}, &jit.Error{Code: "bad_request", Status: http.StatusBadRequest, Message: "start_at: use an RFC 3339 time, such as 2026-11-20T02:00:00Z"}
+			}
+			nr.StartAt = &t
+		}
 		r, err := s.Svc.Submit(ctx, id, nr)
 		if err != nil {
 			return nil, accessRequest{}, s.withURL(err)
@@ -274,7 +282,7 @@ func (s *Server) addTools(srv *mcp.Server, id jit.Identity) {
 		switch cur.Status {
 		case jit.StatusPending:
 			act = s.Svc.Cancel
-		case jit.StatusApproved:
+		case jit.StatusApproved, jit.StatusScheduled:
 			act = s.Svc.Revoke
 		default:
 			// Already over: say so rather than fail.

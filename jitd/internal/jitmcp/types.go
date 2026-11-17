@@ -124,8 +124,9 @@ type accessRequest struct {
 	Attribute      string      `json:"attribute"`
 	OktaGroups     []oktaGroup `json:"okta_groups,omitempty"`
 	Resources      []resource  `json:"resources"`
-	Status         string      `json:"status" jsonschema:"pending, approved, declined, cancelled, expired or revoked"`
+	Status         string      `json:"status" jsonschema:"pending, scheduled (approved, starting at start_at), approved, declined, cancelled, expired or revoked"`
 	Duration       string      `json:"duration"`
+	StartAt        string      `json:"start_at,omitempty" jsonschema:"when access starts, for a request scheduled ahead"`
 	Reason         string      `json:"reason"`
 	Requester      identity    `json:"requester"`
 	TargetDeviceID string      `json:"target_device_id"`
@@ -387,6 +388,9 @@ func summarizeRequest(r accessRequest, viewer identity) string {
 			b.WriteString("Write that message to the user now and end your turn; call wait_for_access with this request_id once they reply (they approved it, or want you to wait). ")
 		}
 		b.WriteString("Do not try to reach these services another way while it is pending.\n")
+	case string(jit.StatusScheduled):
+		fmt.Fprintf(&b, "Access request %s%s for %s is SCHEDULED: approved, starting %s and ending %s.\n%s\n", r.ID, by, what, shortTime(r.StartAt), shortTime(r.ExpiresAt), r.URL)
+		b.WriteString("Nothing is granted until it starts, so do not try to use the access before then. There is no need to wait for it now.\n")
 	case string(jit.StatusApproved):
 		fmt.Fprintf(&b, "Access request %s%s for %s is APPROVED until %s.\n%s\n", r.ID, by, what, shortTime(r.ExpiresAt), r.URL)
 		switch {
@@ -421,7 +425,7 @@ func summarizeRequest(r accessRequest, viewer identity) string {
 		switch r.Status {
 		case string(jit.StatusApproved):
 			verb = "unlocks"
-		case string(jit.StatusPending):
+		case string(jit.StatusPending), string(jit.StatusScheduled):
 		default:
 			verb = "unlocked"
 		}

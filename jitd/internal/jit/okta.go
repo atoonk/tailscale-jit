@@ -180,7 +180,8 @@ func (s *Service) grantOkta(ctx context.Context, r *AccessRequest) *oktaOutcome 
 	if !s.oktaEnabled() {
 		return fail("okta is not configured")
 	}
-	if r.Status != StatusPending {
+	// Pending, for an approval; scheduled, for a start (see startDue).
+	if r.Status != StatusPending && r.Status != StatusScheduled {
 		return fail("the request is no longer pending") // approve reports what it is instead
 	}
 	if r.Requester.Tagged() || r.Requester.Login == "" {
@@ -273,8 +274,9 @@ func (s *Service) grantOkta(ctx context.Context, r *AccessRequest) *oktaOutcome 
 	return out
 }
 
-// saveOktaIntent records on pending request id which Okta memberships an
-// approval is about to add. It refuses if the request is no longer pending.
+// saveOktaIntent records on request id which Okta memberships an approval,
+// or the start of a scheduled request, is about to add. It refuses if the
+// request is no longer pending or scheduled.
 func (s *Service) saveOktaIntent(id string, in *OktaIntent) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -283,7 +285,7 @@ func (s *Service) saveOktaIntent(id string, in *OktaIntent) error {
 		if !ok {
 			return false, notFound("access request %q not found", id)
 		}
-		if cur.Status != StatusPending {
+		if cur.Status != StatusPending && cur.Status != StatusScheduled {
 			return false, conflict("request is %s, not pending", cur.Status)
 		}
 		if len(in.Groups) == 0 {

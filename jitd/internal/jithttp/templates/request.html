@@ -24,10 +24,11 @@
 
 <div class="card hero">
   <p>
-    <b>{{$r.Requester.Actor}}</b> asked for <b>{{human $r.Duration}}</b> of access from <b>{{$r.Requester.DeviceName}}</b>
+    <b>{{$r.Requester.Actor}}</b> asked for <b>{{human $r.Duration}}</b> of access from <b>{{$r.Requester.DeviceName}}</b>{{with $r.StartAt}}, starting <b title="{{ts .}}">{{ts .}}</b> ({{ago .}}),{{end}}
     <span class="muted" title="{{ts $r.CreatedAt}}">{{ago $r.CreatedAt}}</span>.
     {{if eq $r.Status "pending"}}It is waiting for approval{{if gt $r.ApprovalsRequired 1}} (<b>{{$r.ApprovalsCounted}} of {{$r.ApprovalsRequired}}</b> approvals so far){{end}}{{if and $self $can.Approve}}; this flow lets you <b>approve it yourself</b>{{end}}.{{end}}
     {{if eq $r.Status "approved"}}Approved <span title="{{ts $r.ApprovedAt}}">{{ago $r.ApprovedAt}}</span>; access ends <b title="{{ts $r.ExpiresAt}}">{{ago $r.ExpiresAt}}</b>.{{end}}
+    {{if eq $r.Status "scheduled"}}Approved <span title="{{ts $r.ApprovedAt}}">{{ago $r.ApprovedAt}}</span>. Nothing is granted yet: access starts <b title="{{ts $r.StartAt}}">{{ago $r.StartAt}}</b> and ends <b title="{{ts $r.ExpiresAt}}">{{ago $r.ExpiresAt}}</b>.{{end}}
   </p>
   {{template "enforcement" $r}}
   <blockquote>{{$r.Reason}}</blockquote>
@@ -41,7 +42,7 @@
     {{if $can.Cancel}}<button class="btn" data-action="/v1/requests/{{$r.ID}}/cancel">Cancel request</button>{{end}}
     {{if $can.Approve}}<button class="btn ok" data-action="/v1/requests/{{$r.ID}}/approve">Approve</button>{{end}}
     {{if and $can.Decline (not $self)}}<button class="btn" data-action="/v1/requests/{{$r.ID}}/decline" data-needs-note="A reason is needed to decline. Add it in the note field.">Decline</button>{{end}}
-    {{if $can.Revoke}}<button class="btn danger" data-action="/v1/requests/{{$r.ID}}/revoke">Revoke access</button>{{end}}
+    {{if $can.Revoke}}<button class="btn danger" data-action="/v1/requests/{{$r.ID}}/revoke">{{if eq $r.Status "scheduled"}}Call off{{else}}Revoke access{{end}}</button>{{end}}
   </div>
   {{else if $can.Cancel}}
   <div class="actions decide">
@@ -60,7 +61,7 @@
       <li class="ev-{{.Type}}">
         <i></i>
         <div>
-          <b>{{.Actor}}</b> {{if eq .Type "submitted"}}requested access{{else if eq .Type "approval"}}approved{{else if eq .Type "approve_failed"}}tried to approve{{else if eq .Type "revoke_failed"}}tried to revoke{{else}}{{.Type}}{{end}}{{if eq .Via "slack"}} <span class="via" title="Identified by their Slack account's email, not by Tailscale{{with .SlackUser}} · Slack account {{.}}{{end}}">via Slack</span>{{end}}
+          <b>{{.Actor}}</b> {{if eq .Type "submitted"}}requested access{{else if eq .Type "approval"}}approved{{else if eq .Type "approve_failed"}}tried to approve{{else if eq .Type "revoke_failed"}}tried to revoke{{else if eq .Type "started"}}started the scheduled access{{else if eq .Type "start_failed"}}could not start the scheduled access{{else}}{{.Type}}{{end}}{{if eq .Via "slack"}} <span class="via" title="Identified by their Slack account's email, not by Tailscale{{with .SlackUser}} · Slack account {{.}}{{end}}">via Slack</span>{{end}}
           <span class="meta" title="{{ts .At}}">{{ago .At}}</span>
           {{with .Note}}<div class="note">{{.}}</div>{{end}}
         </div>
@@ -75,6 +76,7 @@
       <dt>Requester</dt><dd>{{$r.Requester.Actor}}</dd>
       <dt>Device</dt><dd>{{$r.Requester.DeviceName}}</dd>
       <dt>Duration</dt><dd>{{human $r.Duration}}</dd>
+      {{with $r.StartAt}}<dt>Starts</dt><dd>{{ts .}}</dd>{{end}}
       {{with $r.ExpiresAt}}<dt>Ends</dt><dd>{{ts .}}</dd>{{end}}
       {{if gt $r.ApprovalsRequired 1}}<dt>Approvals</dt><dd>{{$r.ApprovalsCounted}} of {{$r.ApprovalsRequired}}{{range $r.Approvals}}<div class="muted small">{{.Actor}}{{if eq .Via "slack"}} (via Slack){{end}} · {{ago .At}}</div>{{end}}</dd>{{end}}
       {{if and $.Admin $r.Attribute}}<dt>Device attribute</dt><dd><code>{{$r.Attribute}}</code> <a href="/v1/devices/{{$r.TargetDeviceID}}/attributes" class="small">check</a></dd>{{end}}

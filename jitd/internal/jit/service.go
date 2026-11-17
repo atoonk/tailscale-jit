@@ -398,7 +398,7 @@ func (s *Service) DeleteWorkflow(id string) error {
 			return notFound("workflow %q not found", id)
 		}
 		for _, r := range d.Requests {
-			if r.WorkflowID == id && (r.Status == StatusPending || r.Status == StatusApproved) {
+			if r.WorkflowID == id && (r.Status == StatusPending || r.Status == StatusApproved || r.Status == StatusScheduled) {
 				return conflict("workflow has %s request %s; decline or revoke it first", r.Status, r.ID)
 			}
 		}
@@ -665,7 +665,14 @@ type NewRequest struct {
 	WorkflowID string   `json:"workflow_id"`
 	Duration   Duration `json:"duration"` // default: the workflow's default_duration, else its max_duration
 	Reason     string   `json:"reason"`   // required
+	// StartAt schedules the access for later: approvers decide ahead of time,
+	// and access is granted at StartAt for Duration. Empty, or within a
+	// minute of now, means now. At most MaxScheduleAhead away.
+	StartAt *time.Time `json:"start_at,omitempty"`
 }
+
+// MaxScheduleAhead is how far ahead a request may be scheduled.
+const MaxScheduleAhead = Duration(30 * 24 * time.Hour)
 
 // MaxNoteLen bounds reasons and decision notes so a member cannot grow the
 // store without limit.
@@ -738,27 +745,49 @@ func (s *Service) submit(ctx context.Context, caller Identity, in NewRequest) (_
 		return nil, false, badRequest("cannot tell which device you are on")
 	}
 	now := s.now()
-	// One live request per flow and device: point at the existing one
-	// instead of stacking a second.
+	var startAt *time.Time
+	if in.StartAt != nil && in.StartAt.After(now.Add(time.Minute)) {
+		if in.StartAt.After(now.Add(time.Duration(MaxScheduleAhead))) {
+			return nil, false, badRequest("a request can start at most %s ahead", MaxScheduleAhead.Human())
+		}
+		t := in.StartAt.UTC().Truncate(time.Second)
+		startAt = &t
+	} else if in.StartAt != nil && in.StartAt.Before(now.Add(-time.Minute)) {
+		return nil, false, badRequest("the start time is in the past")
+	}
+	// One live request per flow and device at a time: point at an existing
+	// one whose window overlaps instead of stacking a second. Requests for
+	// different times (today, and a window next week) can coexist.
+	newStart := now
+	if startAt != nil {
+		newStart = *startAt
+	}
+	newEnd := newStart.Add(time.Duration(dur))
 	var existing *AccessRequest
 	s.Store.View(func(d *Data) {
 		for _, r := range d.Requests {
-			if r.WorkflowID == w.ID && r.TargetDeviceID == target && r.isLive(now) && (existing == nil || r.CreatedAt.After(existing.CreatedAt)) {
+			if r.WorkflowID != w.ID || r.TargetDeviceID != target || !r.isLive(now) {
+				continue
+			}
+			if start, end := r.window(now); start.Before(newEnd) && newStart.Before(end) && (existing == nil || r.CreatedAt.After(existing.CreatedAt)) {
 				existing = clone(r) // View's data must not escape
 			}
 		}
 	})
 	if existing != nil {
-		e := conflict("there is already a %s request for %q on this device (%s)", existing.Status, w.Name, existing.ID)
+		e := conflict("there is already a %s request for %q on this device for that time (%s)", existing.Status, w.Name, existing.ID)
 		e.RequestID = existing.ID
 		return nil, false, e
 	}
 	r := &AccessRequest{
 		ID: NewID("req_"), WorkflowID: w.ID, WorkflowName: w.Name, Attribute: w.Attribute, OktaGroups: w.OktaGroups, Resources: OrEmpty(w.Resources),
-		Requester: caller, TargetDeviceID: target, Duration: dur, Reason: reason,
+		Requester: caller, TargetDeviceID: target, Duration: dur, StartAt: startAt, Reason: reason,
 		Status: StatusPending, CreatedAt: now, UpdatedAt: now, ApprovalsRequired: max(1, w.ApprovalsRequired),
 	}
 	note := fmt.Sprintf("for %s: %s", dur.Human(), reason)
+	if startAt != nil {
+		note = fmt.Sprintf("for %s from %s: %s", dur.Human(), startAt.Format(timeFmt), reason)
+	}
 	r.Timeline = append(r.Timeline, Event{Type: "submitted", Actor: caller.Actor(), Note: note, Via: caller.Via, SlackUser: caller.SlackUser, At: now})
 	if err := s.Store.Update(func(d *Data) error { d.Requests[r.ID] = clone(r); return nil }); err != nil {
 		return nil, false, err
@@ -1163,19 +1192,18 @@ func (s *Service) approve(ctx context.Context, actor Identity, id, note string, 
 	return s.grant(ctx, r, w, Event{Actor: actor.Actor(), Via: actor.Via, SlackUser: actor.SlackUser}, note, !voted, og)
 }
 
-// grant gives r its access: it sets the posture attribute and records the
-// Okta memberships, expiring after r's duration (capped at the flow's
-// current maximum), and records it as approved by "by" (its Actor, Via and
-// SlackUser). The Okta calls are not made here: when the grant includes
-// Okta groups and og is nil, grant saves nothing and reports needOkta, and
-// the caller comes back with their outcome (see grantOutsideLock). If
-// granting fails, r stays pending with the error, and with popVote its
-// newest vote is dropped so the approver can retry; grant then returns r
-// and the error. Callers hold s.mu.
+// grant approves r, as decided by "by" (its Actor, Via and SlackUser). For a
+// request that starts later, it only records the approval: the request is
+// scheduled, and startDue grants the access at its start. Otherwise it sets
+// the posture attribute and records the Okta memberships now, expiring after
+// r's duration (capped at the flow's current maximum; for a scheduled
+// request approved after its start, at the end of its window). The Okta
+// calls are not made here: when the grant includes Okta groups and og is
+// nil, grant saves nothing and reports needOkta, and the caller comes back
+// with their outcome (see grantOutsideLock). If granting fails, r stays
+// pending with the error, and with popVote its newest vote is dropped so the
+// approver can retry; grant then returns r and the error. Callers hold s.mu.
 func (s *Service) grant(ctx context.Context, r *AccessRequest, w *Workflow, by Event, note string, popVote bool, og *oktaOutcome) (_ *AccessRequest, needOkta bool, _ error) {
-	if len(r.OktaGroups) > 0 && og == nil {
-		return r, true, nil
-	}
 	id := r.ID
 	now := s.now()
 	grantNote := note
@@ -1183,34 +1211,35 @@ func (s *Service) grant(ctx context.Context, r *AccessRequest, w *Workflow, by E
 		grantNote = joinNote(grantNote, fmt.Sprintf("shortened from %s to the flow's maximum of %s", r.Duration.Human(), w.MaxDuration.Human()))
 		r.Duration = w.MaxDuration
 	}
-	exp := now.Add(time.Duration(r.Duration))
-	r.Status, r.ApprovedAt, r.ExpiresAt = StatusApproved, &now, &exp
-	if r.Attribute != "" {
-		r.Attributes = []string{r.Attribute}
+	start := now
+	if r.StartAt != nil {
+		start = *r.StartAt
 	}
+	exp := start.Add(time.Duration(r.Duration))
+	if !exp.After(now) {
+		return nil, false, conflict("the requested window ended at %s; the requester should file a new request", exp.Format(timeFmt))
+	}
+	if start.After(now) {
+		// Nothing is granted yet, so nothing is added in Okta either: that
+		// happens at the start, the same way an approval does it.
+		r.Status, r.ApprovedAt, r.ExpiresAt, r.LastError = StatusScheduled, &now, &exp, ""
+		r.Timeline = append(r.Timeline, Event{Type: "approved", Actor: by.Actor, At: now, Via: by.Via, SlackUser: by.SlackUser,
+			Note: joinNote(grantNote, fmt.Sprintf("scheduled: starts %s, for %s, until %s", start.Format(timeFmt), r.Duration.Human(), exp.Format(timeFmt)))})
+		if err := s.save(r); err != nil {
+			return nil, false, err
+		}
+		s.Log.Info("access request scheduled", "id", id, "by", by.Actor, "grants", grantSummary(r.Attribute, r.OktaGroups), "starts", start, "expires", exp)
+		s.emit(r, r.Timeline[len(r.Timeline)-1])
+		return r, false, nil
+	}
+	if len(r.OktaGroups) > 0 && og == nil {
+		return r, true, nil
+	}
+	r.ApprovedAt = &now
 	actx, cancel := apiContext(ctx)
 	defer cancel()
-	var err error
-	attrTried := false
-	if og != nil && og.err != nil {
-		err = fmt.Errorf("okta: %w", og.err)
-	}
-	if err == nil && r.Attribute != "" {
-		attrTried = true
-		err = s.syncAttribute(actx, r.TargetDeviceID, r.Attribute, r)
-	}
-	if err != nil {
-		// The call may have failed after Tailscale applied it (a timeout, a
-		// lost response): put the attribute back to what the store says,
-		// best effort, so no access is left that nobody can see. Okta
-		// memberships added for this attempt are taken back by
-		// grantOutsideLock.
-		r.Status, r.ApprovedAt, r.ExpiresAt, r.Attributes, r.Okta = StatusPending, nil, nil, nil, nil
-		if attrTried {
-			if cerr := s.syncAttribute(actx, r.TargetDeviceID, r.Attribute, r); cerr != nil {
-				s.Log.Error("approve failed and the attribute could not be reset", "id", id, "err", cerr)
-			}
-		}
+	if err := s.applyGrant(actx, r, exp, StatusPending, og); err != nil {
+		r.ApprovedAt = nil
 		// Nothing was granted: drop this vote so the approver can retry.
 		if popVote {
 			r.Approvals = r.Approvals[:len(r.Approvals)-1]
@@ -1224,32 +1253,83 @@ func (s *Service) grant(ctx context.Context, r *AccessRequest, w *Workflow, by E
 		s.emit(r, r.Timeline[len(r.Timeline)-1])
 		return r, false, apiFailed("could not grant access: %s", r.LastError)
 	}
-	if og != nil {
-		// The grant is on record from here; the intent has done its job.
-		r.Okta, r.OktaAdding = og.grant, nil
-	}
 	r.LastError = ""
 	r.Timeline = append(r.Timeline, Event{Type: "approved", Actor: by.Actor, At: now, Via: by.Via, SlackUser: by.SlackUser,
-		Note: joinNote(grantNote, fmt.Sprintf("for %s, until %s", r.Duration.Human(), exp.Format("2006-01-02 15:04 MST")))})
-	s.verify(actx, r)
-	if err := s.save(r); err != nil {
-		// The attribute is on the device but the store does not say so: take
-		// it off again rather than leave access nobody can see or revoke.
-		// grantOutsideLock does the same for the Okta memberships.
-		r.Status = StatusPending
-		if r.Attribute != "" {
-			if derr := s.syncAttribute(actx, r.TargetDeviceID, r.Attribute, r); derr != nil {
-				s.Log.Error("approve: store write failed and the attribute could not be removed", "id", id, "err", derr)
-			}
-		}
+		Note: joinNote(grantNote, fmt.Sprintf("for %s, until %s", Duration(exp.Sub(now)).Human(), exp.Format(timeFmt)))})
+	if err := s.saveGranted(actx, r, StatusPending, og); err != nil {
 		return nil, false, err
-	}
-	if og != nil {
-		og.used = true
 	}
 	s.Log.Info("access request approved", "id", id, "by", by.Actor, "grants", grantSummary(r.Attribute, r.OktaGroups), "expires", exp)
 	s.emit(r, r.Timeline[len(r.Timeline)-1])
 	return r, false, nil
+}
+
+// timeFmt is how timeline notes show a time.
+const timeFmt = "2006-01-02 15:04 MST"
+
+// applyGrant sets r's posture attribute and records its Okta memberships,
+// with r approved until exp. The Okta calls were made by the caller's
+// caller, outside the service lock; og is their outcome (nil when r grants
+// no Okta groups). If Okta or the attribute failed, applyGrant puts the
+// attribute back, puts r in failStatus with no grant recorded, and returns
+// the error; the Okta memberships added for this attempt are taken back by
+// grantOutsideLock. Callers hold s.mu; actx bounds the API calls.
+func (s *Service) applyGrant(actx context.Context, r *AccessRequest, exp time.Time, failStatus Status, og *oktaOutcome) error {
+	r.Status, r.ExpiresAt = StatusApproved, &exp
+	if r.Attribute != "" {
+		r.Attributes = []string{r.Attribute}
+	}
+	var err error
+	attrTried := false
+	if og != nil && og.err != nil {
+		err = fmt.Errorf("okta: %w", og.err)
+	}
+	if err == nil && r.Attribute != "" {
+		attrTried = true
+		err = s.syncAttribute(actx, r.TargetDeviceID, r.Attribute, r)
+	}
+	if err == nil {
+		if og != nil {
+			// The grant is on record from here; the intent has done its job.
+			r.Okta, r.OktaAdding = og.grant, nil
+		}
+		return nil
+	}
+	// The call may have failed after Tailscale applied it (a timeout, a lost
+	// response): put the attribute back to what the store says, best effort,
+	// so no access is left that nobody can see.
+	r.Status, r.Attributes, r.Okta = failStatus, nil, nil
+	if failStatus == StatusPending {
+		r.ExpiresAt = nil
+	}
+	if attrTried {
+		if cerr := s.syncAttribute(actx, r.TargetDeviceID, r.Attribute, r); cerr != nil {
+			s.Log.Error("granting failed and the attribute could not be reset", "id", r.ID, "err", cerr)
+		}
+	}
+	return err
+}
+
+// saveGranted reads the grant back and saves r. If the save fails, it takes
+// the attribute off again, rather than leave access nobody can see or
+// revoke, and puts r back in failStatus; grantOutsideLock does the same for
+// the Okta memberships. Callers hold s.mu.
+func (s *Service) saveGranted(actx context.Context, r *AccessRequest, failStatus Status, og *oktaOutcome) error {
+	s.verify(actx, r)
+	err := s.save(r)
+	if err == nil {
+		if og != nil {
+			og.used = true
+		}
+		return nil
+	}
+	r.Status = failStatus
+	if r.Attribute != "" {
+		if derr := s.syncAttribute(actx, r.TargetDeviceID, r.Attribute, r); derr != nil {
+			s.Log.Error("store write failed and the attribute could not be removed", "id", r.ID, "err", derr)
+		}
+	}
+	return err
 }
 
 // verify reads the target device's attributes back and records whether the
@@ -1373,7 +1453,7 @@ func (s *Service) revoke(ctx context.Context, actor Identity, id, note string) (
 	if err != nil {
 		return nil, err
 	}
-	if r.Status != StatusApproved {
+	if r.Status != StatusApproved && r.Status != StatusScheduled {
 		return nil, conflict("request is %s, not approved", r.Status)
 	}
 	if !isSelf(actor, r.Requester) && !s.matches(ctx, w.Approvers, actor) && !s.IsAdmin(ctx, actor) {
@@ -1381,6 +1461,17 @@ func (s *Service) revoke(ctx context.Context, actor Identity, id, note string) (
 	}
 	now := s.now()
 	r.UpdatedAt = now
+	if r.Status == StatusScheduled {
+		// Nothing was granted yet: calling it off is only a record.
+		r.Status, r.LastError = StatusRevoked, ""
+		r.Timeline = append(r.Timeline, Event{Type: "revoked", Actor: actor.Actor(), Note: joinNote(note, "before it started"), Via: actor.Via, SlackUser: actor.SlackUser, At: now})
+		if err := s.save(r); err != nil {
+			return nil, err
+		}
+		s.Log.Info("scheduled access request revoked", "id", id, "by", actor.Actor())
+		s.emit(r, r.Timeline[len(r.Timeline)-1])
+		return r, nil
+	}
 	r.Status = StatusRevoked
 	actx, cancel := apiContext(ctx)
 	defer cancel()
@@ -1448,6 +1539,7 @@ func (s *Service) Cancel(ctx context.Context, actor Identity, id, note string) (
 // device is allowed, so it takes an attribute moved to another flow. The
 // attribute then carries the later expiry already.)
 func (s *Service) ExpireDue() int {
+	s.startDue()
 	n := s.expireDue()
 	octx, cancel := context.WithTimeout(context.Background(), oktaTimeout)
 	defer cancel()
@@ -1469,6 +1561,12 @@ func (s *Service) expireDue() int {
 				r.Status, r.UpdatedAt = StatusExpired, now
 				r.Timeline = append(r.Timeline, Event{Type: "expired", Actor: "system", At: now})
 				expired = append(expired, clone(r))
+			case r.Status == StatusScheduled && r.ExpiresAt != nil && !r.ExpiresAt.After(now):
+				// Its window passed without access ever starting (every
+				// attempt failed, or jitd was down for all of it).
+				r.Status, r.UpdatedAt = StatusExpired, now
+				r.Timeline = append(r.Timeline, Event{Type: "expired", Actor: "system", Note: "the scheduled window ended before access could start", At: now})
+				expired = append(expired, clone(r))
 			case r.Status == StatusPending:
 				timeout := DefaultApprovalTimeout
 				w, ok := d.Workflows[r.WorkflowID]
@@ -1484,6 +1582,18 @@ func (s *Service) expireDue() int {
 					r.Timeline = append(r.Timeline, Event{Type: "expired", Actor: "system", At: now,
 						Note: "the automatic approval did not finish (jitd was stopped meanwhile); file a new request"})
 					expired = append(expired, clone(r))
+					continue
+				}
+				if r.StartAt != nil {
+					// A request scheduled ahead stays open for a decision
+					// until its window ends, however far ahead it was
+					// filed: the flow's approval timeout is for requests
+					// that start on approval.
+					if !r.StartAt.Add(time.Duration(r.Duration)).After(now) {
+						r.Status, r.UpdatedAt = StatusExpired, now
+						r.Timeline = append(r.Timeline, Event{Type: "expired", Actor: "system", Note: "no decision before the requested window ended", At: now})
+						expired = append(expired, clone(r))
+					}
 					continue
 				}
 				if !r.CreatedAt.Add(time.Duration(timeout)).After(now) {
@@ -1512,6 +1622,114 @@ func (s *Service) expireDue() int {
 	defer cancel()
 	s.verifyRemovals(ctx)
 	return len(ids)
+}
+
+// startBatch caps how many scheduled requests one tick starts; the rest
+// start on the next tick.
+const startBatch = 20
+
+// startDue grants the access of scheduled requests whose start has come.
+// Each one goes through grantOutsideLock, the way an approval does: the
+// service lock is held for one request at a time, and the Okta calls are
+// made without it, after the memberships to add are on record. The caller
+// must not hold mu.
+func (s *Service) startDue() {
+	now := s.now()
+	var due []*AccessRequest
+	s.Store.View(func(d *Data) {
+		for _, r := range d.Requests {
+			if r.dueToStart(now) {
+				due = append(due, clone(r))
+			}
+		}
+	})
+	slices.SortFunc(due, func(a, b *AccessRequest) int { return a.StartAt.Compare(*b.StartAt) })
+	if len(due) > startBatch {
+		due = due[:startBatch]
+	}
+	ctx := context.Background()
+	for _, r := range due {
+		id := r.ID
+		// start records and logs the outcome; there is nobody to tell here.
+		_, _ = s.grantOutsideLock(ctx, id, func(og *oktaOutcome) (*AccessRequest, bool, error) {
+			return s.start(ctx, id, og)
+		})
+	}
+}
+
+// dueToStart reports whether r is scheduled and inside its window.
+func (r *AccessRequest) dueToStart(now time.Time) bool {
+	return r.Status == StatusScheduled && r.StartAt != nil && !r.StartAt.After(now) && r.ExpiresAt != nil && r.ExpiresAt.After(now)
+}
+
+// start starts one scheduled request, under the service lock. A request
+// whose flow changed (it now grants something else, or the requester may no
+// longer request through it) or was disabled or deleted is called off
+// instead. If granting fails, the request stays scheduled with the error
+// and is tried again on every tick until its window ends. Like approve, it
+// is called twice for a grant that includes Okta groups: first with og nil,
+// when it saves nothing and reports needOkta, then with the outcome of the
+// Okta calls, when it checks everything afresh.
+func (s *Service) start(ctx context.Context, id string, og *oktaOutcome) (_ *AccessRequest, needOkta bool, _ error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := s.now()
+	r := s.Request(id)
+	if r == nil || !r.dueToStart(now) {
+		return nil, false, nil // revoked, started or ended meanwhile
+	}
+	r.UpdatedAt = now
+	w, err := s.GetWorkflow(r.WorkflowID)
+	why := ""
+	switch {
+	case err != nil:
+		why = "its approval flow was deleted"
+	case w.Disabled:
+		why = "its approval flow was disabled"
+	default:
+		why = s.stale(ctx, r, w)
+	}
+	if why != "" {
+		r.Status, r.LastError = StatusRevoked, ""
+		r.Timeline = append(r.Timeline, Event{Type: "revoked", Actor: "system", Note: "not started: " + why, At: now})
+		if err := s.save(r); err != nil {
+			s.Log.Error("calling off a scheduled request", "id", r.ID, "err", err)
+			return nil, false, err
+		}
+		s.Log.Info("scheduled access request called off", "id", r.ID, "why", why)
+		s.emit(r, r.Timeline[len(r.Timeline)-1])
+		return r, false, nil
+	}
+	if len(r.OktaGroups) > 0 && og == nil {
+		return r, true, nil
+	}
+	actx, cancel := apiContext(ctx)
+	defer cancel()
+	exp := *r.ExpiresAt
+	if err := s.applyGrant(actx, r, exp, StatusScheduled, og); err != nil {
+		msg := err.Error()
+		if msg != r.LastError { // one timeline entry per distinct failure, not one per tick
+			r.Timeline = append(r.Timeline, Event{Type: "start_failed", Actor: "system", Note: msg + "; retrying until the window ends", At: now})
+		}
+		r.LastError = msg
+		if serr := s.save(r); serr != nil {
+			s.Log.Error("recording a failed scheduled start", "id", r.ID, "err", serr)
+			return nil, false, serr
+		}
+		s.Log.Info("scheduled access request could not start; will retry", "id", r.ID, "err", msg)
+		s.emit(r, r.Timeline[len(r.Timeline)-1])
+		return r, false, err
+	}
+	r.LastError = ""
+	r.Timeline = append(r.Timeline, Event{Type: "started", Actor: "system", At: now,
+		Note: fmt.Sprintf("scheduled access started, for %s, until %s", Duration(exp.Sub(now)).Human(), exp.Format(timeFmt))})
+	if err := s.saveGranted(actx, r, StatusScheduled, og); err != nil {
+		s.Log.Error("starting a scheduled request", "id", r.ID, "err", err)
+		return nil, false, err
+	}
+	s.Log.Info("scheduled access request started", "id", r.ID, "grants", grantSummary(r.Attribute, r.OktaGroups), "expires", exp)
+	s.emit(r, r.Timeline[len(r.Timeline)-1])
+	return r, false, nil
 }
 
 // verifyBatch caps how many ended requests one expiry tick reads back, so a
@@ -1645,7 +1863,7 @@ func (s *Service) Permissions(ctx context.Context, actor Identity, r *AccessRequ
 				a.Approve = true
 			}
 		}
-	case StatusApproved:
+	case StatusApproved, StatusScheduled:
 		a.Revoke = approver || isSelf(actor, r.Requester) || admin
 	}
 	return a
@@ -1702,9 +1920,34 @@ func (s *Service) lookup(d *Data, id string) (*AccessRequest, *Workflow, error) 
 	return r, w, nil
 }
 
-// isLive reports whether r is pending or approved and not yet expired.
+// isLive reports whether r is pending, scheduled or approved and not yet
+// expired.
 func (r *AccessRequest) isLive(now time.Time) bool {
-	return r.Status == StatusPending || (r.Status == StatusApproved && r.ExpiresAt != nil && r.ExpiresAt.After(now))
+	switch r.Status {
+	case StatusPending:
+		return true
+	case StatusApproved, StatusScheduled:
+		return r.ExpiresAt != nil && r.ExpiresAt.After(now)
+	}
+	return false
+}
+
+// window is when r gives (or would give) access: from its start (its
+// scheduled start, its approval, or now for a pending request that starts
+// on approval) to its end.
+func (r *AccessRequest) window(now time.Time) (start, end time.Time) {
+	switch {
+	case r.StartAt != nil:
+		start = *r.StartAt
+	case r.ApprovedAt != nil:
+		start = *r.ApprovedAt
+	default:
+		start = now
+	}
+	if r.ExpiresAt != nil {
+		return start, *r.ExpiresAt
+	}
+	return start, start.Add(time.Duration(r.Duration))
 }
 
 // isSelf reports whether a and b are the same requester: the same user, or,

@@ -19,7 +19,7 @@
 <div class="tabs">
   {{$cur := .Data.Status}}{{$counts := .Data.Counts}}
   <a href="{{$base}}?scope={{$scope}}" {{if not $cur}}class="on"{{end}}>All <em>{{.Data.Total}}</em></a>
-  {{range .Data.Statuses}}{{if or (index $counts .) (eq . "pending") (eq . "approved")}}<a href="{{$base}}?scope={{$scope}}&status={{.}}" {{if eq . $cur}}class="on"{{end}}>{{.}} <em>{{index $counts .}}</em></a>{{end}}{{end}}
+  {{range .Data.Statuses}}{{if or (index $counts .) (eq . "pending") (eq . "approved") (eq . "scheduled")}}<a href="{{$base}}?scope={{$scope}}&status={{.}}" {{if eq . $cur}}class="on"{{end}}>{{.}} <em>{{index $counts .}}</em></a>{{end}}{{end}}
 </div>
 {{if .Data.Requests}}
 <div class="scroll">
@@ -35,7 +35,7 @@
     <td><div class="reason">{{.Reason}}</div></td>
     <td class="nowrap">{{human .Duration}}</td>
     <td class="nowrap" title="{{ts .CreatedAt}}">{{ago .CreatedAt}}</td>
-    <td class="nowrap">{{if and .ExpiresAt (eq .Status "approved")}}<span title="{{ts .ExpiresAt}}">{{ago .ExpiresAt}}</span>{{else}}<span class="muted">-</span>{{end}}</td>
+    <td class="nowrap">{{if and .ExpiresAt (eq .Status "approved")}}<span title="{{ts .ExpiresAt}}">{{ago .ExpiresAt}}</span>{{else if and .StartAt (or (eq .Status "scheduled") (eq .Status "pending"))}}<span title="{{ts .StartAt}}">starts {{ago .StartAt}}</span>{{else}}<span class="muted">-</span>{{end}}</td>
   </tr>
   {{end}}
   </tbody>

@@ -226,7 +226,7 @@ func (b *Bot) onCommand(ctx context.Context, api slack.API, cmd *slack.SlashComm
 	waiting := b.Svc.ListRequests(ctx, jit.ListFilter{Viewer: id, Scope: jit.ScopeApprovals, Status: jit.StatusPending})
 	var mine []*jit.AccessRequest
 	for _, r := range b.Svc.ListRequests(ctx, jit.ListFilter{Viewer: id, Scope: jit.ScopeMine}) {
-		if r.Status == jit.StatusPending || (r.Status == jit.StatusApproved && r.ExpiresAt != nil && r.ExpiresAt.After(now)) {
+		if r.Status == jit.StatusPending || ((r.Status == jit.StatusApproved || r.Status == jit.StatusScheduled) && r.ExpiresAt != nil && r.ExpiresAt.After(now)) {
 			mine = append(mine, r)
 		}
 	}
@@ -257,8 +257,13 @@ func (b *Bot) onCommand(ctx context.Context, api slack.API, cmd *slack.SlashComm
 			break
 		}
 		state := ":hourglass_flowing_sand: waiting for approval"
-		if r.Status == jit.StatusApproved {
+		switch {
+		case r.Status == jit.StatusApproved:
 			state = ":white_check_mark: active until " + slackTime(*r.ExpiresAt)
+		case r.Status == jit.StatusScheduled:
+			state = ":calendar: scheduled: " + slackTime(*r.StartAt) + " to " + slackTime(*r.ExpiresAt)
+		case r.StartAt != nil:
+			state += ", for " + slackTime(*r.StartAt)
 		}
 		blocks = append(blocks, slack.SectionButton(slack.Mrkdwn(fmt.Sprintf("*%s* on `%s`\n%s", esc(r.WorkflowName), esc(r.Requester.DeviceName), state)),
 			slack.LinkButton(actionOpen+"_"+r.ID, "Open", b.requestLink(r.ID))))

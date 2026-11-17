@@ -99,6 +99,8 @@ func statusEmoji(r *jit.AccessRequest) string {
 		return ":hourglass_flowing_sand:"
 	case jit.StatusApproved:
 		return ":white_check_mark:"
+	case jit.StatusScheduled:
+		return ":calendar:"
 	case jit.StatusDeclined:
 		return ":x:"
 	case jit.StatusRevoked:
@@ -136,11 +138,20 @@ func statusLine(r *jit.AccessRequest, counted int) string {
 	switch r.Status {
 	case jit.StatusPending:
 		s := "Waiting for approval"
+		if r.StartAt != nil {
+			s += " for " + slackTime(*r.StartAt)
+		}
 		if r.ApprovalsRequired > 1 {
 			s += fmt.Sprintf(" (%d of %d)", counted, r.ApprovalsRequired)
 		}
 		if r.LastError != "" {
 			s += "\n:warning: the last approval failed: " + esc(r.LastError)
+		}
+		return s
+	case jit.StatusScheduled:
+		s := "Approved by " + by("approved") + "; starts " + slackTime(*r.StartAt) + ", until " + slackTime(*r.ExpiresAt)
+		if r.LastError != "" {
+			s += "\n:warning: could not start yet: " + esc(r.LastError) + " (retrying)"
 		}
 		return s
 	case jit.StatusApproved:

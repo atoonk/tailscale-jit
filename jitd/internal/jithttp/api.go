@@ -132,9 +132,9 @@ func (s *Server) Handler() http.Handler {
 			return
 		}
 		switch f.Status {
-		case "", jit.StatusPending, jit.StatusApproved, jit.StatusDeclined, jit.StatusExpired, jit.StatusRevoked, jit.StatusCancelled:
+		case "", jit.StatusPending, jit.StatusScheduled, jit.StatusApproved, jit.StatusDeclined, jit.StatusExpired, jit.StatusRevoked, jit.StatusCancelled:
 		default:
-			writeErr(w, &jit.Error{Code: "bad_request", Status: http.StatusBadRequest, Message: "status must be pending, approved, declined, cancelled, expired or revoked"})
+			writeErr(w, &jit.Error{Code: "bad_request", Status: http.StatusBadRequest, Message: "status must be pending, scheduled, approved, declined, cancelled, expired or revoked"})
 			return
 		}
 		rs := s.Svc.ListRequests(r.Context(), f)

@@ -431,7 +431,7 @@ func (s *Server) requestsPage(w http.ResponseWriter, r *http.Request, admin bool
 		"Status":   st,
 		"Scope":    scope,
 		"Requests": s.Svc.ListRequests(r.Context(), jit.ListFilter{Viewer: id, Scope: scope, Status: st}),
-		"Statuses": []jit.Status{jit.StatusPending, jit.StatusApproved, jit.StatusDeclined, jit.StatusExpired, jit.StatusRevoked, jit.StatusCancelled},
+		"Statuses": []jit.Status{jit.StatusPending, jit.StatusScheduled, jit.StatusApproved, jit.StatusDeclined, jit.StatusExpired, jit.StatusRevoked, jit.StatusCancelled},
 		"Counts":   counts,
 		"Total":    len(all),
 	}
