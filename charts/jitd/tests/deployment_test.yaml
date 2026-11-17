@@ -28,12 +28,12 @@ tests:
           path: spec.template.spec.initContainers[0].env
           content:
             name: JITD_URL
-            value: https://github.com/atoonk/tailscale-jit/releases/download/v0.7.0/jitd-linux-arm64
+            value: https://github.com/atoonk/tailscale-jit/releases/download/v0.8.0/jitd-linux-arm64
       - contains:
           path: spec.template.spec.initContainers[0].env
           content:
             name: JITD_SHA256
-            value: 8acdec7af679516391b13cfa178d3535ff2fb38afb9fd5c628ea2305dbcb90ed
+            value: e96f3016faac312da0c4bb144dc26968844be79898c41f41404d9365b5def667
       - equal:
           path: spec.template.spec.nodeSelector["kubernetes.io/arch"]
           value: arm64

@@ -16,8 +16,8 @@ release:
   # entries below match the chart's appVersion; change them together with
   # release.version.
   sha256:
-    amd64: 506462b2fe06446a43d7427e491945b0a914b67fe439c229b62f345520f20be6
-    arm64: 8acdec7af679516391b13cfa178d3535ff2fb38afb9fd5c628ea2305dbcb90ed
+    amd64: 527ebca8cd0f1955284935eb3776f099e764a3d394649ef9578992e389691ced
+    arm64: e96f3016faac312da0c4bb144dc26968844be79898c41f41404d9365b5def667
   # Full download URL, for a mirror. Overrides repository, version and arch.
   url: ""
 

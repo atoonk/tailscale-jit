@@ -139,7 +139,7 @@ install -m 755 jitd-darwin-arm64 jitd
 ```
 
 `latest/download` is whatever the newest release is. To pin a version, put
-`download/v0.7.0` in place of `latest/download` in both URLs.
+`download/v0.8.0` in place of `latest/download` in both URLs.
 
 If you download it in a browser instead, macOS quarantines it: run
 `xattr -d com.apple.quarantine jitd` before starting it.
@@ -218,7 +218,7 @@ The checksum only says the download is intact; `uname -m` is what makes it
 the right file for this machine.
 
 `latest/download` is whatever the newest release is. To pin a version, put
-`download/v0.7.0` in place of `latest/download` in both URLs. Later, to
+`download/v0.8.0` in place of `latest/download` in both URLs. Later, to
 move to a new release, see
 [Upgrading to a new release](#upgrading-to-a-new-release).
 
@@ -1056,7 +1056,7 @@ Back up the database first, as in step 1 below.
    that is running, and check it against the release's checksums. Let
    `uname -m` choose the architecture rather than going by the instance
    type: the wrong file installs happily and fails only at the restart, as
-   `Exec format error`. For a specific version, put `download/v0.7.0` in
+   `Exec format error`. For a specific version, put `download/v0.8.0` in
    place of `latest/download`.
 
    ```sh
