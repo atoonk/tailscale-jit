@@ -191,7 +191,7 @@ const openAPISpec = `{
     "schemas": {
       "Setup": {"type": "object", "properties": {
         "checked_at": {"type": "string", "format": "date-time"}, "ok": {"type": "boolean"},
-        "credentials": {"type": "object", "properties": {"kind": {"type": "string", "enum": ["oauth", "api_key", ""]}, "file": {"type": "string"}, "file_exists": {"type": "boolean"}, "file_error": {"type": "string"}, "from_file": {"type": "array", "items": {"type": "string"}}, "from_env": {"type": "array", "items": {"type": "string"}}}},
+        "credentials": {"type": "object", "properties": {"kind": {"type": "string", "enum": ["oauth", "api_key", "federated", ""]}, "file": {"type": "string"}, "file_exists": {"type": "boolean"}, "file_error": {"type": "string"}, "from_file": {"type": "array", "items": {"type": "string"}}, "from_env": {"type": "array", "items": {"type": "string"}}}},
         "node": {"type": "object", "properties": {"id": {"type": "string"}, "dns_name": {"type": "string"}, "tags": {"type": "array", "items": {"type": "string"}}}},
         "tag": {"type": "string"},
         "transient": {"type": "boolean", "description": "A check failed for a reason that says nothing about the credential (e.g. network); it stays in use and the check is retried"},

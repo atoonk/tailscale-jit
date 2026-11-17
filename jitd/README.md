@@ -401,6 +401,27 @@ A credential set there wins over one saved on the page, and the page then
 shows the check without the form. A changed file needs no restart: click
 **Check again**.
 
+**Rather store no secret at all?** Where jitd's platform issues it an OIDC
+identity token (a Kubernetes service account token, a cloud workload
+identity), use a **federated identity** instead of the OAuth client:
+[workload identity federation](https://tailscale.com/kb/1581/workload-identity-federation).
+Create it under **Settings → Trust credentials → New credential → OpenID
+Connect**, with the issuer and subject of jitd's token and the same scopes
+as the OAuth client above. Then set:
+
+```sh
+TS_OAUTH_CLIENT_ID=<the federated identity's client ID>
+TS_ID_TOKEN=file:/path/to/token
+```
+
+`TS_ID_TOKEN` is the token itself, or `file:` and a path to read it from.
+jitd exchanges it for a short-lived Tailscale API token and exchanges again
+before that one expires, reading the file each time, so a token the platform
+rotates (as Kubernetes does with projected service account tokens) keeps
+working. On Kubernetes the chart sets this up with `federatedIdentity.*` (see
+its README). If `TS_OAUTH_CLIENT_SECRET` is also set, the OAuth client is
+used.
+
 The other tabs under Integrations (Slack, Okta, Google Groups) are optional and work the
 same way: steps, a form, and a test before anything is saved.
 
@@ -1177,7 +1198,7 @@ expired attribute about a minute after the expiry time (we measured about
 | `-admins` | none | who may manage flows and see every request: logins, `group:`, `tag:` (not `autogroup:admin`; use a group such as `group:jit-admins`). With a group, adding an admin is a policy edit that takes effect within a minute, no restart |
 | `-state-dir` | `tsnet-state` | the node's identity; keep it |
 | `-data` | `jit.db` | the SQLite database with the approval flows and access requests. Name an older jitd's `.json` file and jitd uses the `.db` of the same name, filled from the `.json` the first time |
-| `-env-file` | `~/.config/jitd/env` (Linux), `~/Library/Application Support/jitd/env` (macOS) | optional: credentials you would rather keep out of the database. They win over what is saved on the Integrations pages. Tailscale API: `TS_OAUTH_CLIENT_ID` and `TS_OAUTH_CLIENT_SECRET`, or `TS_API_KEY`. Also `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN` and `SLACK_ALLOWED_DOMAINS` (see Slack), the `OKTA_*` settings (see Okta groups) and `GOOGLE_SERVICE_ACCOUNT_JSON` (see Google groups) |
+| `-env-file` | `~/.config/jitd/env` (Linux), `~/Library/Application Support/jitd/env` (macOS) | optional: credentials you would rather keep out of the database. They win over what is saved on the Integrations pages. Tailscale API: `TS_OAUTH_CLIENT_ID` with `TS_OAUTH_CLIENT_SECRET` (OAuth client) or `TS_ID_TOKEN` (federated identity), or `TS_API_KEY`. Also `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN` and `SLACK_ALLOWED_DOMAINS` (see Slack), the `OKTA_*` settings (see Okta groups) and `GOOGLE_SERVICE_ACCOUNT_JSON` (see Google groups) |
 | `-hostname` | `jit` | the machine name on the tailnet |
 | `-tag` | `tag:jit` | the tag jitd runs as, used in the policy snippet |
 | `-https` | off | serve :443 with a Tailscale certificate and redirect :80; needs HTTPS turned on for the tailnet (admin console → DNS) |

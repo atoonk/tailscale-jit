@@ -169,6 +169,21 @@ func TestEnvironmentFillsIn(t *testing.T) {
 	}
 }
 
+// A federated identity (client ID plus an ID token, here from the
+// environment as on Kubernetes) is a complete credential.
+func TestFederatedIdentityFromEnvironment(t *testing.T) {
+	c, _ := newChecker(t, &fakeTS{}, "")
+	t.Setenv("TS_OAUTH_CLIENT_ID", "fid")
+	t.Setenv("TS_ID_TOKEN", "file:/var/run/secrets/tailscale/token")
+	res := c.Run(context.Background())
+	if !res.OK || res.Credentials.Kind != "federated" || strings.Join(res.Credentials.FromEnv, ",") != "TS_OAUTH_CLIENT_ID,TS_ID_TOKEN" {
+		t.Errorf("got ok=%v creds=%+v", res.OK, res.Credentials)
+	}
+	if got := byName(res, "Credentials"); !got.OK || !strings.HasPrefix(got.Detail, "federated identity:") {
+		t.Errorf("credentials check = %+v", got)
+	}
+}
+
 // A network failure says nothing about the credential: keep it in use.
 func TestRunTransientKeepsClient(t *testing.T) {
 	ts := &fakeTS{policyErr: errors.New("dial tcp: i/o timeout")}
