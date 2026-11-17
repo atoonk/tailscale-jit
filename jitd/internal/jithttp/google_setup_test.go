@@ -123,10 +123,14 @@ func TestGoogleSetupPage(t *testing.T) {
 	_, body := getPage(t, srv, "root", "/admin/integrations/google")
 	for _, want := range []string{"Connect Google", "Cloud Identity API", "Create service account", "Groups Admin", "Assign service accounts",
 		"iam.disableServiceAccountKeyCreation", `data-form="google-save"`, `name="key"`,
+		`href="https://console.cloud.google.com/apis/library/cloudidentity.googleapis.com"`, `href="https://console.cloud.google.com/iam-admin/serviceaccounts"`,
 		`name="allowed_domains" value="example.com"`, `name="grant_allowlist" value="*"`, "GOOGLE_SERVICE_ACCOUNT_JSON"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the page before setup lacks %q", want)
 		}
+	}
+	if strings.Contains(body, `href=""`) {
+		t.Error("the page before setup has a link that goes nowhere")
 	}
 	for _, not := range []string{`id="googleremove"`, `data-form="google-check"`, "coming soon"} {
 		if strings.Contains(body, not) {
@@ -184,6 +188,9 @@ func TestGoogleSetupPage(t *testing.T) {
 		t.Error("the page after setup still shows the first-time steps")
 	}
 	// No flow names a group yet, so nothing has shown the role.
+	if strings.Contains(body, `href=""`) {
+		t.Error("the page after setup has a link that goes nowhere")
+	}
 	if strings.Contains(body, ">working<") || strings.Contains(body, "can see a group") {
 		t.Error("the page says Google works before jitd has seen a single group")
 	}

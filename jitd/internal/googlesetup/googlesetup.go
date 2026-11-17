@@ -207,6 +207,9 @@ func (m *Manager) Status() Status {
 		st.GrantAllowlist = shown(lim.Grant)
 		st.Domains = append(st.Domains, lim.Domains...)
 	}
+	// Without a key there is no project to name: the link then opens the
+	// API in whichever project the console has selected.
+	st.EnableURL = google.EnableURL("")
 	env, err := m.env()
 	if err != nil {
 		// The env file cannot be read, so jitd cannot tell what it sets.
