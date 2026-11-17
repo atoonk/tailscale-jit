@@ -43,7 +43,7 @@ type Check struct {
 
 // Credentials says where the credentials came from, never what they are.
 type Credentials struct {
-	Kind       string `json:"kind"` // "oauth", "api_key" or ""
+	Kind       string `json:"kind"` // "oauth", "api_key", "federated" or ""
 	File       string `json:"file"` // the file jitd reads them from
 	FileExists bool   `json:"file_exists"`
 	FileError  string `json:"file_error,omitempty"`
@@ -234,7 +234,7 @@ func (c *Checker) check(ctx context.Context, vars map[string]string, cred Creden
 		step("Node tag", true, fmt.Sprintf("tagged %s", c.Tag), "")
 	}
 
-	kindName := map[string]string{"oauth": "OAuth client", "api_key": "API access token"}
+	kindName := map[string]string{"oauth": "OAuth client", "api_key": "API access token", "federated": "federated identity"}
 	switch {
 	case cred.FileError != "":
 		step("Credentials", false, cred.FileError, "Fix the file so jitd can read it (it needs KEY=VALUE lines, readable by the user jitd runs as), then click Check again.")

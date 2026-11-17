@@ -28,7 +28,7 @@ The keys jitd reads:
 
 | Key | For |
 | :-- | :-- |
-| `TS_OAUTH_CLIENT_ID`, `TS_OAUTH_CLIENT_SECRET` | The Tailscale API (or `TS_API_KEY`) |
+| `TS_OAUTH_CLIENT_ID`, `TS_OAUTH_CLIENT_SECRET` | The Tailscale API (or `TS_API_KEY`). Not needed with `federatedIdentity.*`, below. |
 | `TS_AUTHKEY` | Joining the tailnet on first start. Optional: without it, jitd logs a login URL. |
 | `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN` | Slack (optional) |
 | `OKTA_API_TOKEN`, or `OKTA_CLIENT_ID` and `OKTA_PRIVATE_KEY` | Okta groups (optional) |
@@ -54,6 +54,26 @@ Either way, jitd is then at `http://jit/`; continue with step 4 of the install g
 
 The auth key is used only on the first start, while the volume holds no node identity. You can remove it from the Secret afterwards.
 
+### No Tailscale API secret: federated identity
+
+Instead of an OAuth client secret, jitd can authenticate to the Tailscale API with its service account token through a Tailscale [federated identity](https://tailscale.com/kb/1581/workload-identity-federation):
+
+1. Find the cluster's OIDC issuer URL. It must be publicly reachable: `kubectl get --raw /.well-known/openid-configuration` shows it.
+2. In the admin console, **Settings → Trust credentials → New credential → OpenID Connect → Custom issuer**:
+   - issuer: that URL;
+   - subject: `system:serviceaccount:<namespace>:<service account>` (`system:serviceaccount:jitd:jitd` for the install above);
+   - scopes: the OAuth client's (Devices → Posture attributes: Write, Devices → Core: Read, Policy file: Read).
+3. Install with its client ID and audience, and without `TS_OAUTH_CLIENT_SECRET` in the Secret:
+
+```sh
+helm install jitd ./charts/jitd -n jitd \
+  --set federatedIdentity.clientId=<client ID> \
+  --set federatedIdentity.audience=api.tailscale.com/<client ID> \
+  --set 'admins={you@example.com}'
+```
+
+The chart mounts the service account's token for that audience, and sets `TS_OAUTH_CLIENT_ID` and `TS_ID_TOKEN`. The kubelet rotates the token, and jitd re-reads it for each exchange. The default service account token stays unmounted.
+
 ## Values
 
 The main ones, all in [values.yaml](values.yaml):
@@ -63,6 +83,7 @@ The main ones, all in [values.yaml](values.yaml):
 | `admins` | `[]` | Who manages approval flows and sees every request (`-admins`). Include at least one login. |
 | `credentials.existingSecret` | `""` | Secret with the keys above, loaded as environment variables |
 | `credentials.values` | `{}` | Or have the chart create the Secret from these values. Avoid in production. |
+| `federatedIdentity.clientId` / `.audience` | `""` | Tailscale API through a federated identity instead of an OAuth client secret (above) |
 | `env` | `{}` | Plain environment variables, e.g. `OKTA_ORG_URL`, `OKTA_GRANT_ALLOWLIST` |
 | `hostname` | `jit` | The node's tailnet name |
 | `tag` | `tag:jit` | The node's tag, used in the policy snippet |

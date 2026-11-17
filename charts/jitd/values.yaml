@@ -65,6 +65,21 @@ credentials:
   # the values end up in your Helm release and wherever you keep values files.
   values: {}
 
+# Tailscale API access with a federated identity (workload identity
+# federation) instead of an OAuth client secret: nothing to store. Create one
+# under Settings -> Trust credentials -> OpenID Connect -> Custom issuer, with
+# this cluster's OIDC issuer URL, subject
+# system:serviceaccount:<namespace>:<service account> and the same scopes as
+# the OAuth client (Devices -> Posture attributes: Write, Devices -> Core:
+# Read, Policy file: Read). jitd then exchanges its service account token,
+# issued for `audience`, for Tailscale API tokens. Leave the credentials
+# Secret without TS_OAUTH_CLIENT_SECRET / TS_API_KEY, which would win.
+federatedIdentity:
+  # The federated identity's client ID. Empty: not used.
+  clientId: ""
+  # The audience Tailscale expects: api.tailscale.com/<client ID>.
+  audience: ""
+
 # Plain (non-secret) environment variables, e.g.
 #   OKTA_ORG_URL: https://example.okta.com
 #   OKTA_GRANT_ALLOWLIST: jit-*

@@ -6,6 +6,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -181,5 +183,135 @@ func TestOAuth(t *testing.T) {
 func TestNoCredentials(t *testing.T) {
 	if _, err := NewFromValues(context.Background(), "", map[string]string{"TS_OAUTH_CLIENT_ID": "only-half"}); err == nil {
 		t.Fatal("expected error without credentials")
+	}
+}
+
+// fakeFederated serves /api/v2/oauth/token-exchange: it accepts client_id
+// "fid" with any jwt in jwts, returning an access token named after the jwt,
+// and records each jwt exchanged. Other paths are API calls that record the
+// Authorization header.
+func fakeFederated(t *testing.T, expiresIn string) (*httptest.Server, *[]string, *[]string) {
+	t.Helper()
+	var exchanged, auths []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v2/oauth/token-exchange" {
+			r.ParseForm()
+			if r.Method != http.MethodPost || r.Form.Get("client_id") != "fid" || r.Form.Get("jwt") == "" {
+				http.Error(w, `{"message":"invalid client or token"}`, http.StatusUnauthorized)
+				return
+			}
+			exchanged = append(exchanged, r.Form.Get("jwt"))
+			w.Header().Set("Content-Type", "application/json")
+			io.WriteString(w, `{"access_token":"ts-for-`+r.Form.Get("jwt")+`","token_type":"Bearer"`+expiresIn+`}`)
+			return
+		}
+		auths = append(auths, r.Header.Get("Authorization"))
+		io.WriteString(w, `{}`)
+	}))
+	t.Cleanup(srv.Close)
+	return srv, &exchanged, &auths
+}
+
+func TestCredentialKind(t *testing.T) {
+	for _, tc := range []struct {
+		vars map[string]string
+		want string
+	}{
+		{map[string]string{"TS_API_KEY": "k"}, "api_key"},
+		{map[string]string{"TS_OAUTH_CLIENT_ID": "id", "TS_OAUTH_CLIENT_SECRET": "s"}, "oauth"},
+		{map[string]string{"TS_OAUTH_CLIENT_ID": "id", "TS_ID_TOKEN": "jwt"}, "federated"},
+		// A secret wins over an ID token.
+		{map[string]string{"TS_OAUTH_CLIENT_ID": "id", "TS_OAUTH_CLIENT_SECRET": "s", "TS_ID_TOKEN": "jwt"}, "oauth"},
+		{map[string]string{"TS_ID_TOKEN": "jwt"}, ""},
+		{map[string]string{"TS_OAUTH_CLIENT_ID": "id"}, ""},
+	} {
+		if got := CredentialKind(tc.vars); got != tc.want {
+			t.Errorf("CredentialKind(%v) = %q, want %q", tc.vars, got, tc.want)
+		}
+	}
+}
+
+func TestFederatedIdentity(t *testing.T) {
+	srv, exchanged, auths := fakeFederated(t, `,"expires_in":3600`)
+	c, err := NewFromValues(context.Background(), srv.URL, map[string]string{"TS_OAUTH_CLIENT_ID": "fid", "TS_ID_TOKEN": "jwt-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if _, err := c.GetAttributes(context.Background(), "n1"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(*exchanged) != 1 || (*exchanged)[0] != "jwt-1" {
+		t.Errorf("exchanged = %v, want one exchange of jwt-1 (the token is reused until it expires)", *exchanged)
+	}
+	for _, a := range *auths {
+		if a != "Bearer ts-for-jwt-1" {
+			t.Errorf("auth = %q", a)
+		}
+	}
+}
+
+// A token file is read again for each exchange, since platforms rotate the
+// tokens in it.
+func TestFederatedIdentityTokenFile(t *testing.T) {
+	// A 1s token is already inside oauth2's 10s renewal window, so each API
+	// call exchanges again.
+	srv, exchanged, auths := fakeFederated(t, `,"expires_in":1`)
+	path := t.TempDir() + "/token"
+	if err := os.WriteFile(path, []byte("jwt-a\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c, err := NewFromValues(context.Background(), srv.URL, map[string]string{"TS_OAUTH_CLIENT_ID": "fid", "TS_ID_TOKEN": "file:" + path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.GetAttributes(context.Background(), "n1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("jwt-b"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.GetAttributes(context.Background(), "n1"); err != nil {
+		t.Fatal(err)
+	}
+	if got := *exchanged; len(got) != 2 || got[0] != "jwt-a" || got[1] != "jwt-b" {
+		t.Errorf("exchanged = %v, want [jwt-a jwt-b]", got)
+	}
+	if got := *auths; len(got) != 2 || got[1] != "Bearer ts-for-jwt-b" {
+		t.Errorf("auths = %v", got)
+	}
+}
+
+func TestFederatedIdentityNoExpiry(t *testing.T) {
+	srv, _, _ := fakeFederated(t, "")
+	src := &federatedTokenSource{ctx: context.Background(), tokenURL: srv.URL + "/api/v2/oauth/token-exchange", clientID: "fid", idToken: "jwt"}
+	tok, err := src.Token()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if left := time.Until(tok.Expiry); left <= 0 || left > federatedTokenFallbackTTL {
+		t.Errorf("expiry in %v, want within %v", left, federatedTokenFallbackTTL)
+	}
+}
+
+func TestFederatedIdentityErrors(t *testing.T) {
+	srv, _, _ := fakeFederated(t, `,"expires_in":3600`)
+	if _, err := NewFromValues(context.Background(), srv.URL, map[string]string{"TS_OAUTH_CLIENT_ID": "fid", "TS_ID_TOKEN": "file:" + t.TempDir() + "/missing"}); err == nil || !strings.Contains(err.Error(), "TS_ID_TOKEN") {
+		t.Errorf("missing token file: err = %v", err)
+	}
+	empty := t.TempDir() + "/empty"
+	os.WriteFile(empty, nil, 0o600)
+	if _, err := NewFromValues(context.Background(), srv.URL, map[string]string{"TS_OAUTH_CLIENT_ID": "fid", "TS_ID_TOKEN": "file:" + empty}); err == nil || !strings.Contains(err.Error(), "empty") {
+		t.Errorf("empty token file: err = %v", err)
+	}
+	// A rejected exchange surfaces the status and Tailscale's message on the API call.
+	c, err := NewFromValues(context.Background(), srv.URL, map[string]string{"TS_OAUTH_CLIENT_ID": "wrong", "TS_ID_TOKEN": "jwt"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = c.GetAttributes(context.Background(), "n1")
+	if err == nil || !strings.Contains(err.Error(), "401") || !strings.Contains(err.Error(), "invalid client or token") {
+		t.Errorf("rejected exchange: err = %v", err)
 	}
 }

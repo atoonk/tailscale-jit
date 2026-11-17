@@ -13,6 +13,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -132,26 +133,30 @@ type HTTP struct {
 }
 
 // CredentialVars are the variables NewFromValues looks at.
-var CredentialVars = []string{"TS_API_KEY", "TS_OAUTH_CLIENT_ID", "TS_OAUTH_CLIENT_SECRET"}
+var CredentialVars = []string{"TS_API_KEY", "TS_OAUTH_CLIENT_ID", "TS_OAUTH_CLIENT_SECRET", "TS_ID_TOKEN"}
 
 // ErrNoCredentials is returned when none of CredentialVars is set.
-var ErrNoCredentials = errors.New("no Tailscale API credentials: set TS_API_KEY, or TS_OAUTH_CLIENT_ID and TS_OAUTH_CLIENT_SECRET")
+var ErrNoCredentials = errors.New("no Tailscale API credentials: set TS_API_KEY, or TS_OAUTH_CLIENT_ID with TS_OAUTH_CLIENT_SECRET (an OAuth client) or TS_ID_TOKEN (a federated identity)")
 
 // CredentialKind says which credential a set of variables holds: "api_key",
-// "oauth", or "" if neither is complete.
+// "oauth", "federated", or "" if none is complete. An OAuth client secret
+// wins over an ID token when both are set.
 func CredentialKind(vars map[string]string) string {
 	switch {
 	case vars["TS_API_KEY"] != "":
 		return "api_key"
 	case vars["TS_OAUTH_CLIENT_ID"] != "" && vars["TS_OAUTH_CLIENT_SECRET"] != "":
 		return "oauth"
+	case vars["TS_OAUTH_CLIENT_ID"] != "" && vars["TS_ID_TOKEN"] != "":
+		return "federated"
 	}
 	return ""
 }
 
-// NewFromValues builds an authenticated client from TS_API_KEY, or from
-// TS_OAUTH_CLIENT_ID and TS_OAUTH_CLIENT_SECRET (scopes are fixed on the OAuth
-// client in the admin console), taken from vars.
+// NewFromValues builds an authenticated client from vars: TS_API_KEY;
+// TS_OAUTH_CLIENT_ID and TS_OAUTH_CLIENT_SECRET (an OAuth client, scopes
+// fixed on it in the admin console); or TS_OAUTH_CLIENT_ID and TS_ID_TOKEN (a
+// federated identity, see federatedTokenSource).
 func NewFromValues(ctx context.Context, baseURL string, vars map[string]string) (*HTTP, error) {
 	if baseURL == "" {
 		baseURL = DefaultBaseURL
@@ -168,11 +173,87 @@ func NewFromValues(ctx context.Context, baseURL string, vars map[string]string) 
 			TokenURL:     baseURL + "/api/v2/oauth/token",
 		}
 		hc = cfg.Client(ctx)
+	case "federated":
+		src := &federatedTokenSource{
+			ctx:      ctx,
+			tokenURL: baseURL + "/api/v2/oauth/token-exchange",
+			clientID: vars["TS_OAUTH_CLIENT_ID"],
+			idToken:  vars["TS_ID_TOKEN"],
+		}
+		// Fail now on a token file that can't be read, rather than on the
+		// first API call.
+		if _, err := src.readIDToken(); err != nil {
+			return nil, err
+		}
+		hc = oauth2.NewClient(ctx, oauth2.ReuseTokenSource(nil, src))
 	default:
 		return nil, ErrNoCredentials
 	}
 	return &HTTP{BaseURL: baseURL, HC: hc, Timeout: 15 * time.Second}, nil
 }
+
+// federatedTokenSource gets Tailscale API tokens with workload identity
+// federation: it exchanges an OIDC ID token from another issuer (a
+// Kubernetes service account token, a cloud provider's identity token) for
+// a short-lived Tailscale access token, through a federated identity set up
+// under Settings -> Trust credentials. The scopes and tags are fixed on the
+// federated identity, like an OAuth client's; no secret is stored.
+//
+// idToken is the token itself, or "file:<path>" to read it from a file. The
+// file is read again for every exchange, since platforms rotate these
+// tokens (Kubernetes projected service account tokens, for one).
+type federatedTokenSource struct {
+	ctx      context.Context
+	tokenURL string
+	clientID string
+	idToken  string
+}
+
+func (f *federatedTokenSource) readIDToken() (string, error) {
+	path, ok := strings.CutPrefix(f.idToken, "file:")
+	if !ok {
+		return f.idToken, nil
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("reading TS_ID_TOKEN: %w", err)
+	}
+	tok := strings.TrimSpace(string(b))
+	if tok == "" {
+		return "", fmt.Errorf("reading TS_ID_TOKEN: %s is empty", path)
+	}
+	return tok, nil
+}
+
+// Token exchanges the ID token the same way tailscale up does
+// (tailscale.com/feature/identityfederation): a token request to
+// /api/v2/oauth/token-exchange with client_id and jwt.
+func (f *federatedTokenSource) Token() (*oauth2.Token, error) {
+	jwt, err := f.readIDToken()
+	if err != nil {
+		return nil, err
+	}
+	cfg := oauth2.Config{Endpoint: oauth2.Endpoint{TokenURL: f.tokenURL, AuthStyle: oauth2.AuthStyleInParams}}
+	tok, err := cfg.Exchange(f.ctx, "", oauth2.SetAuthURLParam("client_id", f.clientID), oauth2.SetAuthURLParam("jwt", jwt))
+	if err != nil {
+		var re *oauth2.RetrieveError
+		if errors.As(err, &re) && re.Response != nil {
+			return nil, fmt.Errorf("federated identity token exchange failed (%d): %s", re.Response.StatusCode, strings.TrimSpace(string(re.Body)))
+		}
+		return nil, fmt.Errorf("federated identity token exchange: %w", err)
+	}
+	// Without expires_in the token would be reused forever. Tailscale's
+	// access tokens last an hour; assume less so a fresh one is fetched in
+	// time.
+	if tok.Expiry.IsZero() {
+		tok.Expiry = time.Now().Add(federatedTokenFallbackTTL)
+	}
+	return tok, nil
+}
+
+// federatedTokenFallbackTTL is how long a token exchanged without an expiry
+// is used before exchanging again.
+const federatedTokenFallbackTTL = 50 * time.Minute
 
 // Switchable is a Client whose backing client can be replaced while jitd
 // runs, so credentials fixed through the setup page take effect without a

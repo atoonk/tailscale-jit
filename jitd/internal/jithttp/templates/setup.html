@@ -67,12 +67,13 @@
     <li>On the host running jitd, put them in <code>{{.Credentials.File}}</code>, one per line, readable only by the user jitd runs as (<code>chmod 600</code>):
 <pre class="code">TS_OAUTH_CLIENT_ID=...
 TS_OAUTH_CLIENT_SECRET=tskey-client-...</pre>
-      An API access token (<code>TS_API_KEY=tskey-api-...</code>) works too, but it expires after at most 90 days; an OAuth client does not.</li>
+      An API access token (<code>TS_API_KEY=tskey-api-...</code>) works too, but it expires after at most 90 days; an OAuth client does not.
+      Where jitd's platform issues it an OIDC identity token (a Kubernetes service account token, say), a <b>federated identity</b> with the same scopes needs no secret: set <code>TS_OAUTH_CLIENT_ID</code> to its client ID and <code>TS_ID_TOKEN</code> to the token, or to <code>file:&lt;path&gt;</code> to read it from a file (re-read as it rotates).</li>
     <li>Come back here and click <b>Check again</b>. No restart is needed; jitd re-reads the file and starts using the new credential if the checks pass.</li>
   </ol>
   <p class="muted small">Variables set in jitd's environment are used for anything the file does not set (for example when it runs in a container). Another file can be chosen with <code>jitd -env-file</code>.</p>
 {{if .Credentials.Shadowed}}  <p>A credential saved on this page is not in use: the file or the environment sets one, and that one wins. <button class="btn sm danger" type="button" id="tsremove">Remove the saved one</button></p>
-{{else if .Credentials.CanSave}}  <p class="muted small">To manage the credential on this page instead, take the <code>TS_OAUTH_CLIENT_ID</code>, <code>TS_OAUTH_CLIENT_SECRET</code> and <code>TS_API_KEY</code> lines out there (and out of jitd's environment), then click <b>Check again</b>.</p>
+{{else if .Credentials.CanSave}}  <p class="muted small">To manage the credential on this page instead, take the <code>TS_OAUTH_CLIENT_ID</code>, <code>TS_OAUTH_CLIENT_SECRET</code>, <code>TS_ID_TOKEN</code> and <code>TS_API_KEY</code> lines out there (and out of jitd's environment), then click <b>Check again</b>.</p>
 {{end}}</section>
 {{end}}
 {{if $first}}{{template "tschecks" .}}{{end}}
@@ -82,7 +83,7 @@ TS_OAUTH_CLIENT_SECRET=tskey-client-...</pre>
 <section class="card">
   <h2>Credentials</h2>
   <table class="plain">
-    <tr><td>Type</td><td>{{if eq .Credentials.Kind "oauth"}}OAuth client{{else if eq .Credentials.Kind "api_key"}}API access token{{else}}<span class="warn">none</span>{{end}}</td></tr>
+    <tr><td>Type</td><td>{{if eq .Credentials.Kind "oauth"}}OAuth client{{else if eq .Credentials.Kind "api_key"}}API access token{{else if eq .Credentials.Kind "federated"}}Federated identity{{else}}<span class="warn">none</span>{{end}}</td></tr>
     <tr><td>File</td><td><code>{{.Credentials.File}}</code>{{if .Credentials.FileExists}} <span class="muted">(present)</span>{{else if .Credentials.CanSave}} <span class="muted">(not used)</span>{{else}} <span class="warn">(missing)</span>{{end}}{{with .Credentials.FileWarning}}<div class="warn small">{{.}}</div>{{end}}</td></tr>
     {{with .Credentials.FromFile}}<tr><td>From the file</td><td>{{join .}}</td></tr>{{end}}
     {{with .Credentials.FromEnv}}<tr><td>From the environment</td><td>{{join .}}</td></tr>{{end}}
