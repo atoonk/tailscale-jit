@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -181,6 +182,32 @@ func TestFederatedIdentityFromEnvironment(t *testing.T) {
 	}
 	if got := byName(res, "Credentials"); !got.OK || !strings.HasPrefix(got.Detail, "federated identity:") {
 		t.Errorf("credentials check = %+v", got)
+	}
+}
+
+// Tailscale refusing the identity token (wrong client ID, subject or
+// audience) is a credential that does not work, as a refused OAuth client
+// is: it is not reported as an API jitd could not reach, it is not served
+// with, and the advice is about the federated identity.
+func TestFederatedIdentityRefused(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"message":"invalid client or token"}`, http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+	c, target := newChecker(t, &fakeTS{}, "")
+	c.NewClient, c.APIBase = nil, srv.URL
+	t.Setenv("TS_OAUTH_CLIENT_ID", "fid")
+	t.Setenv("TS_ID_TOKEN", "jwt")
+	res := c.Run(context.Background())
+	if res.OK || res.Transient {
+		t.Errorf("ok=%v transient=%v, want a failure that is not transient", res.OK, res.Transient)
+	}
+	got := byName(res, "Policy file read")
+	if !strings.Contains(got.Detail, "invalid client or token") || !strings.Contains(got.Fix, "identity token") || strings.Contains(got.Fix, "OAuth client ID or secret") {
+		t.Errorf("check = %+v", got)
+	}
+	if _, err := target.GetPolicy(context.Background()); !errors.Is(err, tsapi.ErrUnconfigured) {
+		t.Errorf("a refused federated identity is still served with: %v", err)
 	}
 }
 

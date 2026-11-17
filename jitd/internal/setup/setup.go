@@ -219,13 +219,19 @@ func (c *Checker) check(ctx context.Context, vars map[string]string, cred Creden
 	// rejected records whether an error rejected the credential itself, as
 	// opposed to the API being unreachable or failing for a while.
 	rejected := false
+	fix := func(err error, scope string) string {
+		if cred.Kind == "federated" && tokenRefused(err) {
+			return "Tailscale refused the identity token. Check that TS_OAUTH_CLIENT_ID is the federated identity's client ID, and that the token's issuer, subject and audience are the ones the federated identity expects (admin console, Settings → Trust credentials). Then click Check again."
+		}
+		return fixFor(err, scope, fileHint)
+	}
 	fail := func(name string, err error, scope string) bool {
 		if credentialRejected(err) {
 			rejected = true
 		} else {
 			res.Transient = true
 		}
-		return step(name, false, describe(err), fixFor(err, scope, fileHint))
+		return step(name, false, describe(err), fix(err, scope))
 	}
 	if c.Tag != "" && res.Node.ID != "" && !slices.Contains(res.Node.Tags, c.Tag) {
 		step("Node tag", false, fmt.Sprintf("this node is not tagged %s (tags: %s)", c.Tag, strings.Join(res.Node.Tags, ", ")),
@@ -318,7 +324,7 @@ func (c *Checker) check(ctx context.Context, vars map[string]string, cred Creden
 				if !credentialRejected(err) {
 					res.Transient = true
 				}
-				ok = step("Posture attributes write", false, describe(err), fixFor(err, "devices:posture_attributes (write)", fileHint))
+				ok = step("Posture attributes write", false, describe(err), fix(err, "devices:posture_attributes (write)"))
 			} else if err := client.DeleteAttribute(ctx, res.Node.ID, selfCheckKey); err != nil {
 				ok = step("Posture attributes write", false, "set "+selfCheckKey+" but could not delete it: "+describe(err), "")
 			} else {
@@ -599,6 +605,13 @@ func fixFor(err error, scope, fileHint string) string {
 		return "The credential works and the Tailscale API answered, but jitd could not read the response: it uses syntax this version of jitd does not know. Nothing is wrong with your credential or this host; please report this as a jitd bug."
 	}
 	return "Could not reach the Tailscale API, or it failed for a moment. jitd keeps the credential and retries; check this host's internet access if it persists."
+}
+
+// tokenRefused reports whether the token endpoint itself turned the
+// credential down, before any API call was made with it.
+func tokenRefused(err error) bool {
+	var re *oauth2.RetrieveError
+	return errors.As(err, &re) && credentialRejected(err)
 }
 
 // credentialRejected reports whether err says the credential itself is no

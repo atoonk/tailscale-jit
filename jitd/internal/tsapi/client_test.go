@@ -3,6 +3,7 @@ package tsapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"golang.org/x/oauth2"
 )
 
 type seen struct {
@@ -313,5 +316,11 @@ func TestFederatedIdentityErrors(t *testing.T) {
 	_, err = c.GetAttributes(context.Background(), "n1")
 	if err == nil || !strings.Contains(err.Error(), "401") || !strings.Contains(err.Error(), "invalid client or token") {
 		t.Errorf("rejected exchange: err = %v", err)
+	}
+	// It is still the token endpoint's refusal to whoever asks, which is
+	// how the setup check knows the credential is at fault, not the network.
+	var re *oauth2.RetrieveError
+	if !errors.As(err, &re) || re.Response.StatusCode != http.StatusUnauthorized {
+		t.Errorf("rejected exchange: no oauth2.RetrieveError in %v", err)
 	}
 }
