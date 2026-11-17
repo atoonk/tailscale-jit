@@ -67,14 +67,58 @@ const dur = (f, name) => {
   return box.querySelector("input").value.trim() + box.querySelector("select").value;
 };
 
+// Flow form, "What an approval grants": each thing an approval can do
+// (Tailscale access, Okta groups, Google groups) is a section that shows
+// once it is added. One that is not added saves as empty.
+const granted = (f, kind) => {
+  const s = f.querySelector('[data-action="' + kind + '"]');
+  return !!s && !s.hidden;
+};
+
+function syncGrants(box) {
+  const sections = [...box.querySelectorAll("[data-action]")];
+  const on = sections.filter((s) => !s.hidden).map((s) => s.dataset.action);
+  // A field in a section that is not added must not hold up Save.
+  for (const s of sections) for (const i of s.querySelectorAll("input")) i.disabled = s.hidden;
+  for (const b of box.querySelectorAll("[data-add]")) b.hidden = on.includes(b.dataset.add);
+  box.classList.toggle("empty", on.length === 0);
+  // Where only one thing can be granted there is nothing to swap it for.
+  for (const s of sections) s.querySelector("[data-removeaction]").hidden = sections.length < 2;
+  const picks = box.querySelector("[data-picks]");
+  picks.hidden = on.length > 0 && !picks.querySelector(".pick:not([hidden])");
+}
+
+for (const box of document.querySelectorAll("[data-grants]")) syncGrants(box);
+
+document.addEventListener("click", (ev) => {
+  const add = ev.target.closest("[data-add]");
+  const rm = ev.target.closest("[data-removeaction]");
+  if (!add && !rm) return;
+  const box = (add || rm).closest("[data-grants]");
+  if (add) {
+    const s = box.querySelector('[data-action="' + add.dataset.add + '"]');
+    // Newest last, just above the "Add another" row.
+    box.insertBefore(s, box.querySelector("[data-picks]"));
+    s.hidden = false;
+    delete s.dataset.removed;
+    syncGrants(box);
+    s.querySelector("input").focus();
+  } else {
+    const s = rm.closest("[data-action]");
+    s.hidden = true;
+    s.dataset.removed = "1";
+    syncGrants(box);
+  }
+});
+
 function workflowBody(f) {
+  if (f.querySelector("[data-grants]") && !["tailscale", "okta", "google"].some((k) => granted(f, k))) {
+    throw new Error("Pick what an approval grants: Tailscale access, Okta groups or Google groups.");
+  }
   return {
     name: f.name.value,
     description: f.description.value,
-    attribute: f.attribute.value.trim(),
-    okta_groups: f.okta_groups ? list(f.okta_groups.value).map((name) => ({ name })) : undefined,
-    google_groups: f.google_groups ? list(f.google_groups.value).map((name) => ({ name })) : undefined,
-    resources: resources(f),
+    grants: grantsBody(f),
     requesters: list(f.requesters.value),
     approvers: list(f.approvers.value),
     allow_self_approval: f.allow_self_approval.checked,
@@ -86,6 +130,25 @@ function workflowBody(f) {
     disabled: !f.enabled.checked,
     slack: slackBody(f),
   };
+}
+
+// grantsBody reads "What an approval grants": one key per kind that was
+// added, as the API takes it.
+function grantsBody(f) {
+  const g = {};
+  // "Gives access to" belongs to Tailscale access and goes when that is
+  // removed here. A flow that came without it keeps what it had.
+  const gives = f.querySelector('[data-action="tailscale"][data-removed]') ? [] : resources(f);
+  if (granted(f, "tailscale") || gives.length) {
+    g.tailscale = { attribute: granted(f, "tailscale") ? f.attribute.value.trim() : "", resources: gives };
+  }
+  for (const [kind, label] of [["okta", "Okta"], ["google", "Google"]]) {
+    if (!granted(f, kind)) continue;
+    const groups = list(f[kind + "_groups"].value).map((name) => ({ name }));
+    if (!groups.length) throw new Error("Name at least one " + label + " group, or remove " + label + " groups.");
+    g[kind] = { groups };
+  }
+  return g;
 }
 
 // slackBody reads the flow form's Slack part (absent in builds without it).

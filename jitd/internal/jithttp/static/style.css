@@ -276,6 +276,33 @@ pre.code { background: #1f1e1e; color: #ece9e6; padding: 18px 20px; border-radiu
 .reshead { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; padding: 0 2px; }
 .resrow .btn.sm { padding: 6px 9px; }
 #addres { align-self: flex-start; }
+/* Flow form: what an approval grants. One block per action; the choices are
+   large while nothing is picked and shrink to an "Add another" row after. */
+.action { border: 1px solid var(--line); border-radius: 9px; padding: 14px 16px 16px; background: var(--bg); display: flex; flex-direction: column; gap: 14px; }
+.action[hidden], .pick[hidden], .picks[hidden], .action [data-removeaction][hidden] { display: none; }
+.actionhead { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
+.actionhead > div { display: flex; flex-direction: column; gap: 2px; }
+.actionhead b { font-size: 15px; }
+.more summary { cursor: pointer; font-size: 12.5px; color: var(--muted); }
+.more p { margin: 6px 0 0; }
+.picks { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; }
+.pick { text-align: left; font: inherit; color: var(--ink); background: var(--panel); border: 1px solid var(--line); border-radius: 9px; padding: 14px 16px; cursor: pointer; display: flex; flex-direction: column; gap: 4px; }
+.pick:hover { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-bg); }
+.pick .d, .pick .foot { font-size: 12.5px; color: var(--muted); }
+.pick .foot { margin-top: 4px; }
+.pick.off { cursor: default; background: var(--bg); }
+.pick.off:hover { border-color: var(--line); box-shadow: none; }
+.pick.off b { color: var(--muted); }
+.pickslabel { display: none; font-size: 13px; color: var(--muted); }
+.grants:not(.empty) [data-pickhint] { display: none; }
+.grants:not(.empty) .picks { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; }
+.grants:not(.empty) .pickslabel { display: inline; }
+.grants:not(.empty) .pick { flex-direction: row; align-items: center; gap: 6px; padding: 4px 11px; border-radius: 8px; font-size: 13px; }
+.grants:not(.empty) .pick b { font-weight: 400; }
+.grants:not(.empty) button.pick b::before { content: "+ "; }
+.grants:not(.empty) .pick .d { display: none; }
+.grants:not(.empty) .pick .foot { margin: 0; }
+.grants:not(.empty) .pick.off { border-style: dashed; }
 .durpick { display: flex; gap: 8px; }
 .durpick input { width: 7em; }
 .whenpick { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 16px; }

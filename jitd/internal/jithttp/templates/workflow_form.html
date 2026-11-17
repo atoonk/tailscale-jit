@@ -3,7 +3,7 @@
 {{with .Data.Flow}}
 <div class="crumbs"><a href="/admin/workflows">Approval flows</a> › {{if .ID}}{{.Name}}{{else}}New{{end}}</div>
 <h1>{{if .ID}}Edit approval flow{{else}}New approval flow{{end}}</h1>
-<p class="sub">Who can ask, who says yes, and what an approval grants: a posture attribute, Okta or Google groups, or both.</p>
+<p class="sub">Who can ask, who says yes, and what an approval grants.</p>
 <form class="form" data-form="workflow" data-id="{{.ID}}">
   <div class="card fields">
     <h2>About</h2>
@@ -11,47 +11,83 @@
     <label>Description <input name="description" value="{{.Description}}" placeholder="Read-only queries on all databases"></label>
   </div>
 
-  <div class="card fields">
-    <h2>Access</h2>
-    {{$groups := or $okta $google .OktaGroups .GoogleGroups}}
-    <label>Posture attribute{{if $groups}} <span class="opt">optional with groups</span>{{end}}
-      <span class="prefixed"><span class="prefix">custom:jit_</span><input name="attribute" value="{{attrname .Attribute}}" placeholder="db_ro" class="short" {{if not $groups}}required{{end}} pattern="[a-z0-9_]{1,32}" title="1-32 of a-z, 0-9, _"></span>
-      <span class="hint">An approval sets this attribute on the requester's device, with an expiry. What it unlocks is decided by the tailnet policy, through a grant with <code>srcPosture</code> on <code>posture:jit_&lt;name&gt;</code>.</span>
-    </label>
-    {{if or $okta .OktaGroups}}
-    <label>Okta groups <span class="opt">optional</span>
-      <input name="okta_groups" value="{{oktagroups .OktaGroups}}" placeholder="AWS-Prod-ReadOnly, 00g1abcdEFGHijkl2345">
-      <span class="hint">Group names or IDs, separated by commas. An approval adds the requester's Okta user (matched by login, then by email) to each group, and jitd removes them when the access ends. Okta memberships have no expiry of their own, so removal needs jitd running; a group the person was already in stays as it was. Only Okta-mastered groups can be used.{{if not $okta}} <b>Okta is not configured</b>: set <code>OKTA_ORG_URL</code> and either <code>OKTA_API_TOKEN</code> or <code>OKTA_CLIENT_ID</code> and <code>OKTA_PRIVATE_KEY</code> in jitd's env file.{{end}}</span>
-    </label>
-    {{else if $oktapage}}
-    <p class="hint">An approval can also put the requester in Okta groups, for what Okta gates (AWS roles through single sign-on, say). <a href="/admin/integrations/okta">Connect Okta</a> first.</p>
-    {{end}}
-    {{if or $google .GoogleGroups}}
-    <label>Google groups <span class="opt">optional</span>
-      <input name="google_groups" value="{{oktagroups .GoogleGroups}}" placeholder="aws-prod-readonly@example.com">
-      <span class="hint">Group email addresses, separated by commas. An approval adds the requester to each group, under their Tailscale login as the email address, and jitd removes them when the access ends. Google memberships have no expiry here, so removal needs jitd running; someone who was in the group already stays as they were. Use this for what Google gates by group: Google Cloud roles, apps signed in to through Google, shared drives. <b>Not for opening Tailscale access:</b> Tailscale reads Google groups only every 40 minutes, so the access would start late and end late. Use the posture attribute for that.{{if not $google}} <b>Google is not connected</b>{{if $googlepage}}: <a href="/admin/integrations/google">set it up</a>{{end}}.{{end}}</span>
-    </label>
-    {{else if $googlepage}}
-    <p class="hint">An approval can also put the requester in Google groups, for what Google gates (Google Cloud roles, say). <a href="/admin/integrations/google">Connect Google</a> first.</p>
-    {{end}}
+  {{$hasOkta := or $okta .OktaGroups}}{{$hasGoogle := or $google .GoogleGroups}}
+  {{$only := and (not .ID) (not $okta) (not $google)}}
+  <div class="card fields grants{{if not (or .Attribute $only .OktaGroups .GoogleGroups)}} empty{{end}}" data-grants>
     <div class="field">
-      <span class="label">Gives access to <span class="opt">optional</span></span>
-      <div class="resrows" id="resrows">
-        <div class="reshead"><span>Target</span><span>Description</span><span></span></div>
-        {{range .Resources}}{{template "resrow" .}}{{end}}
-        {{if not .Resources}}{{template "resrow" .}}{{end}}
+      <h2>What an approval grants</h2>
+      <span class="hint" data-pickhint>Pick what this flow grants. Most flows grant one thing; you can add more afterwards.</span>
+    </div>
+
+    <section class="action" data-action="tailscale" {{if not (or .Attribute $only)}}hidden{{end}}>
+      <div class="actionhead">
+        <div><b>Tailscale access</b><span class="hint">Opens services and machines on the tailnet to the requester's device until the access ends.</span></div>
+        <button type="button" class="btn sm" data-removeaction>Remove</button>
       </div>
-      <button type="button" class="btn sm" id="addres">+ Add another</button>
-      <span class="hint">Target is the name as it appears in a policy grant: <code>svc:mysql-prod</code>, <code>tag:bastion</code>, a host name or a CIDR. Discovery only, for people and agents choosing what to request; it grants nothing, the policy does.</span>
-    </div>
-    {{if and .ID .Attribute}}
-    <div class="policycheck {{if $policy.OK}}ok{{else}}warn{{end}}">
-      <b>Policy check</b>
-      {{if $policy.OK}}<span>the tailnet policy has <code>{{$policy.Posture}}</code> and gates {{join $policy.Grants}} on it.</span>
-      {{else}}<ul>{{range $policy.Problems}}<li>{{.}}</li>{{end}}</ul>{{end}}
-      <span class="muted small">Checked against the policy file through the API (cached for a minute). The <a href="/admin/policy">policy snippet</a> has what to merge.</span>
-    </div>
+      <label>Posture attribute
+        <span class="prefixed"><span class="prefix">custom:jit_</span><input name="attribute" value="{{attrname .Attribute}}" placeholder="db_ro" class="short" required pattern="[a-z0-9_]{1,32}" title="1-32 of a-z, 0-9, _"></span>
+        <span class="hint">An approval sets this attribute on the requester's device, with an expiry. What it unlocks is decided by the tailnet policy, through a grant with <code>srcPosture</code> on <code>posture:jit_&lt;name&gt;</code>.</span>
+      </label>
+      <div class="field">
+        <span class="label">Gives access to <span class="opt">optional</span></span>
+        <div class="resrows" id="resrows">
+          <div class="reshead"><span>Target</span><span>Description</span><span></span></div>
+          {{range .Resources}}{{template "resrow" .}}{{end}}
+          {{if not .Resources}}{{template "resrow" .}}{{end}}
+        </div>
+        <button type="button" class="btn sm" id="addres">+ Add another</button>
+        <span class="hint">Target is the name as it appears in a policy grant: <code>svc:mysql-prod</code>, <code>tag:bastion</code>, a host name or a CIDR. Discovery only, for people and agents choosing what to request; it grants nothing, the policy does.</span>
+      </div>
+      {{if and .ID .Attribute}}
+      <div class="policycheck {{if $policy.OK}}ok{{else}}warn{{end}}">
+        <b>Policy check</b>
+        {{if $policy.OK}}<span>the tailnet policy has <code>{{$policy.Posture}}</code> and gates {{join $policy.Grants}} on it.</span>
+        {{else}}<ul>{{range $policy.Problems}}<li>{{.}}</li>{{end}}</ul>{{end}}
+        <span class="muted small">Checked against the policy file through the API (cached for a minute). The <a href="/admin/policy">policy snippet</a> has what to merge.</span>
+      </div>
+      {{end}}
+    </section>
+
+    {{if $hasOkta}}
+    <section class="action" data-action="okta" {{if not .OktaGroups}}hidden{{end}}>
+      <div class="actionhead">
+        <div><b>Okta groups</b><span class="hint">Adds the requester to these Okta groups until the access ends.</span></div>
+        <button type="button" class="btn sm" data-removeaction>Remove</button>
+      </div>
+      <label>Groups
+        <input name="okta_groups" value="{{oktagroups .OktaGroups}}" placeholder="AWS-Prod-ReadOnly, 00g1abcdEFGHijkl2345" required>
+        <span class="hint">Group names or IDs, separated by commas.{{if not $okta}} <b>Okta is not connected</b>{{if $oktapage}}: <a href="/admin/integrations/okta">set it up</a>{{end}}.{{end}}</span>
+      </label>
+      <details class="more"><summary>How it works</summary>
+        <p class="hint">An approval adds the requester's Okta user (matched by login, then by email) to each group, and jitd removes them when the access ends. Okta memberships have no expiry of their own, so removal needs jitd running; a group the person was already in stays as it was. Only Okta-mastered groups can be used.</p>
+      </details>
+    </section>
     {{end}}
+
+    {{if $hasGoogle}}
+    <section class="action" data-action="google" {{if not .GoogleGroups}}hidden{{end}}>
+      <div class="actionhead">
+        <div><b>Google groups</b><span class="hint">Adds the requester to these Google groups until the access ends.</span></div>
+        <button type="button" class="btn sm" data-removeaction>Remove</button>
+      </div>
+      <label>Groups
+        <input name="google_groups" value="{{oktagroups .GoogleGroups}}" placeholder="aws-prod-readonly@example.com" required>
+        <span class="hint">Group email addresses, separated by commas.{{if not $google}} <b>Google is not connected</b>{{if $googlepage}}: <a href="/admin/integrations/google">set it up</a>{{end}}.{{end}}</span>
+      </label>
+      <details class="more"><summary>How it works, and what to use it for</summary>
+        <p class="hint">An approval adds the requester to each group, under their Tailscale login as the email address, and jitd removes them when the access ends. Google memberships have no expiry here, so removal needs jitd running; someone who was in the group already stays as they were. Use this for what Google gates by group: Google Cloud roles, apps signed in to through Google, shared drives. <b>Not for opening Tailscale access:</b> Tailscale reads Google groups only every 40 minutes, so the access would start late and end late. Use Tailscale access for that.</p>
+      </details>
+    </section>
+    {{end}}
+
+    <div class="picks" data-picks>
+      <span class="pickslabel">Add another:</span>
+      <button type="button" class="pick" data-add="tailscale"><b>Tailscale access</b><span class="d">Reach services and machines on the tailnet: databases, SSH, Kubernetes.</span></button>
+      {{if $hasOkta}}<button type="button" class="pick" data-add="okta"><b>Okta groups</b><span class="d">Join Okta groups, for what Okta gates: AWS roles through single sign-on, apps.</span></button>
+      {{else if $oktapage}}<div class="pick off"><b>Okta groups</b><span class="d">Join Okta groups, for what Okta gates: AWS roles through single sign-on, apps.</span><span class="foot">Not connected · <a href="/admin/integrations/okta">Connect Okta</a></span></div>{{end}}
+      {{if $hasGoogle}}<button type="button" class="pick" data-add="google"><b>Google groups</b><span class="d">Join Google groups, for what Google gates: Google Cloud roles, shared drives.</span></button>
+      {{else if $googlepage}}<div class="pick off"><b>Google groups</b><span class="d">Join Google groups, for what Google gates: Google Cloud roles, shared drives.</span><span class="foot">Not connected · <a href="/admin/integrations/google">Connect Google</a></span></div>{{end}}
+    </div>
   </div>
 
   <div class="card fields">

@@ -149,7 +149,7 @@
 <section class="card prose">
   <h2>How it works</h2>
   <ul>
-    <li>An approval flow can name Google groups, with or without a posture attribute: fill in <b>Google groups</b> on the flow's page, by group address. An approval adds the requester to each group; jitd takes them out when the access expires or is revoked.</li>
+    <li>An approval flow can name Google groups, with or without a posture attribute: add <b>Google groups</b> under <i>What an approval grants</i> on the flow's page, by group address. An approval adds the requester to each group; jitd takes them out when the access expires or is revoked.</li>
     <li>That reaches whatever Google gates by group: Google Cloud roles, apps people sign in to through Google, shared drives.</li>
     <li><b>Not Tailscale access.</b> Tailscale reads Google groups only every 40 minutes, so a group would open access late and close it late. Use a flow's posture attribute for that.</li>
     <li>The requester's Tailscale login is used as their Google address. There is no lookup: if the two differ, Google refuses the add and the approval fails.</li>

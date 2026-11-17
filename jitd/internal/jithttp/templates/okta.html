@@ -165,7 +165,7 @@
 <section class="card prose">
   <h2>How it works</h2>
   <ul>
-    <li>An approval flow can name Okta groups, with or without a posture attribute: fill in <b>Okta groups</b> on the flow's page. An approval adds the requester's Okta user to each group; jitd takes them out when the access expires or is revoked.</li>
+    <li>An approval flow can name Okta groups, with or without a posture attribute: add <b>Okta groups</b> under <i>What an approval grants</i> on the flow's page. An approval adds the requester's Okta user to each group; jitd takes them out when the access expires or is revoked.</li>
     <li>That reaches whatever Okta gates by group: AWS or Google Cloud roles through single sign-on, admin roles in other apps.</li>
     <li>The requester's Tailscale login is looked up as an Okta login, then as an email.</li>
     <li>Someone who was in the group already stays in it: jitd only removes what it added.</li>

@@ -87,29 +87,29 @@ func (s *Server) Handler() http.Handler {
 	// Approval flows are admin-only; everyone else discovers what they may
 	// request through /v1/requestable.
 	mux.HandleFunc("GET /v1/workflows", s.withAdmin(func(w http.ResponseWriter, r *http.Request, _ jit.Identity) {
-		writeJSON(w, http.StatusOK, map[string]any{"workflows": jit.OrEmpty(s.Svc.ListWorkflows())})
+		writeJSON(w, http.StatusOK, map[string]any{"workflows": flowsOut(s.Svc.ListWorkflows())})
 	}))
 	mux.HandleFunc("POST /v1/workflows", s.withAdmin(func(w http.ResponseWriter, r *http.Request, id jit.Identity) {
-		var in jit.Workflow
-		if !decode(w, r, &in) {
+		in, ok := decodeFlow(w, r)
+		if !ok {
 			return
 		}
 		in.UpdatedBy = id.Actor() // recorded with the flow; never taken from the body
 		out, err := s.Svc.CreateWorkflow(in)
-		s.reply(w, http.StatusCreated, out, err)
+		s.replyFlow(w, http.StatusCreated, out, err)
 	}))
 	mux.HandleFunc("GET /v1/workflows/{id}", s.withAdmin(func(w http.ResponseWriter, r *http.Request, _ jit.Identity) {
 		out, err := s.Svc.GetWorkflow(r.PathValue("id"))
-		s.reply(w, http.StatusOK, out, err)
+		s.replyFlow(w, http.StatusOK, out, err)
 	}))
 	mux.HandleFunc("PUT /v1/workflows/{id}", s.withAdmin(func(w http.ResponseWriter, r *http.Request, id jit.Identity) {
-		var in jit.Workflow
-		if !decode(w, r, &in) {
+		in, ok := decodeFlow(w, r)
+		if !ok {
 			return
 		}
 		in.UpdatedBy = id.Actor()
 		out, err := s.Svc.UpdateWorkflow(r.PathValue("id"), in)
-		s.reply(w, http.StatusOK, out, err)
+		s.replyFlow(w, http.StatusOK, out, err)
 	}))
 	mux.HandleFunc("DELETE /v1/workflows/{id}", s.withAdmin(func(w http.ResponseWriter, r *http.Request, id jit.Identity) {
 		if err := s.Svc.DeleteWorkflow(r.PathValue("id")); err != nil {
@@ -585,6 +585,30 @@ func decode(w http.ResponseWriter, r *http.Request, v any) bool {
 		return false
 	}
 	return true
+}
+
+// decodeFlow reads an approval flow from the body, in the API's layout
+// (flowJSON). It answers the request itself when the body will not do.
+func decodeFlow(w http.ResponseWriter, r *http.Request) (jit.Workflow, bool) {
+	var in flowJSON
+	if !decode(w, r, &in) {
+		return jit.Workflow{}, false
+	}
+	wf, err := in.workflow()
+	if err != nil {
+		writeErr(w, err)
+		return jit.Workflow{}, false
+	}
+	return wf, true
+}
+
+// replyFlow is reply for an approval flow, in the API's layout.
+func (s *Server) replyFlow(w http.ResponseWriter, status int, out *jit.Workflow, err error) {
+	if err != nil {
+		s.reply(w, status, nil, err)
+		return
+	}
+	writeJSON(w, status, flowOut(out))
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
