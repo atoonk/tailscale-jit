@@ -222,33 +222,37 @@ type Resource struct {
 	Description string `json:"description,omitempty"`
 }
 
-// OktaGroup names one Okta group a flow grants membership in. When a flow
-// is saved, a group given by Name alone is looked up and its ID filled in;
-// the ID is what jitd uses from then on.
-type OktaGroup struct {
+// GroupRef names one group a flow grants membership in (an Okta group,
+// say). When a flow is saved, a group given by Name alone is looked up and
+// its ID filled in; the ID is what jitd uses from then on.
+type GroupRef struct {
 	ID   string `json:"id,omitempty"`
 	Name string `json:"name,omitempty"`
 }
 
+// OktaGroup is a GroupRef that names an Okta group.
+type OktaGroup = GroupRef
+
 // named reports whether ref, the group of an okta: principal, means g. A
 // name is compared loosely: this is used to refuse, not to grant.
-func (g OktaGroup) named(ref string) bool {
+func (g GroupRef) named(ref string) bool {
 	return ref != "" && (ref == g.ID || strings.EqualFold(ref, g.Name))
 }
 
 // Label is how the group is shown.
-func (g OktaGroup) Label() string {
+func (g GroupRef) Label() string {
 	if g.Name != "" {
 		return g.Name
 	}
 	return g.ID
 }
 
-// OktaGrant is what an approval did in Okta for one request: which user it
-// acted on and which group memberships jitd added (and so must remove).
-type OktaGrant struct {
+// GroupGrant is what an approval did, in one system that has groups (Okta,
+// say), for one request: which user it acted on and which group
+// memberships jitd added (and so must remove).
+type GroupGrant struct {
 	UserID string `json:"user_id"`
-	Login  string `json:"login,omitempty"` // the Okta login, for people
+	Login  string `json:"login,omitempty"` // the user's login there, for people
 	// Added are the IDs of the groups jitd made the user a member of (or
 	// that another live jitd request had already added). These come off
 	// when the access ends.
@@ -257,7 +261,7 @@ type OktaGrant struct {
 	// access was approved. jitd never removes these.
 	Preexisting []string `json:"preexisting,omitempty"`
 	// RemovedAt is when, after the request ended, it stopped holding its
-	// Added memberships: each was removed in Okta, or is listed in Kept.
+	// Added memberships: each was removed there, or is listed in Kept.
 	RemovedAt *time.Time `json:"removed_at,omitempty"`
 	// Kept are the Added groups jitd did not take the user out of when
 	// the request ended, because another running request of the same user
@@ -275,18 +279,22 @@ type OktaGrant struct {
 	AlertedAt *time.Time `json:"alerted_at,omitempty"`
 	// Missing are Added groups the user was no longer in when jitd last
 	// looked, while the access was still running: someone took the user
-	// out in Okta. jitd reports it and does not add them back.
+	// out there. jitd reports it and does not add them back.
 	Missing []string `json:"missing,omitempty"`
-	// CheckedAt is when jitd last compared Added with Okta.
+	// CheckedAt is when jitd last compared Added with the system itself.
 	CheckedAt *time.Time `json:"checked_at,omitempty"`
 }
 
-// OktaIntent is written to a request before jitd adds its requester to any
-// Okta group, and cleared in the same save that records the grant (or once
-// the memberships are taken back). A membership is therefore never in Okta
-// without a record of it: if jitd stops halfway through an approval, the
-// intent is still there and the next expiry tick takes the user out again.
-type OktaIntent struct {
+// OktaGrant is a GroupGrant for Okta groups.
+type OktaGrant = GroupGrant
+
+// GroupIntent is written to a request before jitd adds its requester to
+// any group, and cleared in the same save that records the grant (or once
+// the memberships are taken back). A membership is therefore never in
+// place without a record of it: if jitd stops halfway through an approval,
+// the intent is still there and the next expiry tick takes the user out
+// again.
+type GroupIntent struct {
 	UserID string `json:"user_id"`
 	Login  string `json:"login,omitempty"`
 	// Groups are the IDs of the groups to take the user out of if the
@@ -298,6 +306,9 @@ type OktaIntent struct {
 	// Error is the last failure to take the memberships back.
 	Error string `json:"error,omitempty"`
 }
+
+// OktaIntent is a GroupIntent for Okta groups.
+type OktaIntent = GroupIntent
 
 // AttrPrefix is the namespace of every attribute jitd writes.
 const AttrPrefix = "custom:jit_"
@@ -323,9 +334,9 @@ func (w *Workflow) Posture() string {
 }
 
 // OktaGroupLabels lists the flow's Okta group names.
-func (w *Workflow) OktaGroupLabels() []string { return oktaLabels(w.OktaGroups) }
+func (w *Workflow) OktaGroupLabels() []string { return groupLabels(w.OktaGroups) }
 
-func oktaLabels(gs []OktaGroup) []string {
+func groupLabels(gs []GroupRef) []string {
 	out := make([]string, len(gs))
 	for i, g := range gs {
 		out[i] = g.Label()
@@ -333,8 +344,8 @@ func oktaLabels(gs []OktaGroup) []string {
 	return out
 }
 
-// oktaGroupIDs lists the group IDs, sorted, for comparing two sets.
-func oktaGroupIDs(gs []OktaGroup) []string {
+// groupIDs lists the group IDs, sorted, for comparing two sets.
+func groupIDs(gs []GroupRef) []string {
 	out := make([]string, 0, len(gs))
 	for _, g := range gs {
 		out = append(out, g.ID)
@@ -495,20 +506,25 @@ type AccessRequest struct {
 func (r *AccessRequest) ResourceNames() []string { return resourceNames(r.Resources) }
 
 // OktaGroupLabels lists the request's Okta group names.
-func (r *AccessRequest) OktaGroupLabels() []string { return oktaLabels(r.OktaGroups) }
+func (r *AccessRequest) OktaGroupLabels() []string { return groupLabels(r.OktaGroups) }
 
 // Granted reports whether access was ever put in place for r: the posture
-// attribute set, or Okta memberships handled.
+// attribute set, or group memberships handled.
 func (r *AccessRequest) Granted() bool {
-	return len(r.Attributes) > 0 || (r.Okta != nil && r.Okta.UserID != "")
+	if len(r.Attributes) > 0 {
+		return true
+	}
+	for _, k := range groupKinds {
+		if g := k.granted(r); g != nil && g.UserID != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // oktaPendingRemoval reports whether r ended with Okta memberships jitd
 // added that are not yet confirmed removed.
-func (r *AccessRequest) oktaPendingRemoval() bool {
-	ended := r.Status == StatusExpired || r.Status == StatusRevoked
-	return ended && r.Okta != nil && len(r.Okta.Added) > 0 && r.Okta.RemovedAt == nil
-}
+func (r *AccessRequest) oktaPendingRemoval() bool { return oktaKind.pendingRemoval(r) }
 
 // OktaRemovalPending reports whether r ended and its requester is still in
 // Okta groups jitd added them to.
@@ -516,9 +532,7 @@ func (r *AccessRequest) OktaRemovalPending() bool { return r.oktaPendingRemoval(
 
 // OktaStuck reports whether removing r's Okta memberships has been failing
 // for long enough that jitd told the admins.
-func (r *AccessRequest) OktaStuck() bool {
-	return r.oktaPendingRemoval() && r.Okta.AlertedAt != nil
-}
+func (r *AccessRequest) OktaStuck() bool { return oktaKind.stuckOn(r) }
 
 // OktaKeptLabels names the Okta groups r's requester stayed in when r
 // ended, because another running request holds them.
@@ -562,19 +576,7 @@ func (r *AccessRequest) OktaMissingLabels() []string {
 }
 
 // oktaLabels names Okta groups by ID, with the names r was filed with.
-func (r *AccessRequest) oktaLabels(ids []string) []string {
-	var out []string
-	for _, id := range ids {
-		label := id
-		for _, g := range r.OktaGroups {
-			if g.ID == id {
-				label = g.Label()
-			}
-		}
-		out = append(out, label)
-	}
-	return out
-}
+func (r *AccessRequest) oktaLabels(ids []string) []string { return oktaKind.labels(r, ids) }
 
 var attrNameRE = regexp.MustCompile(`^[a-z0-9_]{1,32}$`)
 
@@ -615,7 +617,10 @@ func (w *Workflow) Normalize() {
 	} else {
 		w.Attribute = AttrKey(w.Attribute)
 	}
-	w.OktaGroups = cleanOktaGroups(w.OktaGroups)
+	for _, k := range groupKinds {
+		gs := k.flowGroups(w)
+		*gs = cleanGroups(k, *gs)
+	}
 	w.Resources = cleanResources(w.Resources)
 	w.Requesters = cleanPrincipals(w.Requesters)
 	w.Approvers = cleanPrincipals(w.Approvers)
@@ -651,7 +656,7 @@ func (w *Workflow) Validate() error {
 	if w.Name == "" {
 		return badRequest("name is required")
 	}
-	if w.Attribute == "" && len(w.OktaGroups) == 0 {
+	if w.Attribute == "" && !w.grantsGroups() {
 		return badRequest("an approval flow must grant something: a posture attribute, Okta groups, or both")
 	}
 	if w.Attribute != "" {
@@ -663,12 +668,15 @@ func (w *Workflow) Validate() error {
 			return badRequest("the posture attribute %s%s is reserved for jitd's setup check", AttrPrefix, name)
 		}
 	}
-	if len(w.OktaGroups) > MaxOktaGroups {
-		return badRequest("an approval flow may grant at most %d Okta groups", MaxOktaGroups)
-	}
-	for _, g := range w.OktaGroups {
-		if g.ID == "" {
-			return badRequest("Okta group %q has not been looked up; is Okta configured?", g.Name)
+	for _, k := range groupKinds {
+		gs := *k.flowGroups(w)
+		if len(gs) > MaxGroups {
+			return badRequest("an approval flow may grant at most %d %s groups", MaxGroups, k.label)
+		}
+		for _, g := range gs {
+			if g.ID == "" {
+				return badRequest("%s group %q has not been looked up; is %s configured?", k.label, g.Name, k.label)
+			}
 		}
 	}
 	for _, r := range w.Resources {
@@ -729,17 +737,21 @@ func (w *Workflow) Validate() error {
 	return nil
 }
 
-// MaxOktaGroups caps how many Okta groups one flow grants.
-const MaxOktaGroups = 20
+// MaxGroups caps how many groups of one kind (Okta groups, say) one flow
+// grants.
+const MaxGroups = 20
 
-// cleanOktaGroups trims, drops empties and de-duplicates by ID (or name, for
+// MaxOktaGroups caps how many Okta groups one flow grants.
+const MaxOktaGroups = MaxGroups
+
+// cleanGroups trims, drops empties and de-duplicates by ID (or name, for
 // groups not looked up yet). A name that is really a group ID moves to ID.
-func cleanOktaGroups(in []OktaGroup) []OktaGroup {
-	var out []OktaGroup
+func cleanGroups(k *groupKind, in []GroupRef) []GroupRef {
+	var out []GroupRef
 	seen := map[string]bool{}
 	for _, g := range in {
 		g.ID, g.Name = strings.TrimSpace(g.ID), strings.TrimSpace(g.Name)
-		if g.ID == "" && oktaGroupIDRE.MatchString(g.Name) {
+		if g.ID == "" && k.idRE != nil && k.idRE.MatchString(g.Name) {
 			g.ID, g.Name = g.Name, ""
 		}
 		k := "id:" + g.ID

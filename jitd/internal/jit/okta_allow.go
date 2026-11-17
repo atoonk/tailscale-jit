@@ -28,12 +28,16 @@ import (
 // being readable later, the lists read last stay in force (see main): a
 // mistake in the env file must not open every group.
 
-// OktaAllowlist holds the two lists. A nil list is one that was never set
-// and allows every group; an empty, non-nil list allows none.
-type OktaAllowlist struct {
+// GroupAllowlist holds the two lists of one group provider. A nil list is
+// one that was never set and allows every group; an empty, non-nil list
+// allows none.
+type GroupAllowlist struct {
 	Grant []string
 	Read  []string
 }
+
+// OktaAllowlist holds Okta's two lists.
+type OktaAllowlist = GroupAllowlist
 
 // NoOktaGroups is the allowlist that lets no group through, for when the
 // lists cannot be read.
