@@ -16,18 +16,11 @@ Kubernetes, RDP, VNC, HTTP, TCP and AWS S3.
 
 ## See it in action
 
-![Claude Code asks for SSH access to check a disk, waits for the approval, then runs df on the host](docs/demo.gif)
-
-**[Watch the full video (MP4, 2:20)](docs/demo.mp4)**: why agents need just-in-time access, the demo with the approval in the browser, and what you get.
-
-Meanwhile, the approver opens the link and sees this:
+The agent gives you a link. Whoever approves opens it and sees this:
 
 <img src="docs/approve.png" alt="The jitd approval page: who asked, for how long, why, and Approve or Decline" width="760">
 
-*Recorded with the real Claude Code, against jitd's demo mode: made-up
-people (Maya asks, Sam approves) and a stand-in for the ops host. The
-recording is older than the setup below: connecting Claude Code is now the
-one `claude mcp add` command.*
+*From jitd's demo mode, with made-up people: Maya asks, Sam approves.*
 
 > **Experimental.** This is a working proof of concept, tested on a real
 > tailnet. Expect rough edges.
