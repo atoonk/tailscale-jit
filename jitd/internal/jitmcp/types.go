@@ -1,6 +1,7 @@
 package jitmcp
 
 import (
+	"cmp"
 	"encoding/json"
 	"fmt"
 	"strconv"
@@ -266,6 +267,20 @@ func (r *accessRequest) services() []string {
 	return out
 }
 
+// oktaNames names Okta groups for a text result. The names are an admin's
+// text, so they are quoted.
+func oktaNames(gs []oktaGroup) string {
+	names := make([]string, len(gs))
+	for i, g := range gs {
+		names[i] = strconv.Quote(cmp.Or(g.Name, g.ID))
+	}
+	what := "the Okta group "
+	if len(gs) > 1 {
+		what = "the Okta groups "
+	}
+	return what + strings.Join(names, ", ")
+}
+
 func summarizeRequestable(o listRequestableOutput) string {
 	var b strings.Builder
 	if len(o.Requestable) == 0 {
@@ -278,8 +293,13 @@ func summarizeRequestable(o listRequestableOutput) string {
 		if f.Description != "" {
 			fmt.Fprintf(&b, "  %s\n", f.Description)
 		}
+		if len(f.OktaGroups) > 0 {
+			fmt.Fprintf(&b, "  adds the requester to %s until the access ends\n", oktaNames(f.OktaGroups))
+		}
 		if len(f.Resources) == 0 {
-			b.WriteString("  gives access to: (not described by the admin)\n")
+			if f.Attribute != "" || len(f.OktaGroups) == 0 {
+				b.WriteString("  gives access to: (not described by the admin)\n")
+			}
 		} else {
 			b.WriteString("  gives access to:\n")
 			for _, r := range f.Resources {
@@ -376,8 +396,13 @@ func summarizeRequest(r accessRequest, viewer identity) string {
 		switch {
 		case !mine:
 			fmt.Fprintf(&b, "The access is on %s's device %s, not on this one.\n", r.Requester.who(), r.Requester.DeviceName)
+		case r.Attribute == "" && len(r.OktaGroups) > 0:
+			fmt.Fprintf(&b, "The requester is in %s until then; nothing changes on this device.", oktaNames(r.OktaGroups))
 		case r.Enforcement.ConfirmedAt != "":
 			b.WriteString("The access is in place on this device.")
+			if len(r.OktaGroups) > 0 {
+				fmt.Fprintf(&b, " The requester is also in %s until then.", oktaNames(r.OktaGroups))
+			}
 		default:
 			b.WriteString("jitd has not yet read the access back from the device; it usually takes a few seconds.")
 		}

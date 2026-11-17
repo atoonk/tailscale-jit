@@ -156,8 +156,25 @@ type Workflow struct {
 	// AutoApprove grants every request at once, with no approver: the
 	// request is still recorded, with its reason, and still expires and can
 	// be revoked. Approvers are optional then; any listed may still revoke.
-	AutoApprove bool     `json:"auto_approve,omitempty"`
-	MaxDuration Duration `json:"max_duration"`
+	//
+	// Whether a request is automatic is not stored on the request: it is
+	// read from the flow, in Service.submit and autoGrant, in expireDue (a
+	// pending request on such a flow that is not in Service.autoBusy is
+	// expired by the next tick), in UpdateWorkflow (a flip to automatic
+	// expires what was pending), in selfServeRole and Requestable, and in
+	// the Slack bot (no approval card, no direct messages). A flow that is
+	// automatic only for some requests has to change all of them.
+	AutoApprove bool `json:"auto_approve,omitempty"`
+	// AutoApproveBy and AutoApproveAt are who made the flow automatic, or
+	// last changed who may request it, what it grants or for how long, and
+	// when: on such a flow that edit is the approval of every request that
+	// follows. Service sets both and ignores what a caller sends. UpdatedBy
+	// is who saved the flow last: the caller of CreateWorkflow and
+	// UpdateWorkflow sets it (the HTTP handlers, from the identity).
+	AutoApproveBy string     `json:"auto_approve_by,omitempty"`
+	AutoApproveAt *time.Time `json:"auto_approve_at,omitempty"`
+	UpdatedBy     string     `json:"updated_by,omitempty"`
+	MaxDuration   Duration   `json:"max_duration"`
 	// ApprovalTimeout is how long a request may stay pending before it
 	// expires undecided. Zero means DefaultApprovalTimeout.
 	ApprovalTimeout Duration `json:"approval_timeout,omitempty"`
@@ -213,6 +230,12 @@ type OktaGroup struct {
 	Name string `json:"name,omitempty"`
 }
 
+// named reports whether ref, the group of an okta: principal, means g. A
+// name is compared loosely: this is used to refuse, not to grant.
+func (g OktaGroup) named(ref string) bool {
+	return ref != "" && (ref == g.ID || strings.EqualFold(ref, g.Name))
+}
+
 // Label is how the group is shown.
 func (g OktaGroup) Label() string {
 	if g.Name != "" {
@@ -233,10 +256,46 @@ type OktaGrant struct {
 	// Preexisting are groups the user was already in, outside jitd, when
 	// access was approved. jitd never removes these.
 	Preexisting []string `json:"preexisting,omitempty"`
-	// RemovedAt is when every Added membership was confirmed removed
-	// after the request ended.
+	// RemovedAt is when, after the request ended, it stopped holding its
+	// Added memberships: each was removed in Okta, or is listed in Kept.
 	RemovedAt *time.Time `json:"removed_at,omitempty"`
+	// Kept are the Added groups jitd did not take the user out of when
+	// the request ended, because another running request of the same user
+	// holds them. That request removes them when it ends.
+	Kept []string `json:"kept,omitempty"`
+	// TriedAt is when jitd last tried to remove the memberships.
+	TriedAt *time.Time `json:"tried_at,omitempty"`
 	// Error is the last failure to remove a membership; jitd keeps retrying.
+	Error string `json:"error,omitempty"`
+	// FailingSince is when removal first failed, for as long as it keeps
+	// failing.
+	FailingSince *time.Time `json:"failing_since,omitempty"`
+	// AlertedAt is when jitd told the admins that removal is stuck (it had
+	// been failing for Service.OktaAlertAfter).
+	AlertedAt *time.Time `json:"alerted_at,omitempty"`
+	// Missing are Added groups the user was no longer in when jitd last
+	// looked, while the access was still running: someone took the user
+	// out in Okta. jitd reports it and does not add them back.
+	Missing []string `json:"missing,omitempty"`
+	// CheckedAt is when jitd last compared Added with Okta.
+	CheckedAt *time.Time `json:"checked_at,omitempty"`
+}
+
+// OktaIntent is written to a request before jitd adds its requester to any
+// Okta group, and cleared in the same save that records the grant (or once
+// the memberships are taken back). A membership is therefore never in Okta
+// without a record of it: if jitd stops halfway through an approval, the
+// intent is still there and the next expiry tick takes the user out again.
+type OktaIntent struct {
+	UserID string `json:"user_id"`
+	Login  string `json:"login,omitempty"`
+	// Groups are the IDs of the groups to take the user out of if the
+	// approval does not finish: the ones jitd set out to add the user to
+	// (the user was in none of those when the intent was written) and the
+	// ones an earlier, unfinished attempt for this request had added.
+	Groups []string  `json:"groups"`
+	At     time.Time `json:"at"`
+	// Error is the last failure to take the memberships back.
 	Error string `json:"error,omitempty"`
 }
 
@@ -381,6 +440,10 @@ type Event struct {
 const (
 	EventConfirmed = "confirmed"
 	EventRemoved   = "removed"
+	// The removal of the request's Okta memberships has been failing for a
+	// while, or went through after that.
+	EventOktaStuck   = "okta_stuck"
+	EventOktaCleared = "okta_cleared"
 )
 
 // AccessRequest is a request for time-limited access through one workflow.
@@ -413,6 +476,9 @@ type AccessRequest struct {
 	LastError         string      `json:"last_error,omitempty"`
 	// Okta is what approval did in Okta, for flows with OktaGroups.
 	Okta *OktaGrant `json:"okta,omitempty"`
+	// OktaAdding is set while an approval is adding the requester to Okta
+	// groups, and stays if that approval did not finish (see OktaIntent).
+	OktaAdding *OktaIntent `json:"okta_adding,omitempty"`
 	// Slack lists the Slack messages posted about this request.
 	Slack     []SlackMessage `json:"slack,omitempty"`
 	CreatedAt time.Time      `json:"created_at"`
@@ -442,6 +508,72 @@ func (r *AccessRequest) Granted() bool {
 func (r *AccessRequest) oktaPendingRemoval() bool {
 	ended := r.Status == StatusExpired || r.Status == StatusRevoked
 	return ended && r.Okta != nil && len(r.Okta.Added) > 0 && r.Okta.RemovedAt == nil
+}
+
+// OktaRemovalPending reports whether r ended and its requester is still in
+// Okta groups jitd added them to.
+func (r *AccessRequest) OktaRemovalPending() bool { return r.oktaPendingRemoval() }
+
+// OktaStuck reports whether removing r's Okta memberships has been failing
+// for long enough that jitd told the admins.
+func (r *AccessRequest) OktaStuck() bool {
+	return r.oktaPendingRemoval() && r.Okta.AlertedAt != nil
+}
+
+// OktaKeptLabels names the Okta groups r's requester stayed in when r
+// ended, because another running request holds them.
+func (r *AccessRequest) OktaKeptLabels() []string {
+	if r.Okta == nil || r.Okta.RemovedAt == nil {
+		return nil
+	}
+	return r.oktaLabels(r.Okta.Kept)
+}
+
+// OktaRemovedLabels names the Okta groups jitd took r's requester out of
+// when r ended.
+func (r *AccessRequest) OktaRemovedLabels() []string {
+	if r.Okta == nil || r.Okta.RemovedAt == nil {
+		return nil
+	}
+	var ids []string
+	for _, g := range r.Okta.Added {
+		if !slices.Contains(r.Okta.Kept, g) {
+			ids = append(ids, g)
+		}
+	}
+	return r.oktaLabels(ids)
+}
+
+// OktaAddedLabels names the Okta groups jitd added r's requester to.
+func (r *AccessRequest) OktaAddedLabels() []string {
+	if r.Okta == nil {
+		return nil
+	}
+	return r.oktaLabels(r.Okta.Added)
+}
+
+// OktaMissingLabels names the Okta groups r's requester was taken out of,
+// outside jitd, while the access was running.
+func (r *AccessRequest) OktaMissingLabels() []string {
+	if r.Okta == nil || r.Status != StatusApproved {
+		return nil
+	}
+	return r.oktaLabels(r.Okta.Missing)
+}
+
+// oktaLabels names Okta groups by ID, with the names r was filed with.
+func (r *AccessRequest) oktaLabels(ids []string) []string {
+	var out []string
+	for _, id := range ids {
+		label := id
+		for _, g := range r.OktaGroups {
+			if g.ID == id {
+				label = g.Label()
+			}
+		}
+		out = append(out, label)
+	}
+	return out
 }
 
 var attrNameRE = regexp.MustCompile(`^[a-z0-9_]{1,32}$`)

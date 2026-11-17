@@ -177,6 +177,10 @@ func (b *Bot) fileRequest(ctx context.Context, api slack.API, userID string, nr 
 		return notice("Not filed", msg)
 	}
 	b.log().Info("slack: request filed", "id", r.ID, "by", id.Login, "device", dev.ShortName())
+	if r.Status == jit.StatusApproved { // an automatic flow
+		return notice("Access granted", fmt.Sprintf(":white_check_mark: *%s* for `%s`, %s.\nIt was approved automatically: <%s|open the request>.",
+			esc(r.WorkflowName), esc(dev.ShortName()), r.Duration.Human(), b.requestLink(r.ID)))
+	}
 	return notice("Request filed", fmt.Sprintf(":hourglass_flowing_sand: *%s* for `%s`, %s.\nIt's waiting for approval: <%s|open the request>.",
 		esc(r.WorkflowName), esc(dev.ShortName()), r.Duration.Human(), b.requestLink(r.ID)))
 }

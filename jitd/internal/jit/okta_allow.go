@@ -18,14 +18,22 @@ import (
 //     and on every match; a group outside the list matches nobody.
 //
 // Each entry is a group name or ID; "*" matches any run of characters
-// ("jit.*", "Team-*"). A list that is not set defaults to "*":
-// every group.
+// ("jit.*", "Team-*"). A list that is not set defaults to "*": every group.
+// A list that is set but has no entries allows no group, and so does an env
+// file jitd has not been able to read since it started. If the file stops
+// being readable later, the lists read last stay in force (see main): a
+// mistake in the env file must not open every group.
 
-// OktaAllowlist holds the two lists.
+// OktaAllowlist holds the two lists. A nil list is one that was never set
+// and allows every group; an empty, non-nil list allows none.
 type OktaAllowlist struct {
 	Grant []string
 	Read  []string
 }
+
+// NoOktaGroups is the allowlist that lets no group through, for when the
+// lists cannot be read.
+func NoOktaGroups() OktaAllowlist { return OktaAllowlist{Grant: []string{}, Read: []string{}} }
 
 // Env variables holding the lists, comma-separated.
 const (
@@ -36,21 +44,26 @@ const (
 // DefaultOktaAllowlist is what a list that is not set means: every group.
 const DefaultOktaAllowlist = "*"
 
-// ParseOktaAllowlist reads the lists from env-style variables. A list that
-// is not set (or has no entries) is DefaultOktaAllowlist.
+// ParseOktaAllowlist reads the lists from env-style variables. A variable
+// that is absent from vars is DefaultOktaAllowlist; one that is present
+// with no entries ("OKTA_GRANT_ALLOWLIST=") allows nothing.
 func ParseOktaAllowlist(vars map[string]string) OktaAllowlist {
-	return OktaAllowlist{Grant: listOrDefault(vars[EnvOktaGrantAllowlist]), Read: listOrDefault(vars[EnvOktaReadAllowlist])}
+	return OktaAllowlist{Grant: listOf(vars, EnvOktaGrantAllowlist), Read: listOf(vars, EnvOktaReadAllowlist)}
 }
 
-func listOrDefault(s string) []string {
-	if l := splitList(s); len(l) > 0 {
+func listOf(vars map[string]string, key string) []string {
+	v, set := vars[key]
+	if !set {
+		return []string{DefaultOktaAllowlist}
+	}
+	if l := splitList(v); len(l) > 0 {
 		return l
 	}
-	return []string{DefaultOktaAllowlist}
+	return []string{}
 }
 
 // AllowsAll reports whether list lets every group through.
-func AllowsAll(list []string) bool { return len(list) == 0 || slices.Contains(list, "*") }
+func AllowsAll(list []string) bool { return list == nil || slices.Contains(list, "*") }
 
 func splitList(s string) []string {
 	var out []string
@@ -62,10 +75,10 @@ func splitList(s string) []string {
 	return out
 }
 
-// allowed reports whether a group, by ID or name, is on list. An empty list
-// allows everything.
+// allowed reports whether a group, by ID or name, is on list. A nil list
+// (never set) allows everything; an empty one allows nothing.
 func allowed(list []string, id, name string) bool {
-	if len(list) == 0 {
+	if list == nil {
 		return true
 	}
 	for _, pat := range list {

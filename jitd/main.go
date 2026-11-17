@@ -107,26 +107,62 @@ func main() {
 	// (OKTA_CLIENT_ID, OKTA_PRIVATE_KEY, ...), plus the optional
 	// OKTA_GRANT_ALLOWLIST and OKTA_READ_ALLOWLIST, from the env file
 	// (re-read on use, so editing it needs no restart) or the environment.
-	oktaKeys := append(slices.Clone(okta.CredentialVars), jit.EnvOktaGrantAllowlist, jit.EnvOktaReadAllowlist)
-	oktaVars := func() map[string]string {
+	//
+	// A credential set in the env file wins over the environment when it
+	// is not empty. An allowlist counts as set as soon as its name is
+	// there, in the file first: "OKTA_GRANT_ALLOWLIST=" allows no group,
+	// and only a list that is absent everywhere allows all of them.
+	oktaLists := []string{jit.EnvOktaGrantAllowlist, jit.EnvOktaReadAllowlist}
+	oktaVars := func() (map[string]string, error) {
 		vars := map[string]string{}
-		for _, k := range oktaKeys {
+		for _, k := range okta.CredentialVars {
 			vars[k] = os.Getenv(k)
 		}
-		if *envFile != "" {
-			if fromFile, err := setup.ReadEnvFile(*envFile); err == nil {
-				for _, k := range oktaKeys {
-					if v := fromFile[k]; v != "" {
-						vars[k] = v
-					}
-				}
+		for _, k := range oktaLists {
+			if v, set := os.LookupEnv(k); set {
+				vars[k] = v
 			}
 		}
-		return vars
+		if *envFile == "" {
+			return vars, nil
+		}
+		fromFile, err := setup.ReadEnvFile(*envFile)
+		if err != nil {
+			return nil, err
+		}
+		for _, k := range okta.CredentialVars {
+			if v := fromFile[k]; v != "" {
+				vars[k] = v
+			}
+		}
+		for _, k := range oktaLists {
+			if v, set := fromFile[k]; set {
+				vars[k] = v
+			}
+		}
+		return vars, nil
 	}
-	svc.Okta = &okta.Dynamic{Load: oktaVars}
-	svc.OktaLimits = func() jit.OktaAllowlist { return jit.ParseOktaAllowlist(oktaVars()) }
-	if vars := oktaVars(); okta.Configured(vars) {
+	// While the env file cannot be read (a bad line, a permission), Okta
+	// carries on with the settings read last, so that an edit gone wrong
+	// neither switches off the removal of memberships nor opens the
+	// allowlists. If it was never readable, Okta is off and no group is
+	// allowed.
+	oktaClient := &okta.Dynamic{Load: oktaVars, OnLoadError: func(err error) {
+		if err != nil {
+			log.Error("cannot read the Okta settings from the env file; carrying on with the ones read last, if any", "file", *envFile, "err", err)
+		} else {
+			log.Info("the Okta settings in the env file are readable again", "file", *envFile)
+		}
+	}}
+	svc.Okta = oktaClient
+	svc.OktaLimits = func() jit.OktaAllowlist {
+		vars, err := oktaClient.Vars()
+		if err != nil {
+			return jit.NoOktaGroups()
+		}
+		return jit.ParseOktaAllowlist(vars)
+	}
+	if vars, err := oktaClient.Vars(); err == nil && okta.Configured(vars) {
 		if _, err := okta.NewFromValues(vars); err != nil {
 			log.Error("okta credentials are set but unusable; Okta stays off until they are fixed", "err", err)
 		}
@@ -134,10 +170,13 @@ func main() {
 	if svc.OktaEnabled() {
 		lim := svc.OktaLimits()
 		auth := "api token"
-		if oktaVars()["OKTA_CLIENT_ID"] != "" {
-			auth = "service app " + oktaVars()["OKTA_CLIENT_ID"]
+		if vars, _ := oktaClient.Vars(); vars["OKTA_CLIENT_ID"] != "" {
+			auth = "service app " + vars["OKTA_CLIENT_ID"]
 		}
 		log.Info("okta enabled", "auth", auth, "grant_allowlist", lim.Grant, "read_allowlist", lim.Read)
+		if len(lim.Grant) == 0 || len(lim.Read) == 0 {
+			log.Warn("an Okta allowlist is set but empty: jitd may use no Okta group for that purpose", "grant_allowlist", lim.Grant, "read_allowlist", lim.Read)
+		}
 		if jit.AllowsAll(lim.Grant) || jit.AllowsAll(lim.Read) {
 			log.Info("an Okta allowlist is \"*\": jitd may use any Okta group its credential can reach for that purpose (" +
 				jit.EnvOktaGrantAllowlist + ", " + jit.EnvOktaReadAllowlist + ")")
@@ -152,6 +191,18 @@ func main() {
 			}
 			svc.Admins = append(svc.Admins, jit.Principal(a))
 		}
+	}
+	// No form checks -admins, so a typo in an okta: group would otherwise
+	// only show as somebody not being an admin.
+	for _, a := range svc.Admins {
+		if !a.IsOkta() {
+			continue
+		}
+		cctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		if err := svc.CheckOktaPrincipal(cctx, a); err != nil {
+			log.Error("-admins names an Okta group jitd cannot use right now; it makes nobody an admin until it can", "principal", string(a), "err", err)
+		}
+		cancel()
 	}
 	if len(svc.Admins) == 0 {
 		log.Warn("no -admins configured: nobody can manage approval flows or see other people's requests")

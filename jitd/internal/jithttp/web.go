@@ -220,8 +220,11 @@ type page struct {
 	SetupBad bool   // the last setup check failed: marks the Setup link (admins)
 	SlackOn  bool   // the build has the Slack integration (admins see its page)
 	SlackBad string // Slack is set up but not connected: why (marks the Slack link)
-	Changes  uint64 // store change counter at render time, for auto-refresh
-	Data     any
+	// OktaBad is what is wrong with Okta right now (admins): the
+	// credentials, or memberships that should be gone and are not.
+	OktaBad []jit.OktaProblem
+	Changes uint64 // store change counter at render time, for auto-refresh
+	Data    any
 }
 
 func (s *Server) render(w http.ResponseWriter, r *http.Request, name, title, nav string, data any) {
@@ -249,6 +252,9 @@ func (s *Server) renderStatus(w http.ResponseWriter, r *http.Request, status int
 		}
 		if p.Admin && s.Slack != nil {
 			p.SlackOn, p.SlackBad = true, s.Slack.Problem()
+		}
+		if p.Admin {
+			p.OktaBad = s.Svc.OktaProblems()
 		}
 	}
 	var buf bytes.Buffer

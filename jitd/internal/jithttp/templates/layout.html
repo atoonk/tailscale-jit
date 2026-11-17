@@ -42,6 +42,9 @@
 </aside>
 <main data-changes="{{.Changes}}">
   <div id="flash" class="flash" hidden></div>
+  {{if .OktaBad}}<div class="flash error" id="okta-problems"><b>Okta needs a look.</b>
+    {{range .OktaBad}}<div>{{.Text}}{{with .RequestID}} · <a href="/requests/{{.}}">open the request</a>{{end}}</div>{{end}}
+  </div>{{end}}
   {{template "content" .}}
 </main>
 </body>

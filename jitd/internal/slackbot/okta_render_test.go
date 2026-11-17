@@ -1,0 +1,37 @@
+package slackbot
+
+import (
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/atoonk/tailscale-jit/jitd/internal/jit"
+	"github.com/atoonk/tailscale-jit/jitd/internal/slack"
+)
+
+// The all-clear to an admin says what is true: a group another running
+// request holds was not removed.
+func TestOktaAllClearNamesKeptGroups(t *testing.T) {
+	now := time.Now()
+	r := &jit.AccessRequest{ID: "req_1", WorkflowName: "AWS admin", Status: jit.StatusExpired,
+		Requester:  jit.Identity{Login: "maya@example.com"},
+		OktaGroups: []jit.OktaGroup{{ID: "g1", Name: "AWS-Prod-Admin"}, {ID: "g2", Name: "AWS-Prod-ReadOnly"}},
+		Okta:       &jit.OktaGrant{UserID: "u1", Login: "maya@example.com", Added: []string{"g1", "g2"}, RemovedAt: &now}}
+	text := func(m slack.Message) string { return m.Text + " " + blocksJSON(m) }
+	if got := text(renderOktaAlert(r, "http://jit/requests/req_1")); !strings.Contains(got, "is out of AWS-Prod-Admin, AWS-Prod-ReadOnly") || strings.Contains(got, "another running request") {
+		t.Errorf("all removed: %s", got)
+	}
+	r.Okta.Kept = []string{"g2"}
+	got := text(renderOktaAlert(r, "http://jit/requests/req_1"))
+	if !strings.Contains(got, "is out of AWS-Prod-Admin and stays in AWS-Prod-ReadOnly") || !strings.Contains(got, "another running request") {
+		t.Errorf("one kept: %s", got)
+	}
+	r.Okta.Kept = []string{"g1", "g2"}
+	got = text(renderOktaAlert(r, "http://jit/requests/req_1"))
+	if strings.Contains(got, "is out of") || strings.Contains(got, "went through") || !strings.Contains(got, "stays in AWS-Prod-Admin, AWS-Prod-ReadOnly") {
+		t.Errorf("all kept: %s", got)
+	}
+	if s := statusLine(r, 0); !strings.Contains(s, "still held the Okta group AWS-Prod-Admin, AWS-Prod-ReadOnly") {
+		t.Errorf("request message: %s", s)
+	}
+}

@@ -514,16 +514,31 @@ func (b *Bot) sync(ctx context.Context, api slack.API, id string) {
 	}
 	cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	if r.Status == jit.StatusPending && w != nil && w.Slack != nil {
+	switch {
+	case w == nil || w.Slack == nil:
+	case r.Status == jit.StatusPending && !w.AutoApprove:
 		b.announce(cctx, api, r, w)
+	case r.Status == jit.StatusApproved && r.AutoApproved() && len(r.Slack) == 0:
+		// An automatic flow asks nobody: no card with Approve and Decline
+		// while the grant is being made, and one message in the channel,
+		// for the record, once it is.
+		b.announce(cctx, api, r, w)
+	}
+	if r.OktaStuck() {
+		b.alertAdmins(cctx, api, r)
 	}
 	if len(r.Slack) > 0 {
 		b.refresh(cctx, api, r, w)
 	}
 }
 
+// requestURL is the page of request r.
+func (b *Bot) requestURL(r *jit.AccessRequest) string {
+	return strings.TrimSuffix(b.BaseURL, "/") + "/requests/" + r.ID
+}
+
 func (b *Bot) message(ctx context.Context, api slack.API, r *jit.AccessRequest, w *jit.Workflow) slack.Message {
-	in := renderInput{R: r, W: w, URL: strings.TrimSuffix(b.BaseURL, "/") + "/requests/" + r.ID, Buttons: buttonsFor(w), Counted: len(r.Approvals)}
+	in := renderInput{R: r, W: w, URL: b.requestURL(r), Buttons: buttonsFor(w), Counted: len(r.Approvals)}
 	if w != nil {
 		cr := *r
 		b.Svc.CountVotes(ctx, &cr)
@@ -544,7 +559,7 @@ func (b *Bot) announce(ctx context.Context, api slack.API, r *jit.AccessRequest,
 		return slices.ContainsFunc(r.Slack, func(m jit.SlackMessage) bool { return m.Kind == kind })
 	}
 	wantChannel := w.Slack.Channel != "" && !has("channel")
-	wantDMs := w.Slack.DMApprovers && !has("dm")
+	wantDMs := w.Slack.DMApprovers && !has("dm") && r.Status == jit.StatusPending // nothing to decide otherwise
 	if !wantChannel && !wantDMs {
 		return
 	}
@@ -609,16 +624,75 @@ func (b *Bot) dmApprovers(ctx context.Context, api slack.API, r *jit.AccessReque
 	return out
 }
 
+// kindOktaAlert marks, in a request's Slack messages, the direct messages
+// that told the admins its Okta memberships could not be removed.
+const kindOktaAlert = "okta_alert"
+
+func hasOktaAlert(r *jit.AccessRequest) bool {
+	return slices.ContainsFunc(r.Slack, func(m jit.SlackMessage) bool { return m.Kind == kindOktaAlert })
+}
+
+// alertAdmins tells every admin who has a Slack account, once, that r has
+// ended but its Okta memberships are still in place. The flow's own Slack
+// settings do not matter here: this is about jitd, not about the request.
+func (b *Bot) alertAdmins(ctx context.Context, api slack.API, r *jit.AccessRequest) {
+	if hasOktaAlert(r) {
+		return
+	}
+	logins, err := b.Svc.AdminLogins(ctx)
+	if err != nil {
+		b.log().Warn("slack: direct messages to admins", "id", r.ID, "err", err)
+	}
+	msg := renderOktaAlert(r, b.requestURL(r))
+	var posted []jit.SlackMessage
+	for _, login := range logins {
+		if len(posted) >= MaxDMs {
+			break
+		}
+		u, err := b.slackUser(ctx, api, login)
+		if err != nil || b.userProblem(u) != "" {
+			continue
+		}
+		dm, err := api.OpenDM(ctx, u.ID)
+		if err != nil {
+			b.log().Warn("slack: opening a direct message", "id", r.ID, "admin", login, "err", err)
+			continue
+		}
+		ts, err := api.PostMessage(ctx, dm, msg)
+		if err != nil {
+			b.log().Warn("slack: direct message to an admin", "id", r.ID, "admin", login, "err", err)
+			continue
+		}
+		posted = append(posted, jit.SlackMessage{Channel: dm, TS: ts, Kind: kindOktaAlert, User: u.ID})
+	}
+	if len(posted) == 0 {
+		return
+	}
+	if err := b.Svc.RecordSlackMessages(r.ID, posted); err != nil {
+		b.log().Error("slack: recording posted messages", "id", r.ID, "err", err)
+	}
+	r.Slack = append(r.Slack, posted...)
+}
+
 // refresh updates every message posted about r, unless it would not
 // change.
 func (b *Bot) refresh(ctx context.Context, api slack.API, r *jit.AccessRequest, w *jit.Workflow) {
 	msg := b.message(ctx, api, r, w)
 	d := digest(msg)
+	var alert slack.Message
+	if hasOktaAlert(r) {
+		alert = renderOktaAlert(r, b.requestURL(r))
+		d += digest(alert)
+	}
 	if b.renderedDigest(r.ID) == d {
 		return
 	}
 	failed := false
 	for _, m := range r.Slack {
+		msg := msg
+		if m.Kind == kindOktaAlert {
+			msg = alert
+		}
 		if err := api.UpdateMessage(ctx, m.Channel, m.TS, msg); err != nil {
 			if c := slack.ErrorCode(err); c == "message_not_found" || c == "channel_not_found" || c == "cant_update_message" {
 				continue // deleted in Slack: nothing to update
@@ -657,6 +731,15 @@ func (b *Bot) reconcile(ctx context.Context) {
 	}
 	since := b.now().Add(-48 * time.Hour)
 	rs := b.Svc.Requests(func(r *jit.AccessRequest) bool {
+		if r.OktaStuck() {
+			return true // the admins may not have been told yet
+		}
+		if o := r.Okta; o != nil && o.AlertedAt != nil && o.RemovedAt != nil && o.RemovedAt.After(since) && len(r.Slack) > 0 {
+			return true // nor that it went through
+		}
+		if r.Status == jit.StatusApproved && len(r.Slack) == 0 && r.AutoApproved() && r.UpdatedAt.After(since) {
+			return true // an automatic grant is posted once it is made, and that may have been missed
+		}
 		return r.Status == jit.StatusPending || (len(r.Slack) > 0 && r.UpdatedAt.After(since))
 	})
 	slices.SortFunc(rs, func(a, b *jit.AccessRequest) int { return a.CreatedAt.Compare(b.CreatedAt) })
