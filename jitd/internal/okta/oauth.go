@@ -191,6 +191,27 @@ func (o *OAuth) sign(input []byte) ([]byte, error) {
 	return nil, fmt.Errorf("unsupported algorithm %s", o.alg)
 }
 
+// TokenError is Okta's token endpoint not signing the service app in.
+type TokenError struct {
+	Status      int
+	Code        string // the OAuth error, such as invalid_client; empty when the answer was not Okta's
+	Description string
+	Body        string // the answer, cut short, when it was not Okta's
+}
+
+// DPoP reports whether Okta wants DPoP proofs, which jitd does not send.
+func (e *TokenError) DPoP() bool { return strings.Contains(e.Code, "dpop") }
+
+func (e *TokenError) Error() string {
+	switch {
+	case e.DPoP():
+		return fmt.Sprintf("okta token: %d %s: turn off \"Require Demonstrating Proof of Possession (DPoP)\" for the jitd app in Okta; jitd does not send DPoP proofs", e.Status, e.Code)
+	case e.Code != "":
+		return fmt.Sprintf("okta token: %d %s: %s", e.Status, e.Code, e.Description)
+	}
+	return fmt.Sprintf("okta token: %d %s", e.Status, e.Body)
+}
+
 // token returns a valid access token, fetching a new one shortly before the
 // old one expires.
 func (o *OAuth) token(ctx context.Context, hc *http.Client) (string, error) {
@@ -232,17 +253,14 @@ func (o *OAuth) token(ctx context.Context, hc *http.Client) (string, error) {
 	}
 	_ = json.Unmarshal(b, &tr)
 	if resp.StatusCode/100 != 2 || tr.AccessToken == "" {
-		if strings.Contains(tr.Error, "dpop") {
-			return "", fmt.Errorf("okta token: %d %s: turn off \"Require Demonstrating Proof of Possession (DPoP)\" for the jitd app in Okta; jitd does not send DPoP proofs", resp.StatusCode, tr.Error)
+		te := &TokenError{Status: resp.StatusCode, Code: tr.Error, Description: tr.Description}
+		if te.Code == "" {
+			te.Body = strings.TrimSpace(string(b))
+			if len(te.Body) > 512 {
+				te.Body = te.Body[:512]
+			}
 		}
-		if tr.Error != "" {
-			return "", fmt.Errorf("okta token: %d %s: %s", resp.StatusCode, tr.Error, tr.Description)
-		}
-		body := strings.TrimSpace(string(b))
-		if len(body) > 512 {
-			body = body[:512]
-		}
-		return "", fmt.Errorf("okta token: %d %s", resp.StatusCode, body)
+		return "", te
 	}
 	if !strings.EqualFold(tr.TokenType, "Bearer") {
 		return "", fmt.Errorf("okta token: got a %q token, want Bearer; turn off DPoP for the jitd app in Okta", tr.TokenType)

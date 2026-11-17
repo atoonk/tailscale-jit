@@ -1,17 +1,20 @@
 {{define "content"}}
 <div class="head">
   <div>
-    <h1>Setup</h1>
-    <p class="sub">Is jitd installed right? This checks the Tailscale API credentials by using them the way an approval does. The credentials themselves are never shown here.</p>
+    <h1>Tailscale {{with .Data}}{{if .OK}}<span class="status approved">working</span>{{else if .Credentials.Kind}}<span class="status declined">needs a look</span>{{else}}<span class="status pending">not set up</span>{{end}}{{end}}</h1>
+    <p class="sub">jitd turns access on and off through the Tailscale API. This page holds the credential it does that with and checks it by using it the way an approval does. The credential itself is never shown here.</p>
   </div>
   <button class="btn primary" type="button" id="setupcheck">Check again</button>
 </div>
 {{with .Data}}
+{{$first := and .Credentials.CanSave (not .Credentials.Kind) (not .Credentials.FileError)}}
 {{if .OK}}
 <div class="flash ok" style="display:block">Everything works. Checked {{ago .CheckedAt}}.</div>
 {{else}}
 {{if .Transient}}
 <div class="flash error" style="display:block">The Tailscale API could not be reached or failed for a moment, so the check is incomplete; jitd keeps using the credential and retries. Checked {{ago .CheckedAt}}.</div>
+{{else if $first}}
+<div class="callout">jitd has no Tailscale API credential yet, so it cannot approve anything. Two steps below: create an OAuth client in the Tailscale admin console and paste it here.</div>
 {{else}}
 <div class="flash error" style="display:block">Something needs fixing; see below. Checked {{ago .CheckedAt}}. Approvals fail until this is green.</div>
 {{end}}
@@ -19,21 +22,44 @@
 
 <div class="grid2 wide-left">
 <div>
-<section class="card">
-  <h2>Checks</h2>
-  <table class="plain checks">
-    {{range .Checks}}
-    <tr>
-      <td class="nowrap"><b>{{.Name}}</b></td>
-      <td class="nowrap">{{if .Skipped}}<span class="status expired">skipped</span>{{else if .OK}}<span class="status approved">passed</span>{{else}}<span class="status declined">failed</span>{{end}}</td>
-      <td>{{.Detail}}{{with .Fix}}<div class="fix">{{.}}</div>{{end}}</td>
-    </tr>
-    {{end}}
-  </table>
-</section>
+{{if not $first}}{{template "tschecks" .}}{{end}}
 
+{{if and .Credentials.CanSave (ne .Credentials.Source "env") (not .Credentials.FileError)}}
 <section class="card prose">
-  <h2>How to set up the credentials</h2>
+  {{if eq .Credentials.Source "ui"}}
+  <h2>Replace the credential</h2>
+  <p>For a new OAuth client, or one with more scopes. jitd tries the new one first and keeps the one it has if a check fails.</p>
+  <details class="more">
+    <summary>Paste a new credential</summary>
+    {{template "tsform" .}}
+  </details>
+  {{else}}
+  <h2>Connect Tailscale</h2>
+  <p>jitd needs an API credential to set posture attributes on devices (that is how an approval turns access on) and to read the policy file (to resolve <code>group:</code> principals, check each flow against the policy and mark the policy snippet).</p>
+  <p>Approvals use custom posture attributes with an expiry, set through the Tailscale API; see <a href="https://tailscale.com/docs/features/tailscale-accessbot-jit#posture-attributes-api-with-expiry">Posture attributes API with expiry</a>; it needs a Premium or Enterprise plan.</p>
+  <ol class="steps">
+    <li><b>Create an OAuth client.</b> In the <a href="https://console.tailscale.com/admin/settings/trust-credentials/add">Tailscale admin console</a> go to <b>Settings → Trust credentials → New credential</b> and pick <b>OAuth</b>. Give it a description such as <i>jitd</i> and, on the <b>Scopes</b> step, these scopes: <b>Devices → Posture attributes: Write</b>, <b>Devices → Core: Read</b> (to list someone's devices when they request from Slack) and <b>Policy file: Read</b>. Copy the client ID and the secret; the secret is shown once.</li>
+    <li><b>Paste it here.</b>
+      {{template "tsform" .}}
+    </li>
+  </ol>
+  {{end}}
+  <details class="more">
+    <summary>Use an API access token instead</summary>
+    <p>It works, but it expires after at most 90 days, and it can do whatever the person who made it can. An OAuth client does not expire and has only the scopes above. Create one under <b>Settings → Keys → Generate access token</b>.</p>
+    <form class="form oktaform" data-form="ts-save">
+      <label>API access token
+        <input name="api_key" type="password" required autocomplete="off" placeholder="tskey-api-…">
+      </label>
+      <div class="flash error formerr" hidden></div>
+      <div class="actions"><button class="btn primary" type="submit">Test and save</button></div>
+    </form>
+  </details>
+  <p class="muted small">The secret is kept in jitd's database and is never shown again, here or in the API. To keep it out of the database, put <code>TS_OAUTH_CLIENT_ID</code> and <code>TS_OAUTH_CLIENT_SECRET</code> in <code>{{.Credentials.File}}</code> on the host or in jitd's environment (a Kubernetes Secret, say) instead. A credential set there wins over the one saved here.</p>
+</section>
+{{else}}
+<section class="card prose">
+  <h2>Set up outside this page</h2>
   <p>jitd needs an API credential to set posture attributes on devices (that is how an approval turns access on) and to read the policy file (to resolve <code>group:</code> principals, check each flow against the policy and mark the policy snippet). It reads the credential from a file on the host it runs on, so none of the admins here ever sees it.</p>
   <p>Approvals use custom posture attributes with an expiry, set through the Tailscale API; see <a href="https://tailscale.com/docs/features/tailscale-accessbot-jit#posture-attributes-api-with-expiry">Posture attributes API with expiry</a>; it needs a Premium or Enterprise plan.</p>
   <ol>
@@ -45,7 +71,11 @@ TS_OAUTH_CLIENT_SECRET=tskey-client-...</pre>
     <li>Come back here and click <b>Check again</b>. No restart is needed; jitd re-reads the file and starts using the new credential if the checks pass.</li>
   </ol>
   <p class="muted small">Variables set in jitd's environment are used for anything the file does not set (for example when it runs in a container). Another file can be chosen with <code>jitd -env-file</code>.</p>
-</section>
+{{if .Credentials.Shadowed}}  <p>A credential saved on this page is not in use: the file or the environment sets one, and that one wins. <button class="btn sm danger" type="button" id="tsremove">Remove the saved one</button></p>
+{{else if .Credentials.CanSave}}  <p class="muted small">To manage the credential on this page instead, take the <code>TS_OAUTH_CLIENT_ID</code>, <code>TS_OAUTH_CLIENT_SECRET</code> and <code>TS_API_KEY</code> lines out there (and out of jitd's environment), then click <b>Check again</b>.</p>
+{{end}}</section>
+{{end}}
+{{if $first}}{{template "tschecks" .}}{{end}}
 </div>
 
 <div>
@@ -53,10 +83,20 @@ TS_OAUTH_CLIENT_SECRET=tskey-client-...</pre>
   <h2>Credentials</h2>
   <table class="plain">
     <tr><td>Type</td><td>{{if eq .Credentials.Kind "oauth"}}OAuth client{{else if eq .Credentials.Kind "api_key"}}API access token{{else}}<span class="warn">none</span>{{end}}</td></tr>
-    <tr><td>File</td><td><code>{{.Credentials.File}}</code>{{if .Credentials.FileExists}} <span class="muted">(present)</span>{{else}} <span class="warn">(missing)</span>{{end}}{{with .Credentials.FileWarning}}<div class="warn small">{{.}}</div>{{end}}</td></tr>
+    <tr><td>File</td><td><code>{{.Credentials.File}}</code>{{if .Credentials.FileExists}} <span class="muted">(present)</span>{{else if .Credentials.CanSave}} <span class="muted">(not used)</span>{{else}} <span class="warn">(missing)</span>{{end}}{{with .Credentials.FileWarning}}<div class="warn small">{{.}}</div>{{end}}</td></tr>
     {{with .Credentials.FromFile}}<tr><td>From the file</td><td>{{join .}}</td></tr>{{end}}
     {{with .Credentials.FromEnv}}<tr><td>From the environment</td><td>{{join .}}</td></tr>{{end}}
+    {{if eq .Credentials.Source "ui"}}
+    {{with .Credentials.ClientID}}<tr><td>Client ID</td><td><code>{{.}}</code></td></tr>{{end}}
+    {{with .Credentials.KeyHint}}<tr><td>Token</td><td><code>{{.}}</code></td></tr>{{end}}
+    <tr><td>Saved</td><td>on this page{{if .Credentials.SavedBy}} by {{.Credentials.SavedBy}}, {{ago .Credentials.SavedAt}}{{end}}</td></tr>
+    {{end}}
+    {{with .Credentials.SavedError}}<tr><td>Saved here</td><td><span class="warn">could not be read: {{.}}</span></td></tr>{{end}}
   </table>
+  {{if eq .Credentials.Source "ui"}}
+  <div class="actions"><button class="btn sm danger" type="button" id="tsremove">Remove</button></div>
+  <p class="warn small" id="tsremove-warn" hidden>Without a credential jitd cannot approve, revoke or clean up. Access already granted still ends on time: Tailscale drops the attribute at its expiry.</p>
+  {{end}}
 </section>
 <section class="card">
   <h2>This node</h2>
@@ -72,4 +112,32 @@ TS_OAUTH_CLIENT_SECRET=tskey-client-...</pre>
 {{else}}
 <div class="empty">This build has no setup check (the preview and tests run without a Tailscale API).</div>
 {{end}}
+{{end}}
+
+{{define "tsform"}}
+<form class="form oktaform" data-form="ts-save">
+  <label>Client ID
+    <input name="client_id" required autocomplete="off" placeholder="k123ABC456CNTRL">
+  </label>
+  <label>Client secret
+    <input name="client_secret" type="password" required autocomplete="off" placeholder="tskey-client-…">
+  </label>
+  <div class="flash error formerr" hidden></div>
+  <div class="actions"><button class="btn primary" type="submit">Test and save</button><span class="muted small">jitd runs the checks on this page with it first. Nothing is saved unless they pass.</span></div>
+</form>
+{{end}}
+
+{{define "tschecks"}}
+<section class="card">
+  <h2>Checks</h2>
+  <table class="plain checks">
+    {{range .Checks}}
+    <tr>
+      <td class="nowrap"><b>{{.Name}}</b></td>
+      <td class="nowrap">{{if .Skipped}}<span class="status expired">skipped</span>{{else if .OK}}<span class="status approved">passed</span>{{else}}<span class="status declined">failed</span>{{end}}</td>
+      <td>{{.Detail}}{{with .Fix}}<div class="fix">{{.}}</div>{{end}}</td>
+    </tr>
+    {{end}}
+  </table>
+</section>
 {{end}}

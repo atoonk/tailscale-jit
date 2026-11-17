@@ -8,7 +8,12 @@ package main
 import (
 	"cmp"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
 	_ "embed"
+	"encoding/pem"
 	"flag"
 	"fmt"
 	"io"
@@ -21,10 +26,13 @@ import (
 	"sync"
 	"time"
 
+	"github.com/atoonk/tailscale-jit/jitd/internal/google"
+	"github.com/atoonk/tailscale-jit/jitd/internal/googlesetup"
 	"github.com/atoonk/tailscale-jit/jitd/internal/jit"
 	"github.com/atoonk/tailscale-jit/jitd/internal/jithttp"
 	"github.com/atoonk/tailscale-jit/jitd/internal/jitmcp"
 	"github.com/atoonk/tailscale-jit/jitd/internal/okta"
+	"github.com/atoonk/tailscale-jit/jitd/internal/oktasetup"
 	"github.com/atoonk/tailscale-jit/jitd/internal/setup"
 	"github.com/atoonk/tailscale-jit/jitd/internal/slack"
 	"github.com/atoonk/tailscale-jit/jitd/internal/slackbot"
@@ -42,6 +50,17 @@ var people = map[string]jit.Identity{
 }
 
 // fakeTS keeps attributes in memory and serves a fixed policy.
+// refusedTS answers like the Tailscale API does to a credential it does
+// not know.
+type refusedTS struct{ tsapi.Client }
+
+var errRefused = &tsapi.APIError{Method: "GET", Path: "/api/v2/tailnet/-/acl", Status: 401, Body: `{"message":"API token invalid"}`}
+
+func (refusedTS) GetPolicy(context.Context) (tsapi.Policy, error) { return tsapi.Policy{}, errRefused }
+func (refusedTS) GetAttributes(context.Context, string) (tsapi.Attributes, error) {
+	return tsapi.Attributes{}, errRefused
+}
+
 type fakeTS struct {
 	mu     sync.Mutex
 	attrs  map[string]time.Time // device|key -> expiry
@@ -102,11 +121,14 @@ func (f *fakeTS) GetPolicy(ctx context.Context) (tsapi.Policy, error) {
 
 func main() {
 	listen := flag.String("listen", "127.0.0.1:8099", "address to serve on")
-	envFile := flag.String("env-file", "", "credentials file for the Setup page; a temp file with made-up values if empty, so point it at a missing file to see the failure state")
+	envFile := flag.String("env-file", "", "credentials file for the Tailscale page; a temp file with made-up values if empty, so point it at a missing file to see the failure state")
 	demo := flag.Bool("demo", false, "use the demo cast (Maya, Sam, Priya, Leo), demo flows and two weeks of history, for screenshots")
 	baseURL := flag.String("base-url", "", "base URL used in approval links (default http://<listen>)")
 	defaultWho := flag.String("default", "", "person to assume when a request has no who cookie (e.g. so an MCP client can talk to the preview)")
 	slackConnected := flag.Bool("slack", true, "start with a made-up Slack workspace connected (false: the Slack page shows the setup steps)")
+	tsMode := flag.String("tailscale", "page", "how the Tailscale API credential is set up: page (saved on the Tailscale page), env (in the env file), off (the page shows the setup steps); a client secret starting with tskey-client-wrong is refused")
+	oktaMode := flag.String("okta", "page", "how the made-up Okta org is set up: page (credentials saved on the Okta page), env (set in the env file, with allowlists), off (the Okta page shows the setup steps), failing (saved on the page, but Okta refuses them)")
+	googleMode := flag.String("google", "page", "how the made-up Google account is set up: page (key saved on the Google Groups page), env (key in the env file), off (the page shows the setup steps), failing (saved on the page, but the service account has lost its role); a pasted key for an account starting with norole@ is taken, as Google takes it, and sees no groups")
 	flag.Parse()
 	admins := []jit.Principal{"root@example.com"}
 	if *demo {
@@ -135,7 +157,83 @@ func main() {
 	of.AddGroup("00gAWSPRODADMIN01", "AWS-Prod-Admin", "")
 	of.AddGroup("00gAWSPRODREAD002", "AWS-Prod-ReadOnly", "")
 	of.AddGroup("00gGRAFANAADMIN3", "Grafana-Admins", "")
-	svc.Okta = of
+	// The Okta page saves to the store like the real one, but whatever is
+	// pasted there reaches the made-up org. An address that starts with
+	// "wrong" is refused the way Okta refuses a key it does not know, to
+	// show what a failed save looks like.
+	oktaKey := previewKey()
+	oktaEnv := map[string]string{}
+	if *oktaMode == "env" {
+		oktaEnv = map[string]string{
+			"OKTA_ORG_URL": "https://example.okta.com", "OKTA_CLIENT_ID": "0oa1preview0000jitd5d7", "OKTA_PRIVATE_KEY": oktaKey,
+			jit.EnvOktaGrantAllowlist: "AWS-Prod-Admin, AWS-Prod-ReadOnly", jit.EnvOktaReadAllowlist: "",
+		}
+	}
+	oktaSetup := &oktasetup.Manager{Store: st, Svc: svc, EnvFile: filepath.Join(dir, "env"), Log: log,
+		Env: func() (map[string]string, error) { return oktaEnv, nil },
+		Dial: func(vars map[string]string) (okta.Client, error) {
+			if strings.Contains(vars["OKTA_ORG_URL"], "//wrong") {
+				bad := okta.NewFake()
+				bad.Fail["check"] = &okta.TokenError{Status: 401, Code: "invalid_client", Description: "The client_assertion signature is invalid."}
+				return bad, nil
+			}
+			return of, nil
+		}}
+	oktaSetup.Load()
+	oktaClient := &okta.Dynamic{Load: oktaSetup.Vars, New: func(map[string]string) (okta.Client, error) { return of, nil }}
+	svc.Okta = oktaClient
+	svc.OktaLimits = func() jit.OktaAllowlist {
+		vars, err := oktaClient.Vars()
+		if err != nil {
+			return jit.NoOktaGroups()
+		}
+		return jit.ParseOktaAllowlist(vars)
+	}
+	if *oktaMode == "page" || *oktaMode == "failing" {
+		if _, err := oktaSetup.Save(context.Background(), jit.Identity{Login: string(admins[0])}, oktasetup.Input{
+			OrgURL: "https://example.okta.com", ClientID: "0oa1preview0000jitd5d7", PrivateKey: oktaKey}); err != nil {
+			log.Error("preview okta", "err", err)
+		}
+	}
+	// A made-up Google account, set up the same way. A key for a service
+	// account whose address starts with "norole@" is one that was never
+	// given the Groups Admin role: Google takes the key all the same, and
+	// shows it no groups.
+	gf := google.NewFake()
+	gf.AddGroup("01gcpprodviewers", "gcp-prod-viewers@example.com", false)
+	gf.AddGroup("02gcpprodadmins0", "gcp-prod-admins@example.com", false)
+	gf.AddGroup("03allengineering", "engineering@example.com", true)
+	const googleAccount = "jitd@example-prod.iam.gserviceaccount.com"
+	pickGoogle := func(vars map[string]string) (google.Client, error) {
+		if key, _ := google.ParseKey(vars[google.EnvKey]); key != nil && strings.HasPrefix(key.Email, "norole@") {
+			blind := google.NewFake()
+			blind.SetBlind(true)
+			return blind, nil
+		}
+		return gf, nil
+	}
+	googleEnv := map[string]string{}
+	if *googleMode == "env" {
+		googleEnv = map[string]string{google.EnvKey: google.FakeKey(googleAccount, "example-prod"), google.EnvDomains: "example.com"}
+	}
+	googleSetup := &googlesetup.Manager{Store: st, Svc: svc, EnvFile: filepath.Join(dir, "env"), Log: log,
+		Env: func() (map[string]string, error) { return googleEnv, nil }, Dial: pickGoogle}
+	googleSetup.Load()
+	googleClient := &google.Dynamic{Load: googleSetup.Vars, New: pickGoogle}
+	svc.Google = googleClient
+	svc.GoogleLimits = func() jit.GoogleLimits {
+		vars, err := googleClient.Vars()
+		if err != nil {
+			return jit.NoGoogleGroups()
+		}
+		return jit.ParseGoogleLimits(vars)
+	}
+	if *googleMode == "page" || *googleMode == "failing" {
+		if _, err := googleSetup.Save(context.Background(), jit.Identity{Login: string(admins[0])}, googlesetup.Input{
+			Key: google.FakeKey(googleAccount, "example-prod"), Domains: "example.com", Grant: "*"}); err != nil {
+			log.Error("preview google", "err", err)
+		}
+	}
 	svc.PolicyCache = &jit.PolicyCache{TS: ts, TTL: time.Minute, Log: log}
 
 	// A made-up Slack: everyone in the cast has an account, and the bot can
@@ -168,19 +266,51 @@ func main() {
 
 	if *envFile == "" {
 		*envFile = filepath.Join(dir, "env")
-		os.WriteFile(*envFile, []byte("TS_OAUTH_CLIENT_ID=preview\nTS_OAUTH_CLIENT_SECRET=preview\n"), 0o600)
+		if *tsMode == "env" {
+			os.WriteFile(*envFile, []byte("TS_OAUTH_CLIENT_ID=preview\nTS_OAUTH_CLIENT_SECRET=preview\n"), 0o600)
+		}
 	}
 	checker := &setup.Checker{
-		EnvFile: *envFile, Tag: "tag:jit", Log: log,
+		EnvFile: *envFile, Store: st, Tag: "tag:jit", Log: log,
 		Node: func(context.Context) (setup.Node, error) {
 			return setup.Node{ID: "nJIT", DNSName: "jit.example.ts.net", Tags: []string{"tag:jit"}}, nil
 		},
-		NewClient: func(context.Context, string, map[string]string) (tsapi.Client, error) { return ts, nil },
+		NewClient: func(_ context.Context, _ string, vars map[string]string) (tsapi.Client, error) {
+			if strings.HasPrefix(vars["TS_OAUTH_CLIENT_SECRET"], "tskey-client-wrong") {
+				return refusedTS{ts}, nil
+			}
+			return ts, nil
+		},
+	}
+	if *tsMode == "page" {
+		if _, err := checker.Save(context.Background(), string(admins[0]), setup.Input{ClientID: "kPreview11CNTRL", ClientSecret: "tskey-client-kPreview11CNTRL-madeUpForThePreview"}); err != nil {
+			log.Error("preview: saving the Tailscale credential", "err", err)
+		}
 	}
 	checker.Run(context.Background())
+	if *oktaMode == "failing" {
+		of.Fail["check"] = &okta.APIError{Method: "GET", Path: "/api/v1/groups?limit=1", Status: 403, Code: "E0000006", Summary: "You do not have permission to perform the requested action"}
+		svc.OktaCheckNow(context.Background())
+	}
+	// A flow that names a Google group: jitd's check looks for it, which
+	// is the only way the Groups Admin role shows.
+	if svc.GoogleEnabled() {
+		if _, err := svc.CreateWorkflow(jit.Workflow{
+			Name: "GCP production viewer", Description: "Google group membership: read-only roles in the production projects",
+			GoogleGroups: []jit.GroupRef{{Name: "gcp-prod-viewers@example.com"}},
+			Requesters:   []jit.Principal{"autogroup:member"}, Approvers: []jit.Principal{"autogroup:member"},
+			MaxDuration: jit.Duration(4 * time.Hour), DefaultDuration: jit.Duration(time.Hour),
+		}); err != nil {
+			log.Error("preview google flow", "err", err)
+		}
+		if *googleMode == "failing" {
+			gf.SetBlind(true)
+		}
+		svc.GoogleCheckNow(context.Background())
+	}
 
 	h := &jithttp.Server{
-		Svc: svc, TS: ts, Setup: checker, Slack: bot, JITTag: "tag:jit", BaseURL: base, Log: log,
+		Svc: svc, TS: ts, Setup: checker, Slack: bot, Okta: oktaSetup, Google: googleSetup, JITTag: "tag:jit", BaseURL: base, Log: log,
 		Resolver: jit.ResolverFunc(func(ctx context.Context, r *http.Request) (jit.Identity, error) {
 			c, _ := r.Cookie("who")
 			if c != nil {
@@ -234,6 +364,20 @@ func main() {
 }
 
 // seed fills the store with flows and requests that exercise every role.
+// previewKey makes a private key for the made-up Okta service app, so the
+// Okta page has a real fingerprint to show.
+func previewKey() string {
+	k, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		panic(err)
+	}
+	der, err := x509.MarshalPKCS8PrivateKey(k)
+	if err != nil {
+		panic(err)
+	}
+	return string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}))
+}
+
 func seed(svc *jit.Service) {
 	ctx := context.Background()
 	must := func(w *jit.Workflow, err error) *jit.Workflow {
@@ -261,12 +405,15 @@ func seed(svc *jit.Service) {
 		AllowSelfApproval: true, MaxDuration: jit.Duration(8 * time.Hour), DefaultDuration: jit.Duration(2 * time.Hour),
 	}))
 
-	aws := must(svc.CreateWorkflow(jit.Workflow{
-		Name: "AWS production admin", Description: "Okta group membership: AdministratorAccess in the prod AWS account via SSO",
-		OktaGroups: []jit.OktaGroup{{Name: "AWS-Prod-Admin"}},
-		Requesters: []jit.Principal{"autogroup:member"}, Approvers: []jit.Principal{"bob@example.com", "group:sre"},
-		MaxDuration: jit.Duration(4 * time.Hour), DefaultDuration: jit.Duration(time.Hour),
-	}))
+	var aws *jit.Workflow // only with Okta set up
+	if svc.OktaEnabled() {
+		aws = must(svc.CreateWorkflow(jit.Workflow{
+			Name: "AWS production admin", Description: "Okta group membership: AdministratorAccess in the prod AWS account via SSO",
+			OktaGroups: []jit.OktaGroup{{Name: "AWS-Prod-Admin"}},
+			Requesters: []jit.Principal{"autogroup:member"}, Approvers: []jit.Principal{"bob@example.com", "group:sre"},
+			MaxDuration: jit.Duration(4 * time.Hour), DefaultDuration: jit.Duration(time.Hour),
+		}))
+	}
 
 	// More flows, so the request picker is tested with a realistic number.
 	more := []jit.Workflow{
@@ -290,7 +437,8 @@ func seed(svc *jit.Service) {
 		return r
 	}
 	// Dave has AWS admin through Okta, approved by bob.
-	if r := submit("dave", aws, time.Hour, "INC-4821: scale the prod RDS instance"); r != nil {
+	if aws != nil {
+		r := submit("dave", aws, time.Hour, "INC-4821: scale the prod RDS instance")
 		if _, err := svc.Approve(ctx, people["bob"], r.ID, "go ahead"); err != nil {
 			panic(err)
 		}

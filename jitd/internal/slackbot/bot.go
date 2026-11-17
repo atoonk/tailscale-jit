@@ -525,7 +525,7 @@ func (b *Bot) sync(ctx context.Context, api slack.API, id string) {
 		// once it is scheduled).
 		b.announce(cctx, api, r, w)
 	}
-	if r.OktaStuck() {
+	if r.GroupsStuck() {
 		b.alertAdmins(cctx, api, r)
 	}
 	if len(r.Slack) > 0 {
@@ -625,26 +625,29 @@ func (b *Bot) dmApprovers(ctx context.Context, api slack.API, r *jit.AccessReque
 	return out
 }
 
-// kindOktaAlert marks, in a request's Slack messages, the direct messages
-// that told the admins its Okta memberships could not be removed.
-const kindOktaAlert = "okta_alert"
+// kindGroupAlert marks, in a request's Slack messages, the direct messages
+// that told the admins its group memberships (Okta, Google) could not be
+// removed. The stored value dates from when Okta was the only kind.
+const kindGroupAlert = "okta_alert"
 
-func hasOktaAlert(r *jit.AccessRequest) bool {
-	return slices.ContainsFunc(r.Slack, func(m jit.SlackMessage) bool { return m.Kind == kindOktaAlert })
+func hasGroupAlert(r *jit.AccessRequest) bool {
+	return slices.ContainsFunc(r.Slack, func(m jit.SlackMessage) bool { return m.Kind == kindGroupAlert })
 }
 
 // alertAdmins tells every admin who has a Slack account, once, that r has
-// ended but its Okta memberships are still in place. The flow's own Slack
-// settings do not matter here: this is about jitd, not about the request.
+// ended but its group memberships are still in place: one message per
+// request, which covers every kind of group it is about. The flow's own
+// Slack settings do not matter here: this is about jitd, not about the
+// request.
 func (b *Bot) alertAdmins(ctx context.Context, api slack.API, r *jit.AccessRequest) {
-	if hasOktaAlert(r) {
+	if hasGroupAlert(r) {
 		return
 	}
 	logins, err := b.Svc.AdminLogins(ctx)
 	if err != nil {
 		b.log().Warn("slack: direct messages to admins", "id", r.ID, "err", err)
 	}
-	msg := renderOktaAlert(r, b.requestURL(r))
+	msg := renderGroupAlert(r, b.requestURL(r))
 	var posted []jit.SlackMessage
 	for _, login := range logins {
 		if len(posted) >= MaxDMs {
@@ -664,7 +667,7 @@ func (b *Bot) alertAdmins(ctx context.Context, api slack.API, r *jit.AccessReque
 			b.log().Warn("slack: direct message to an admin", "id", r.ID, "admin", login, "err", err)
 			continue
 		}
-		posted = append(posted, jit.SlackMessage{Channel: dm, TS: ts, Kind: kindOktaAlert, User: u.ID})
+		posted = append(posted, jit.SlackMessage{Channel: dm, TS: ts, Kind: kindGroupAlert, User: u.ID})
 	}
 	if len(posted) == 0 {
 		return
@@ -681,8 +684,8 @@ func (b *Bot) refresh(ctx context.Context, api slack.API, r *jit.AccessRequest, 
 	msg := b.message(ctx, api, r, w)
 	d := digest(msg)
 	var alert slack.Message
-	if hasOktaAlert(r) {
-		alert = renderOktaAlert(r, b.requestURL(r))
+	if hasGroupAlert(r) {
+		alert = renderGroupAlert(r, b.requestURL(r))
 		d += digest(alert)
 	}
 	if b.renderedDigest(r.ID) == d {
@@ -691,7 +694,7 @@ func (b *Bot) refresh(ctx context.Context, api slack.API, r *jit.AccessRequest, 
 	failed := false
 	for _, m := range r.Slack {
 		msg := msg
-		if m.Kind == kindOktaAlert {
+		if m.Kind == kindGroupAlert {
 			msg = alert
 		}
 		if err := api.UpdateMessage(ctx, m.Channel, m.TS, msg); err != nil {
@@ -732,11 +735,13 @@ func (b *Bot) reconcile(ctx context.Context) {
 	}
 	since := b.now().Add(-48 * time.Hour)
 	rs := b.Svc.Requests(func(r *jit.AccessRequest) bool {
-		if r.OktaStuck() {
+		if r.GroupsStuck() {
 			return true // the admins may not have been told yet
 		}
-		if o := r.Okta; o != nil && o.AlertedAt != nil && o.RemovedAt != nil && o.RemovedAt.After(since) && len(r.Slack) > 0 {
-			return true // nor that it went through
+		for _, set := range r.GroupSets() {
+			if g := set.Grant; g != nil && g.AlertedAt != nil && g.RemovedAt != nil && g.RemovedAt.After(since) && len(r.Slack) > 0 {
+				return true // nor that it went through
+			}
 		}
 		if (r.Status == jit.StatusApproved || r.Status == jit.StatusScheduled) && len(r.Slack) == 0 && r.AutoApproved() && r.UpdatedAt.After(since) {
 			return true // an automatic grant is posted once it is made, and that may have been missed

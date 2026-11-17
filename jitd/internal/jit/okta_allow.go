@@ -1,8 +1,12 @@
 package jit
 
 import (
+	"context"
+	"errors"
 	"slices"
 	"strings"
+
+	"github.com/atoonk/tailscale-jit/jitd/internal/okta"
 )
 
 // Okta group allowlists.
@@ -24,12 +28,16 @@ import (
 // being readable later, the lists read last stay in force (see main): a
 // mistake in the env file must not open every group.
 
-// OktaAllowlist holds the two lists. A nil list is one that was never set
-// and allows every group; an empty, non-nil list allows none.
-type OktaAllowlist struct {
+// GroupAllowlist holds the two lists of one group provider. A nil list is
+// one that was never set and allows every group; an empty, non-nil list
+// allows none.
+type GroupAllowlist struct {
 	Grant []string
 	Read  []string
 }
+
+// OktaAllowlist holds Okta's two lists.
+type OktaAllowlist = GroupAllowlist
 
 // NoOktaGroups is the allowlist that lets no group through, for when the
 // lists cannot be read.
@@ -127,4 +135,59 @@ func (s *Service) grantAllowed(g OktaGroup) bool {
 
 func (s *Service) readAllowed(id, name string) bool {
 	return allowed(s.oktaAllow().Read, id, name)
+}
+
+// OktaGroupCheck is what jitd can tell about one Okta group without
+// changing anything in Okta: whether a flow could grant it, and whether it
+// could be used as an okta: principal.
+type OktaGroupCheck struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	Type string `json:"type,omitempty"`
+	// Manageable: Okta lets an API client change the members (not a group
+	// whose members come from a directory, an app or a rule).
+	Manageable bool `json:"manageable"`
+	// GrantAllowed and ReadAllowed: the allowlists let jitd grant it, and
+	// read its members for an okta: principal.
+	GrantAllowed bool `json:"grant_allowed"`
+	ReadAllowed  bool `json:"read_allowed"`
+	// Members is how many members jitd's credential can list (MembersCapped:
+	// at least that many), or MembersError says why it cannot.
+	Members       int    `json:"members"`
+	MembersCapped bool   `json:"members_capped,omitempty"`
+	MembersError  string `json:"members_error,omitempty"`
+}
+
+// CheckOktaGroup looks one group up, by name or ID, with jitd's credential.
+// It only reads. That jitd may add and remove members shows the first time
+// a request is approved: Okta has no way to ask without doing it.
+func (s *Service) CheckOktaGroup(ctx context.Context, ref string) (OktaGroupCheck, error) {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return OktaGroupCheck{}, badRequest("name an Okta group, by its name or its ID (00g…)")
+	}
+	if !s.oktaEnabled() {
+		return OktaGroupCheck{}, conflict("%s", s.oktaWhyOff())
+	}
+	actx, cancel := apiContext(ctx)
+	defer cancel()
+	g, err := s.Okta.FindGroup(actx, ref)
+	if errors.Is(err, okta.ErrNotFound) {
+		return OktaGroupCheck{}, notFound("Okta has no group %q that jitd's credential can see. If the group exists, the credential's admin role does not cover it.", ref)
+	}
+	if err != nil {
+		return OktaGroupCheck{}, apiFailed("looking up Okta group %q: %v", ref, err)
+	}
+	out := OktaGroupCheck{
+		ID: g.ID, Name: g.Name(), Type: g.Type, Manageable: g.Manageable(),
+		GrantAllowed: s.grantAllowed(OktaGroup{ID: g.ID, Name: g.Name()}),
+		ReadAllowed:  s.readAllowed(g.ID, g.Name()),
+	}
+	us, err := s.Okta.GroupMembers(actx, g.ID)
+	if err != nil {
+		out.MembersError = err.Error()
+	} else {
+		out.Members, out.MembersCapped = len(us), len(us) >= okta.MaxGroupMembers
+	}
+	return out, nil
 }

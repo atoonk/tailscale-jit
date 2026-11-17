@@ -12,7 +12,9 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/atoonk/tailscale-jit/jitd/internal/googlesetup"
 	"github.com/atoonk/tailscale-jit/jitd/internal/jit"
+	"github.com/atoonk/tailscale-jit/jitd/internal/oktasetup"
 	"github.com/atoonk/tailscale-jit/jitd/internal/setup"
 	"github.com/atoonk/tailscale-jit/jitd/internal/slack"
 	"github.com/atoonk/tailscale-jit/jitd/internal/slackbot"
@@ -75,6 +77,33 @@ func init() {
 				out[i] = g.Label()
 			}
 			return strings.Join(out, ", ")
+		},
+		// groupkinds names the kinds of group a request is about: "Okta",
+		// "Okta and Google".
+		"groupkinds": func(r *jit.AccessRequest) string {
+			var out []string
+			for _, g := range r.GroupSets() {
+				out = append(out, g.Label)
+			}
+			return strings.Join(out, " and ")
+		},
+		// groupnouns says which groups a request adds its requester to:
+		// "Okta groups and the Google group".
+		"groupnouns": func(r *jit.AccessRequest) string {
+			var out []string
+			for _, g := range r.GroupSets() {
+				noun := g.Label + " group"
+				if len(g.Groups) > 1 {
+					noun += "s"
+				}
+				out = append(out, noun)
+			}
+			return strings.Join(out, " and the ")
+		},
+		// groupsremoved: did jitd take the requester out of any group when
+		// the request ended.
+		"groupsremoved": func(r *jit.AccessRequest) bool {
+			return slices.ContainsFunc(r.GroupSets(), func(g jit.GroupSet) bool { return len(g.Removed()) > 0 })
 		},
 		"seq": func(a, b int) []int {
 			var out []int
@@ -179,6 +208,20 @@ type flowRow struct {
 	Policy *jit.PolicyUse
 	Slack  *slackField // nil: no Slack integration in this build
 	Okta   bool        // Okta credentials are configured
+	// OktaPage: there is an Okta page to send the admin to when they are not.
+	OktaPage bool
+	Google   bool // a Google service account key is configured
+	// GooglePage: there is a Google page to send the admin to when it is not.
+	GooglePage bool
+}
+
+// flowRow builds the flow form's data for w.
+func (s *Server) flowForm(r *http.Request, w *jit.Workflow, policy *jit.PolicyUse) flowRow {
+	return flowRow{
+		Flow: w, Policy: policy, Slack: s.slackField(r, w),
+		Okta: s.Svc.OktaEnabled(), OktaPage: s.Okta != nil,
+		Google: s.Svc.GoogleEnabled(), GooglePage: s.Google != nil,
+	}
 }
 
 // slackField fills the Slack part of the flow form.
@@ -211,20 +254,73 @@ func (s *Server) slackField(r *http.Request, w *jit.Workflow) *slackField {
 }
 
 type page struct {
-	Title    string
-	Nav      string
-	Me       *jit.Identity
-	MeErr    string
-	Admin    bool
-	Approver bool   // approves for at least one flow: shows the approval views
-	SetupBad bool   // the last setup check failed: marks the Setup link (admins)
-	SlackOn  bool   // the build has the Slack integration (admins see its page)
-	SlackBad string // Slack is set up but not connected: why (marks the Slack link)
-	// OktaBad is what is wrong with Okta right now (admins): the
-	// credentials, or memberships that should be gone and are not.
-	OktaBad []jit.OktaProblem
+	Title     string
+	Nav       string
+	Tab       string // on an Integrations page: which one (tailscale, slack, okta, ...)
+	Tabs      []tab  // on an Integrations page: the tab strip
+	Me        *jit.Identity
+	MeErr     string
+	Admin     bool
+	Approver  bool   // approves for at least one flow: shows the approval views
+	SetupBad  bool   // the last setup check failed: marks the Setup link (admins)
+	SlackOn   bool   // the build has the Slack integration (admins see its page)
+	SlackBad  string // Slack is set up but not connected: why (marks the Slack link)
+	OktaOn    bool   // there is an Okta page (admins)
+	OktaDot   bool   // something is wrong with Okta (admins): the dot on its tab
+	GoogleOn  bool   // there is a Google page (admins)
+	GoogleDot bool   // something is wrong with Google (admins): the dot on its tab
+	// Banners is what is wrong with the group providers right now
+	// (admins): the credentials, or memberships that should be gone and
+	// are not. One per provider that has something to say.
+	Banners []banner
 	Changes uint64 // store change counter at render time, for auto-refresh
 	Data    any
+}
+
+// banner is what is wrong with one group provider, shown on every page.
+type banner struct {
+	Key   string // "okta", "google": its tab
+	Label string // "Okta", "Google Groups"
+	Page  bool   // there is a page to send the admin to
+	Bad   []jit.GroupProblem
+}
+
+// tab is one entry of the Integrations tab strip.
+type tab struct {
+	Key   string // the last part of /admin/integrations/<key>
+	Label string
+	Bad   string // why it needs a look: shows a red dot with this as its title
+}
+
+// tabs lists the Integrations tabs for the page being rendered. A new
+// integration is one more entry here, plus its route.
+func (p *page) tabs() []tab {
+	out := []tab{{Key: "tailscale", Label: "Tailscale"}}
+	if p.SetupBad {
+		out[0].Bad = "The Tailscale check failed"
+	}
+	if p.SlackOn {
+		t := tab{Key: "slack", Label: "Slack"}
+		if p.SlackBad != "" {
+			t.Bad = "Slack is not connected: " + p.SlackBad
+		}
+		out = append(out, t)
+	}
+	if p.OktaOn {
+		t := tab{Key: "okta", Label: "Okta"}
+		if p.OktaDot {
+			t.Bad = "Okta needs a look"
+		}
+		out = append(out, t)
+	}
+	if p.GoogleOn {
+		t := tab{Key: "google", Label: "Google Groups"}
+		if p.GoogleDot {
+			t.Bad = "Google Groups needs a look"
+		}
+		out = append(out, t)
+	}
+	return out
 }
 
 func (s *Server) render(w http.ResponseWriter, r *http.Request, name, title, nav string, data any) {
@@ -239,6 +335,9 @@ func (s *Server) renderAdmin(w http.ResponseWriter, r *http.Request, name, title
 
 func (s *Server) renderStatus(w http.ResponseWriter, r *http.Request, status int, name, title, nav string, data any) {
 	p := page{Title: title, Nav: nav, Data: data, Changes: s.Svc.Store.Changes()}
+	if tab, ok := strings.CutPrefix(nav, "admin-integrations/"); ok {
+		p.Nav, p.Tab = "admin-integrations", tab
+	}
 	if id, err := s.Resolver.Resolve(r.Context(), r); err != nil {
 		p.MeErr = jit.AsError(err).Message
 	} else {
@@ -254,8 +353,28 @@ func (s *Server) renderStatus(w http.ResponseWriter, r *http.Request, status int
 			p.SlackOn, p.SlackBad = true, s.Slack.Problem()
 		}
 		if p.Admin {
-			p.OktaBad = s.Svc.OktaProblems()
+			p.OktaOn, p.GoogleOn = s.Okta != nil, s.Google != nil
+			okta, goog := s.Svc.OktaProblems(), s.Svc.GoogleProblems()
+			p.OktaDot, p.GoogleDot = len(okta) > 0, len(goog) > 0
+			// A provider's own page says what is wrong with the connection
+			// itself, and how to fix it; the banner keeps the requests.
+			conn := func(x jit.GroupProblem) bool { return x.RequestID == "" }
+			if own, ok := data.(oktaPageData); ok && own.Status.Configured() {
+				okta = slices.DeleteFunc(okta, conn)
+			}
+			if own, ok := data.(googlePageData); ok && own.Status.Configured() {
+				goog = slices.DeleteFunc(goog, conn)
+			}
+			if len(okta) > 0 {
+				p.Banners = append(p.Banners, banner{Key: "okta", Label: "Okta", Page: p.OktaOn, Bad: okta})
+			}
+			if len(goog) > 0 {
+				p.Banners = append(p.Banners, banner{Key: "google", Label: "Google Groups", Page: p.GoogleOn, Bad: goog})
+			}
 		}
+	}
+	if p.Tab != "" {
+		p.Tabs = p.tabs()
 	}
 	var buf bytes.Buffer
 	if err := pages[name].ExecuteTemplate(&buf, "layout", p); err != nil {
@@ -302,7 +421,7 @@ func (s *Server) webRoutes(mux *http.ServeMux) {
 		wf := &jit.Workflow{MaxDuration: jit.DefaultMaxDuration, ApprovalTimeout: jit.DefaultApprovalTimeout}
 		wf.Normalize()
 		wf.Attribute = ""
-		s.renderAdmin(w, r, "workflow_form", "New approval flow", "workflows", flowRow{Flow: wf, Slack: s.slackField(r, wf), Okta: s.Svc.OktaEnabled()})
+		s.renderAdmin(w, r, "workflow_form", "New approval flow", "workflows", s.flowForm(r, wf, nil))
 	}))
 	mux.HandleFunc("GET /admin/workflows/{id}", s.adminPage(func(w http.ResponseWriter, r *http.Request, _ jit.Identity) {
 		wf, err := s.Svc.GetWorkflow(r.PathValue("id"))
@@ -310,7 +429,7 @@ func (s *Server) webRoutes(mux *http.ServeMux) {
 			s.notFound(w, r, err)
 			return
 		}
-		s.renderAdmin(w, r, "workflow_form", "Edit approval flow", "workflows", flowRow{Flow: wf, Policy: s.Svc.PolicyUse(r.Context(), wf), Slack: s.slackField(r, wf), Okta: s.Svc.OktaEnabled()})
+		s.renderAdmin(w, r, "workflow_form", "Edit approval flow", "workflows", s.flowForm(r, wf, s.Svc.PolicyUse(r.Context(), wf)))
 	}))
 	mux.HandleFunc("GET /admin/policy", s.adminPage(func(w http.ResponseWriter, r *http.Request, _ jit.Identity) {
 		missing := r.URL.Query().Get("missing") == "1"
@@ -321,19 +440,43 @@ func (s *Server) webRoutes(mux *http.ServeMux) {
 		}
 		s.renderAdmin(w, r, "policy", "Policy snippet", "policy", data)
 	}))
-	mux.HandleFunc("GET /admin/setup", s.adminPage(func(w http.ResponseWriter, r *http.Request, _ jit.Identity) {
+	// Integrations: one page per service jitd connects to, as tabs.
+	// Tailscale comes first: nothing works without it.
+	mux.HandleFunc("GET /admin/integrations", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/admin/integrations/tailscale", http.StatusFound)
+	})
+	for old, tab := range map[string]string{"/admin/setup": "tailscale", "/admin/slack": "slack", "/admin/okta": "okta"} {
+		mux.HandleFunc("GET "+old, func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, "/admin/integrations/"+tab, http.StatusMovedPermanently)
+		})
+	}
+	mux.HandleFunc("GET /admin/integrations/tailscale", s.adminPage(func(w http.ResponseWriter, r *http.Request, _ jit.Identity) {
 		var res *setup.Result
 		if s.Setup != nil {
 			res = s.setupResult(r)
 		}
-		s.renderAdmin(w, r, "setup", "Setup", "setup", res)
+		s.renderAdmin(w, r, "setup", "Tailscale", "integrations/tailscale", res)
 	}))
-	mux.HandleFunc("GET /admin/slack", s.adminPage(func(w http.ResponseWriter, r *http.Request, id jit.Identity) {
+	mux.HandleFunc("GET /admin/integrations/slack", s.adminPage(func(w http.ResponseWriter, r *http.Request, id jit.Identity) {
 		if s.Slack == nil {
 			s.notFound(w, r, &jit.Error{Code: "not_found", Status: 404, Message: "no Slack integration in this build"})
 			return
 		}
-		s.renderAdmin(w, r, "slack", "Slack", "slack", s.slackPage(r, id))
+		s.renderAdmin(w, r, "slack", "Slack", "integrations/slack", s.slackPage(r, id))
+	}))
+	mux.HandleFunc("GET /admin/integrations/okta", s.adminPage(func(w http.ResponseWriter, r *http.Request, _ jit.Identity) {
+		if s.Okta == nil {
+			s.notFound(w, r, &jit.Error{Code: "not_found", Status: 404, Message: "no Okta setup in this build"})
+			return
+		}
+		s.renderAdmin(w, r, "okta", "Okta", "integrations/okta", s.oktaPage(r))
+	}))
+	mux.HandleFunc("GET /admin/integrations/google", s.adminPage(func(w http.ResponseWriter, r *http.Request, id jit.Identity) {
+		if s.Google == nil {
+			s.notFound(w, r, &jit.Error{Code: "not_found", Status: 404, Message: "no Google setup in this build"})
+			return
+		}
+		s.renderAdmin(w, r, "google", "Google Groups", "integrations/google", s.googlePage(r, id))
 	}))
 	// Old links.
 	for _, old := range []string{"/workflows", "/workflows/{rest...}", "/policy"} {
@@ -403,6 +546,58 @@ func (s *Server) slackPage(r *http.Request, admin jit.Identity) slackPageData {
 		d.Flows = fcs
 		d.Channels, _ = s.Slack.Channels(r.Context())
 	}
+	return d
+}
+
+// oktaPageData fills the Okta page.
+type oktaPageData struct {
+	Status oktasetup.Status
+	Flows  int // approval flows that grant Okta groups
+}
+
+func (s *Server) oktaPage(r *http.Request) oktaPageData {
+	d := oktaPageData{Status: s.Okta.Status()}
+	if d.Status.Enabled && d.Status.CheckedAt.IsZero() {
+		// Nothing has tried the credentials since jitd started.
+		s.Svc.OktaCheckNow(r.Context())
+		d.Status = s.Okta.Status()
+	}
+	s.Svc.Store.View(func(data *jit.Data) {
+		for _, w := range data.Workflows {
+			if len(w.OktaGroups) > 0 {
+				d.Flows++
+			}
+		}
+	})
+	return d
+}
+
+// googlePageData fills the Google page.
+type googlePageData struct {
+	Status googlesetup.Status
+	Flows  int // approval flows that grant Google groups
+	// Domain is the admin's own email domain: what the allowed domains
+	// start out as.
+	Domain string
+}
+
+func (s *Server) googlePage(r *http.Request, id jit.Identity) googlePageData {
+	d := googlePageData{Status: s.Google.Status()}
+	if d.Status.Enabled && d.Status.CheckedAt.IsZero() {
+		// Nothing has tried the key since jitd started.
+		s.Svc.GoogleCheckNow(r.Context())
+		d.Status = s.Google.Status()
+	}
+	if _, domain, ok := strings.Cut(strings.ToLower(id.Login), "@"); ok {
+		d.Domain = domain
+	}
+	s.Svc.Store.View(func(data *jit.Data) {
+		for _, w := range data.Workflows {
+			if len(w.GoogleGroups) > 0 {
+				d.Flows++
+			}
+		}
+	})
 	return d
 }
 

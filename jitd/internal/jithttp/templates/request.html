@@ -1,18 +1,18 @@
 {{define "enforcement"}}
 {{- $e := .Enforcement -}}
 {{- if eq .Status "approved" -}}
-  {{- if and $e.ConfirmedAt (not .Attribute)}}<div class="verify ok"><i></i>Active · added to the Okta group{{if gt (len .OktaGroups) 1}}s{{end}} <span class="muted" title="{{ts $e.ConfirmedAt}}">{{ago $e.ConfirmedAt}}</span></div>
+  {{- if and $e.ConfirmedAt (not .Attribute)}}<div class="verify ok"><i></i>Active · added to the {{groupnouns .}} <span class="muted" title="{{ts $e.ConfirmedAt}}">{{ago $e.ConfirmedAt}}</span></div>
   {{- else if $e.ConfirmedAt}}<div class="verify ok"><i></i>Active · confirmed on the device <span class="muted" title="{{ts $e.ConfirmedAt}}">{{ago $e.ConfirmedAt}}</span></div>
   {{- else if $e.Error}}<div class="verify warn"><i></i>Approved, but the device could not be checked: {{$e.Error}}</div>
   {{- else}}<div class="verify warn"><i></i>Approved · not yet confirmed on the device</div>{{end}}
-  {{- with .OktaMissingLabels}}<div class="verify warn"><i></i>No longer in the Okta group{{if gt (len .) 1}}s{{end}} {{join .}}: removed in Okta, outside jitd. jitd does not add it back.</div>{{end}}
+  {{- range $g := .GroupSets}}{{with $g.Missing}}<div class="verify warn"><i></i>No longer in the {{$g.Label}} group{{if gt (len .) 1}}s{{end}} {{join .}}: removed in {{$g.Label}}, outside jitd. jitd does not add it back.</div>{{end}}{{end}}
 {{- else if or (eq .Status "expired") (eq .Status "revoked") -}}
-  {{- if and $e.RemovedAt (not .Attribute)}}<div class="verify off"><i></i>{{if .OktaRemovedLabels}}Access removed · Okta group membership taken away{{else}}Ended · this request no longer holds the Okta group membership{{end}} <span class="muted" title="{{ts $e.RemovedAt}}">{{ago $e.RemovedAt}}</span></div>
+  {{- if and $e.RemovedAt (not .Attribute)}}<div class="verify off"><i></i>{{if groupsremoved .}}Access removed · {{groupkinds .}} group membership taken away{{else}}Ended · this request no longer holds the {{groupkinds .}} group membership{{end}} <span class="muted" title="{{ts $e.RemovedAt}}">{{ago $e.RemovedAt}}</span></div>
   {{- else if $e.RemovedAt}}<div class="verify off"><i></i>Access removed · confirmed gone from the device <span class="muted" title="{{ts $e.RemovedAt}}">{{ago $e.RemovedAt}}</span></div>
   {{- else if .Attributes}}<div class="verify warn"><i></i>Ended · removal not yet confirmed on the device{{with $e.Error}} ({{.}}){{end}}</div>
-  {{- else if .OktaRemovalPending}}<div class="verify warn"><i></i>Ended · Okta group membership not yet removed{{with .Okta.FailingSince}}, failing since {{ts .}}{{end}}{{with .Okta.Error}} ({{.}}){{end}}</div>{{end}}
-  {{- with .OktaKeptLabels}}<div class="verify warn"><i></i>When this ended, another running request still held the Okta group{{if gt (len .) 1}}s{{end}} {{join .}}, so the membership stayed. That request removes it when it ends.</div>{{end}}
-  {{- if and .Attributes .OktaRemovalPending}}<div class="verify warn"><i></i>Okta group membership not yet removed{{with .Okta.FailingSince}}, failing since {{ts .}}{{end}}{{with .Okta.Error}} ({{.}}){{end}}</div>{{end}}
+  {{- else if .GroupsRemovalPending}}{{range $g := .GroupSets}}{{if $g.RemovalFailing}}<div class="verify warn"><i></i>Ended · {{$g.Label}} group membership not yet removed{{with $g.Grant.FailingSince}}, failing since {{ts .}}{{end}}{{with $g.Grant.Error}} ({{.}}){{end}}</div>{{else if $g.RemovalPending}}<div class="verify off"><i></i>Ended · taking {{$g.Grant.Login}} out of the {{$g.Label}} group{{if gt (len $g.Added) 1}}s{{end}} now</div>{{end}}{{end}}{{end}}
+  {{- range $g := .GroupSets}}{{with $g.Kept}}<div class="verify warn"><i></i>When this ended, another running request still held the {{$g.Label}} group{{if gt (len .) 1}}s{{end}} {{join .}}, so the membership stayed. That request removes it when it ends.</div>{{end}}{{end}}
+  {{- if .Attributes}}{{range $g := .GroupSets}}{{if $g.RemovalFailing}}<div class="verify warn"><i></i>{{$g.Label}} group membership not yet removed{{with $g.Grant.FailingSince}}, failing since {{ts .}}{{end}}{{with $g.Grant.Error}} ({{.}}){{end}}</div>{{else if $g.RemovalPending}}<div class="verify off"><i></i>Taking {{$g.Grant.Login}} out of the {{$g.Label}} group{{if gt (len $g.Added) 1}}s{{end}} now</div>{{end}}{{end}}{{end}}
 {{- end -}}
 {{end}}
 {{define "content"}}
@@ -32,7 +32,7 @@
   </p>
   {{template "enforcement" $r}}
   <blockquote>{{$r.Reason}}</blockquote>
-  {{if $r.OktaGroups}}<ul class="resources">{{range $r.OktaGroups}}<li>Okta group <b>{{.Label}}</b></li>{{end}}</ul>{{end}}
+  {{range $g := $r.GroupSets}}{{if $g.Groups}}<ul class="resources">{{range $g.Groups}}<li>{{$g.Label}} group <b>{{.Label}}</b></li>{{end}}</ul>{{end}}{{end}}
   {{if $r.Resources}}<ul class="resources">{{range $r.Resources}}<li><code>{{.Name}}</code>{{with .Description}} <span class="muted">{{.}}</span>{{end}}</li>{{end}}</ul>{{end}}
   {{with $r.LastError}}<div class="error">Last error: {{.}}</div>{{end}}
   {{with .Data.SlackNote}}<div class="warn small">⚠ {{.}}</div>{{end}}
@@ -80,7 +80,7 @@
       {{with $r.ExpiresAt}}<dt>Ends</dt><dd>{{ts .}}</dd>{{end}}
       {{if gt $r.ApprovalsRequired 1}}<dt>Approvals</dt><dd>{{$r.ApprovalsCounted}} of {{$r.ApprovalsRequired}}{{range $r.Approvals}}<div class="muted small">{{.Actor}}{{if eq .Via "slack"}} (via Slack){{end}} · {{ago .At}}</div>{{end}}</dd>{{end}}
       {{if and $.Admin $r.Attribute}}<dt>Device attribute</dt><dd><code>{{$r.Attribute}}</code> <a href="/v1/devices/{{$r.TargetDeviceID}}/attributes" class="small">check</a></dd>{{end}}
-      {{with $r.Okta}}<dt>Okta user</dt><dd>{{.Login}}{{if $.Admin}} <code class="small">{{.UserID}}</code>{{end}}{{if .Preexisting}}<div class="muted small">{{len .Preexisting}} group(s) already held outside jitd; left as they were</div>{{end}}</dd>{{end}}
+      {{range $g := $r.GroupSets}}{{with $g.Grant}}<dt>{{$g.Label}} user</dt><dd>{{.Login}}{{if and $.Admin (ne .UserID .Login)}} <code class="small">{{.UserID}}</code>{{end}}{{if .Preexisting}}<div class="muted small">{{len .Preexisting}} group(s) already held outside jitd; left as they were</div>{{end}}</dd>{{end}}{{end}}
       <dt>Request ID</dt><dd><code>{{$r.ID}}</code></dd>
     </dl>
   </section>

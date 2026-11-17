@@ -1,0 +1,177 @@
+{{define "content"}}
+{{$st := .Data.Status}}
+<div class="head">
+  <div>
+    <h1>Okta {{if $st.Configured}}{{if $st.Working}}<span class="status approved">working</span>{{else if $st.Error}}<span class="status declined">needs a look</span>{{else}}<span class="status pending">not checked yet</span>{{end}}{{end}}</h1>
+    <p class="sub">Let an approval put the requester in Okta groups for as long as the access lasts, and let flows name Okta groups as requesters or approvers. jitd takes people out again when the access ends.</p>
+  </div>
+  {{if $st.Configured}}<button class="btn" type="button" id="oktacheck">Check again</button>{{end}}
+</div>
+
+{{if not $st.Configured}}
+{{with $st.Error}}<div class="flash error">{{.}}</div>{{end}}
+<div class="grid2 wide-left">
+<div>
+<section class="card prose">
+  <h2>Connect Okta</h2>
+  <p>jitd signs in to Okta as an <b>API service app</b>: it has its own name in Okta's system log, only the scopes you grant it and its own admin role, and its key can be replaced without touching anyone's account. Do steps 1 to 5 in the Okta admin console, signed in as a super admin.</p>
+  <ol class="steps">
+    <li><b>Create the app.</b> Open <b>Applications → Applications</b>, click <b>Create App Integration</b> and pick <b>API Services</b>. Name it <i>jitd</i> and save.</li>
+    <li><b>Make a key.</b> On the app's <b>General</b> tab, under <b>Client Credentials</b>, click <b>Edit</b> and set the client authentication to <b>Public key / Private key</b>. Click <b>Add key</b>, then <b>Generate new key</b>. Under the private key, choose <b>PEM</b> and copy it: Okta shows it only this once. Click <b>Done</b>, then <b>Save</b>.</li>
+    <li><b>Turn off DPoP.</b> Still on <b>General</b>, under <b>General Settings</b>, click <b>Edit</b> and untick <b>Require Demonstrating Proof of Possession (DPoP) header in token requests</b>. jitd does not send DPoP proofs, so Okta would refuse it.</li>
+    <li><b>Grant the scopes.</b> On the <b>Okta API Scopes</b> tab, grant <code>okta.users.read</code> and <code>okta.groups.manage</code>.</li>
+    <li><b>Give it a role.</b> On the <b>Admin roles</b> tab, assign <b>Group Administrator</b>, limited to the groups jitd should manage (a custom role with <i>Manage group membership</i> works too). The scopes say what kind of call the app may make; the role says on which groups.</li>
+    <li><b>Paste it here.</b> The client ID is at the top of the app's <b>General</b> tab.
+      {{template "oktaform" .}}
+    </li>
+  </ol>
+  {{template "oktatoken" .}}
+  {{template "oktakept" .}}
+</section>
+</div>
+<div>
+{{template "oktalists" .}}
+{{template "oktahow" .}}
+</div>
+</div>
+
+{{else}}
+{{if $st.Error}}
+<div class="flash error"><b>{{$st.Error}}</b>{{with $st.Fix}} {{.}}{{end}}{{if not $st.CheckedAt.IsZero}} <span class="small">Checked {{ago $st.CheckedAt}}.</span>{{end}}</div>
+{{else if $st.Working}}
+<div class="flash ok">Okta accepts jitd's credentials. Checked {{ago $st.CheckedAt}}.</div>
+{{end}}
+
+<div class="grid2 wide-left">
+<div>
+<section class="card">
+  <h2>Test a group</h2>
+  <form class="actions" data-form="okta-check">
+    <input name="group" class="grow" required placeholder="AWS-Prod-ReadOnly, or an ID like 00g1abcdEFGHijkl2345" autocomplete="off">
+    <button class="btn" type="submit">Test</button>
+  </form>
+  <ul class="results oktaresult" id="oktacheck-result" hidden></ul>
+  <p class="muted small">This looks the group up with jitd's credentials and says whether a flow could use it. It only reads. Whether jitd may add and remove members shows at the first approval: Okta has no way to ask without changing something.</p>
+</section>
+
+{{if eq $st.Source "ui"}}
+<section class="card prose">
+  <h2>Replace the credentials</h2>
+  <p>For a new key, a new app or another Okta org. jitd signs in with the new ones first and keeps the ones it has if that fails.</p>
+  <details class="more">
+    <summary>Paste new credentials</summary>
+    {{template "oktaform" .}}
+    {{template "oktatoken" .}}
+  </details>
+  {{template "oktakept" .}}
+</section>
+{{else}}
+<section class="card prose">
+  <h2>Set up outside this page</h2>
+  <p>These credentials come from jitd's environment{{if $st.EnvFile}} or its env file, <code>{{$st.EnvFile}}</code>{{end}} (<code>OKTA_ORG_URL</code> and the rest), so they are changed there, not here. jitd reads the file again on its own; a change to the environment needs a restart.</p>
+  <p>To manage them on this page instead, take the <code>OKTA_ORG_URL</code>, <code>OKTA_CLIENT_ID</code>, <code>OKTA_PRIVATE_KEY</code> and <code>OKTA_API_TOKEN</code> lines out there. The allowlists stay where they are.</p>
+  {{if $st.Shadowed}}<p class="warn">Credentials were also saved on this page earlier. jitd ignores them while the environment or the env file sets its own.</p>
+  <div class="actions"><button class="btn sm danger" type="button" id="oktaremove" data-held="0">Remove the saved ones</button></div>{{end}}
+</section>
+{{end}}
+</div>
+
+<div>
+<section class="card">
+  <h2>Connection</h2>
+  <table class="plain">
+    <tr><td>Okta</td><td>{{$st.OrgURL}}</td></tr>
+    {{if eq $st.Auth "api_token"}}
+    <tr><td>Signs in with</td><td>an API token <code>{{$st.TokenHint}}</code><div class="muted small">It can do whatever the Okta account that made it can.</div></td></tr>
+    {{else}}
+    <tr><td>Signs in as</td><td>API service app <code>{{$st.ClientID}}</code></td></tr>
+    <tr><td>Key</td><td>{{if $st.KeyFingerprint}}fingerprint <code>{{$st.KeyFingerprint}}</code>{{else}}<span class="warn">unreadable</span>{{end}}{{with $st.KeyID}}<div class="muted small">key ID {{.}}</div>{{end}}</td></tr>
+    {{with $st.Scopes}}<tr><td>Scopes</td><td>{{range .}}<code>{{.}}</code> {{end}}</td></tr>{{end}}
+    {{end}}
+    <tr><td>Credentials</td><td>{{if eq $st.Source "env"}}from the environment{{if $st.EnvFile}} or <code>{{$st.EnvFile}}</code>{{end}}{{else}}saved here{{if $st.SavedBy}} by {{$st.SavedBy}}, {{ago $st.SavedAt}}{{end}}{{end}}</td></tr>
+    <tr><td>Last check</td><td>{{if $st.CheckedAt.IsZero}}<span class="muted">not yet</span>{{else if $st.Error}}<span class="status declined">failed</span> <span class="muted small">{{ago $st.CheckedAt}}</span>{{else}}<span class="status approved">passed</span> <span class="muted small">{{ago $st.CheckedAt}}</span>{{end}}</td></tr>
+    <tr><td>Memberships</td><td>{{if $st.Held}}jitd looks after Okta memberships for {{$st.Held}} request{{if ne $st.Held 1}}s{{end}}{{else}}<span class="muted">none held right now</span>{{end}}<div class="muted small">{{.Data.Flows}} approval flow{{if ne .Data.Flows 1}}s{{end}} grant{{if eq .Data.Flows 1}}s{{end}} Okta groups</div></td></tr>
+  </table>
+  {{if eq $st.Source "ui"}}
+  <div class="actions"><button class="btn sm danger right-push" type="button" id="oktaremove" data-held="{{$st.Held}}">Remove</button></div>
+  <p class="hint bad" id="oktaremove-warn" hidden>{{if $st.Held}}jitd still looks after Okta memberships for {{$st.Held}} request{{if ne $st.Held 1}}s{{end}}. Without credentials it cannot take those people out when their access ends: they stay in the groups until Okta is set up again. {{end}}Removing stops new Okta grants and <code>okta:</code> lookups. Click again to remove.</p>
+  {{end}}
+</section>
+{{template "oktalists" .}}
+{{template "oktahow" .}}
+</div>
+</div>
+{{end}}
+{{end}}
+
+{{define "oktaform"}}
+<form class="form oktaform" data-form="okta-save">
+  <label>Okta address
+    <input name="org_url" placeholder="https://example.okta.com" required autocomplete="off">
+    <span class="hint">Where your people sign in to Okta. Not the admin console's address: leave out <code>-admin</code>.</span>
+  </label>
+  <label>Client ID
+    <input name="client_id" placeholder="0oa…" required autocomplete="off">
+  </label>
+  <label>Private key
+    <textarea name="private_key" rows="7" required spellcheck="false" autocomplete="off" placeholder="-----BEGIN PRIVATE KEY-----&#10;…&#10;-----END PRIVATE KEY-----"></textarea>
+    <span class="hint">The whole PEM block, first and last line included.</span>
+  </label>
+  <label>Key ID <span class="opt">optional</span>
+    <input name="private_key_id" autocomplete="off">
+    <span class="hint">Only when the app has more than one key: the <code>kid</code> Okta lists next to this one.</span>
+  </label>
+  <div class="flash error formerr" hidden></div>
+  <div class="actions"><button class="btn primary" type="submit">Test and save</button><span class="muted small">jitd signs in to Okta with these first. Nothing is saved unless that works.</span></div>
+</form>
+{{end}}
+
+{{define "oktatoken"}}
+<details class="more">
+  <summary>Use an API token instead</summary>
+  <p>Simpler, but the token can do whatever the Okta account that made it can, and it stops working when that account does. In Okta, sign in as a dedicated service account that holds the <b>Group Administrator</b> role, limited to the groups jitd should manage, and create a token under <b>Security → API → Tokens</b>.</p>
+  <form class="form oktaform" data-form="okta-save">
+    <label>Okta address
+      <input name="org_url" placeholder="https://example.okta.com" required autocomplete="off">
+    </label>
+    <label>API token
+      <input name="api_token" type="password" required autocomplete="off" placeholder="00…">
+    </label>
+    <div class="flash error formerr" hidden></div>
+    <div class="actions"><button class="btn primary" type="submit">Test and save</button></div>
+  </form>
+</details>
+{{end}}
+
+{{define "oktakept"}}
+<p class="muted small">The key or token is kept in jitd's database and is never shown again, here or in the API. To keep it out of the database, set <code>OKTA_ORG_URL</code>, <code>OKTA_CLIENT_ID</code> and <code>OKTA_PRIVATE_KEY</code> in {{if .Data.Status.EnvFile}}<code>{{.Data.Status.EnvFile}}</code>{{else}}jitd's env file{{end}} or in jitd's environment (a Kubernetes Secret, say) instead. Credentials set there win over the ones saved here.</p>
+{{end}}
+
+{{define "oktalists"}}
+{{$st := .Data.Status}}
+<section class="card">
+  <h2>Groups jitd may use</h2>
+  <table class="plain">
+    <tr><td>To grant</td><td>{{template "oktalist" $st.GrantAllowlist}}</td></tr>
+    <tr><td>As <code>okta:</code></td><td>{{template "oktalist" $st.ReadAllowlist}}</td></tr>
+  </table>
+  <p class="muted small">Set with <code>OKTA_GRANT_ALLOWLIST</code> and <code>OKTA_READ_ALLOWLIST</code> in {{if $st.EnvFile}}<code>{{$st.EnvFile}}</code>{{else}}jitd's env file{{end}} or its environment: group names or IDs, separated by commas. They cannot be changed here, on purpose: they are how whoever runs jitd limits what an admin in the browser can make it do.</p>
+</section>
+{{end}}
+
+{{define "oktalist"}}{{if not .}}<span class="warn">no group</span>{{else}}{{range .}}{{if eq . "*"}}every group the credentials reach{{else}}<code>{{.}}</code> {{end}}{{end}}{{end}}{{end}}
+
+{{define "oktahow"}}
+<section class="card prose">
+  <h2>How it works</h2>
+  <ul>
+    <li>An approval flow can name Okta groups, with or without a posture attribute: fill in <b>Okta groups</b> on the flow's page. An approval adds the requester's Okta user to each group; jitd takes them out when the access expires or is revoked.</li>
+    <li>That reaches whatever Okta gates by group: AWS or Google Cloud roles through single sign-on, admin roles in other apps.</li>
+    <li>The requester's Tailscale login is looked up as an Okta login, then as an email.</li>
+    <li>Someone who was in the group already stays in it: jitd only removes what it added.</li>
+    <li>Only groups whose members Okta manages itself. Groups filled from a directory, an app or a rule cannot be changed through the API.</li>
+    <li>A flow can also name <code>okta:</code> and a group as its requesters or approvers.</li>
+    <li>Okta memberships have no expiry of their own, so jitd has to be running to remove them. If a removal keeps failing, admins see it on every page.</li>
+  </ul>
+</section>
+{{end}}

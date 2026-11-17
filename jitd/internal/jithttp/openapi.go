@@ -25,6 +25,8 @@ const openAPISpec = `{
     {"name": "requests", "description": "Access requests"},
     {"name": "workflows", "description": "Approval flows (admins)"},
     {"name": "policy", "description": "Tailscale policy helpers (admins)"},
+    {"name": "okta", "description": "The Okta credentials (admins). The private key and the API token are never returned"},
+    {"name": "google", "description": "The Google service account and its limits (admins). The key is never returned"},
     {"name": "slack", "description": "The Slack integration (admins). jitd connects out to Slack with Socket Mode; tokens are never returned"},
     {"name": "mcp", "description": "The MCP server, for agents. Not a REST endpoint: JSON-RPC 2.0 over Streamable HTTP, see https://modelcontextprotocol.io"}
   ],
@@ -90,6 +92,15 @@ const openAPISpec = `{
       "responses": {"200": {"description": "OK", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Setup"}}}}, "403": {"$ref": "#/components/responses/Error"}}}},
     "/v1/setup/check": {"post": {"tags": ["policy"], "summary": "Re-read the credentials file and run the setup check again", "operationId": "setupCheck",
       "responses": {"200": {"description": "OK", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Setup"}}}}, "403": {"$ref": "#/components/responses/Error"}}}},
+    "/v1/setup/credentials": {
+      "put": {"tags": ["policy"], "summary": "Try a Tailscale API credential and, if every check passes, save it and serve with it", "operationId": "setupSave",
+        "description": "Either an OAuth client (client_id and client_secret) or an api_key. Nothing is saved when a check fails (400); the message says which and why. Refused (409) when jitd's env file or environment sets a credential, which wins.",
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "properties": {
+          "client_id": {"type": "string"}, "client_secret": {"type": "string", "example": "tskey-client-..."}, "api_key": {"type": "string", "description": "An API access token, instead of an OAuth client", "example": "tskey-api-..."}}}}}},
+        "responses": {"200": {"description": "OK", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Setup"}}}}, "400": {"$ref": "#/components/responses/Error"}, "403": {"$ref": "#/components/responses/Error"}, "409": {"$ref": "#/components/responses/Error"}}},
+      "delete": {"tags": ["policy"], "summary": "Forget the Tailscale API credential saved here", "operationId": "setupRemove",
+        "description": "Approvals, revokes and clean-up fail until there is a credential again, unless the env file or the environment sets one.",
+        "responses": {"200": {"description": "OK", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Setup"}}}}, "403": {"$ref": "#/components/responses/Error"}}}},
     "/v1/policy-snippet": {"get": {"tags": ["policy"], "summary": "Postures and grants to merge into the tailnet policy", "operationId": "policySnippet",
       "description": "Each posture and grant is marked as already in the current policy file or NEW (unmarked if the policy cannot be read).",
       "parameters": [{"name": "missing", "in": "query", "schema": {"type": "string", "enum": ["1"]}, "description": "1: leave out what the policy already has"}],
@@ -97,6 +108,47 @@ const openAPISpec = `{
     "/v1/devices/{id}/attributes": {"get": {"tags": ["policy"], "summary": "A device's posture attributes, straight from the Tailscale API", "operationId": "deviceAttributes",
       "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string"}, "description": "Tailscale node ID, e.g. nABC123CNTRL"}],
       "responses": {"200": {"description": "OK", "content": {"application/json": {"schema": {"type": "object", "properties": {"attributes": {"type": "object"}, "expiries": {"type": "object"}}}}}}, "502": {"$ref": "#/components/responses/Error"}}}},
+    "/v1/okta": {
+      "get": {"tags": ["okta"], "summary": "The Okta connection, without the key or the token", "operationId": "oktaStatus",
+        "responses": {"200": {"$ref": "#/components/responses/Okta"}, "403": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"}}},
+      "put": {"tags": ["okta"], "summary": "Sign in to Okta with these credentials and, if that works, save them", "operationId": "oktaSave",
+        "description": "Either a service app (client_id and private_key) or an api_token. Nothing is saved when Okta refuses them (400). Replaces credentials saved here before. Refused (409) when the credentials come from jitd's environment or env file. Also refused (409, with force in the error) when they are for another Okta org while jitd still holds memberships in the one it uses now: it could not remove those, and would count them as removed; force=1 saves anyway. The allowlists are not set here.",
+        "parameters": [{"name": "force", "in": "query", "schema": {"type": "string", "enum": ["1"]}, "description": "1: save credentials for another Okta org although jitd still holds memberships in the current one"}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "required": ["org_url"], "properties": {
+          "org_url": {"type": "string", "example": "https://example.okta.com"}, "client_id": {"type": "string", "example": "0oa1abcdEFGHijkl2345"},
+          "private_key": {"type": "string", "description": "The service app's private key, PEM (RSA or EC)"}, "private_key_id": {"type": "string", "description": "The key's kid, when the app has more than one key"},
+          "scopes": {"type": "string", "description": "Scopes to ask for instead of okta.users.read okta.groups.manage, separated by spaces"},
+          "api_token": {"type": "string", "description": "An API token, instead of a service app"}}}}}},
+        "responses": {"200": {"$ref": "#/components/responses/Okta"}, "400": {"$ref": "#/components/responses/Error"}, "409": {"$ref": "#/components/responses/Error"}}},
+      "delete": {"tags": ["okta"], "summary": "Forget the credentials saved here", "operationId": "oktaRemove",
+        "description": "Memberships jitd added stay its to remove, and it cannot until Okta is set up again. While it holds any, this is refused (409) without force=1.",
+        "parameters": [{"name": "force", "in": "query", "schema": {"type": "string", "enum": ["1"]}, "description": "1: remove although jitd still holds memberships"}],
+        "responses": {"200": {"$ref": "#/components/responses/Okta"}, "409": {"$ref": "#/components/responses/Error"}}}},
+    "/v1/okta/check": {"post": {"tags": ["okta"], "summary": "Try the credentials now, or say what jitd can tell about one group", "operationId": "oktaCheck",
+      "description": "Reads only. Without a group: tries the credentials and returns the status. With one: looks it up and says whether a flow could grant it and whether it can be an okta: principal.",
+      "requestBody": {"content": {"application/json": {"schema": {"type": "object", "properties": {"group": {"type": "string", "description": "A group name or ID (00g…)"}}}}}},
+      "responses": {"200": {"description": "OK", "content": {"application/json": {"schema": {"type": "object", "properties": {"status": {"$ref": "#/components/schemas/OktaStatus"}, "group": {"$ref": "#/components/schemas/OktaGroupCheck"}}}}}},
+        "404": {"$ref": "#/components/responses/Error"}, "409": {"$ref": "#/components/responses/Error"}, "502": {"$ref": "#/components/responses/Error"}}}},
+    "/v1/google": {
+      "get": {"tags": ["google"], "summary": "The Google connection, without the key", "operationId": "googleStatus",
+        "responses": {"200": {"$ref": "#/components/responses/Google"}, "403": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"}}},
+      "put": {"tags": ["google"], "summary": "Save the Google settings; a new key is tried against Google first", "operationId": "googleSave",
+        "description": "key is a service account's JSON key file, whole. Nothing is saved when Google refuses it (400). Leave key out to keep the one jitd has and change only the domains and groups; a list left out stays as it is saved. A value that jitd's environment or env file sets is not changed here; sending a key while one is set there is refused (409). A key for another service account is refused too (409, with force in the error) while jitd still holds memberships: if that account is for another Workspace jitd could not remove them; force=1 saves anyway.",
+        "parameters": [{"name": "force", "in": "query", "schema": {"type": "string", "enum": ["1"]}, "description": "1: save a key for another service account although jitd still holds memberships"}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "properties": {
+          "key": {"type": "string", "description": "The service account's JSON key file, as Google downloaded it"},
+          "allowed_domains": {"type": "string", "description": "Email domains whose users jitd may add to groups, separated by commas or spaces", "example": "example.com"},
+          "grant_allowlist": {"type": "string", "description": "Groups a flow may grant, by address or ID, with * as a wildcard, separated by commas or spaces; * alone is every group", "example": "aws-*@example.com"}}}}}},
+        "responses": {"200": {"$ref": "#/components/responses/Google"}, "400": {"$ref": "#/components/responses/Error"}, "409": {"$ref": "#/components/responses/Error"}}},
+      "delete": {"tags": ["google"], "summary": "Forget the key and the limits saved here", "operationId": "googleRemove",
+        "description": "Memberships jitd added stay its to remove, and it cannot until Google is set up again. While it holds any, this is refused (409) without force=1.",
+        "parameters": [{"name": "force", "in": "query", "schema": {"type": "string", "enum": ["1"]}, "description": "1: remove although jitd still holds memberships"}],
+        "responses": {"200": {"$ref": "#/components/responses/Google"}, "409": {"$ref": "#/components/responses/Error"}}}},
+    "/v1/google/check": {"post": {"tags": ["google"], "summary": "Try the key now, or say what jitd can tell about one group", "operationId": "googleCheck",
+      "description": "Reads only. Without a group: tries the key and returns the status. With one: looks it up and says whether a flow could grant it.",
+      "requestBody": {"content": {"application/json": {"schema": {"type": "object", "properties": {"group": {"type": "string", "description": "A group's email address", "example": "aws-admin@example.com"}}}}}},
+      "responses": {"200": {"description": "OK", "content": {"application/json": {"schema": {"type": "object", "properties": {"status": {"$ref": "#/components/schemas/GoogleStatus"}, "group": {"$ref": "#/components/schemas/GoogleGroupCheck"}}}}}},
+        "404": {"$ref": "#/components/responses/Error"}, "409": {"$ref": "#/components/responses/Error"}, "502": {"$ref": "#/components/responses/Error"}}}},
     "/v1/slack": {"get": {"tags": ["slack"], "summary": "The Slack connection, without the tokens", "operationId": "slackStatus",
       "responses": {"200": {"$ref": "#/components/responses/Slack"}, "403": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"}}}},
     "/v1/slack/connect": {"post": {"tags": ["slack"], "summary": "Check the tokens with Slack, save them and connect", "operationId": "slackConnect",
@@ -130,6 +182,8 @@ const openAPISpec = `{
     "responses": {
       "Request": {"description": "The updated request", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/AccessRequest"}}}},
       "Workflow": {"description": "The approval flow", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Workflow"}}}},
+      "Okta": {"description": "The Okta connection", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/OktaStatus"}}}},
+      "Google": {"description": "The Google connection", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/GoogleStatus"}}}},
       "Slack": {"description": "The Slack connection", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/SlackStatus"}}}},
       "Error": {"description": "Error", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorBody"}}}},
       "APIFailed": {"description": "The Tailscale API call failed. The action was recorded (approve_failed / revoke_failed) and the request is returned with the error; retry later", "content": {"application/json": {"schema": {"type": "object", "properties": {"error": {"$ref": "#/components/schemas/ErrorBody/properties/error"}, "request": {"$ref": "#/components/schemas/AccessRequest"}}}}}}
@@ -142,6 +196,35 @@ const openAPISpec = `{
         "tag": {"type": "string"},
         "transient": {"type": "boolean", "description": "A check failed for a reason that says nothing about the credential (e.g. network); it stays in use and the check is retried"},
         "checks": {"type": "array", "items": {"type": "object", "properties": {"name": {"type": "string"}, "ok": {"type": "boolean"}, "skipped": {"type": "boolean"}, "detail": {"type": "string"}, "fix": {"type": "string"}}}}}},
+      "OktaStatus": {"type": "object", "properties": {
+        "source": {"type": "string", "enum": ["", "ui", "env"], "description": "Where the credentials come from: saved on the Okta page, or jitd's environment or env file; empty when not set up"},
+        "env_file": {"type": "string"}, "shadowed": {"type": "boolean", "description": "Credentials saved on the page are ignored because the environment or the env file sets its own"},
+        "enabled": {"type": "boolean", "description": "The credentials are complete and well-formed; error says whether Okta accepts them"},
+        "auth": {"type": "string", "enum": ["service_app", "api_token"]}, "org_url": {"type": "string"}, "client_id": {"type": "string"}, "key_id": {"type": "string"},
+        "key_fingerprint": {"type": "string", "description": "Tells keys apart: the start of the SHA-256 of the public key"}, "token_hint": {"type": "string", "example": "…a1b2"},
+        "scopes": {"type": "array", "items": {"type": "string"}}, "saved_by": {"type": "string"}, "saved_at": {"type": "string", "format": "date-time"},
+        "checked_at": {"type": "string", "format": "date-time"}, "error": {"type": "string"}, "fix": {"type": "string"},
+        "grant_allowlist": {"type": "array", "items": {"type": "string"}, "description": "Groups a flow may grant; * is every group"}, "read_allowlist": {"type": "array", "items": {"type": "string"}},
+        "held": {"type": "integer", "description": "Requests whose Okta memberships jitd still looks after"}}},
+      "OktaGroupCheck": {"type": "object", "properties": {
+        "id": {"type": "string"}, "name": {"type": "string"}, "type": {"type": "string", "example": "OKTA_GROUP"},
+        "manageable": {"type": "boolean", "description": "Okta lets an API client change the members"}, "grant_allowed": {"type": "boolean"}, "read_allowed": {"type": "boolean"},
+        "members": {"type": "integer"}, "members_capped": {"type": "boolean"}, "members_error": {"type": "string"}}},
+      "GoogleStatus": {"type": "object", "properties": {
+        "source": {"type": "string", "enum": ["", "ui", "env"], "description": "Where the key comes from: saved on the Google page, or jitd's environment or env file; empty when there is none"},
+        "env_file": {"type": "string"}, "shadowed": {"type": "boolean", "description": "A key saved on the page is ignored because the environment or the env file sets its own"},
+        "enabled": {"type": "boolean", "description": "There is a key and it is well-formed; error says whether Google accepts it"},
+        "service_account": {"type": "string", "description": "The service account's address: what is given the Groups Admin role", "example": "jitd@my-project.iam.gserviceaccount.com"},
+        "key_id": {"type": "string"}, "project": {"type": "string"}, "enable_url": {"type": "string", "description": "Where the Cloud Identity API is enabled for the project"},
+        "saved_by": {"type": "string"}, "saved_at": {"type": "string", "format": "date-time"},
+        "checked_at": {"type": "string", "format": "date-time"}, "error": {"type": "string"}, "fix": {"type": "string"},
+        "allowed_domains": {"type": "array", "items": {"type": "string"}, "description": "Email domains whose users jitd may add; none means nobody"}, "allowed_domains_from_env": {"type": "boolean"},
+        "grant_allowlist": {"type": "array", "items": {"type": "string"}, "description": "Groups a flow may grant; * is every group"}, "grant_allowlist_from_env": {"type": "boolean"},
+        "role_seen": {"type": "boolean", "description": "The last check found a group jitd's flows use, which takes the Groups Admin role. False also when no flow names a group yet: Google's answer to the key alone is the same with or without the role"},
+        "held": {"type": "integer", "description": "Requests whose Google memberships jitd still looks after"}}},
+      "GoogleGroupCheck": {"type": "object", "properties": {
+        "id": {"type": "string"}, "email": {"type": "string"}, "name": {"type": "string"},
+        "manageable": {"type": "boolean", "description": "False for a dynamic group, whose members come from a query"}, "grant_allowed": {"type": "boolean"}}},
       "SlackStatus": {"type": "object", "properties": {
         "source": {"type": "string", "enum": ["", "ui", "env"], "description": "Where the tokens come from: saved on the Slack page, or jitd's env file; empty when not set up"},
         "env_file": {"type": "string"}, "state": {"type": "string", "enum": ["off", "connecting", "connected", "error"]}, "since": {"type": "string", "format": "date-time"}, "last_error": {"type": "string"},
@@ -171,8 +254,9 @@ const openAPISpec = `{
       "Me": {"allOf": [{"$ref": "#/components/schemas/Identity"}, {"type": "object", "properties": {"admin": {"type": "boolean"}}}]},
       "Requestable": {"type": "object", "properties": {
         "workflow_id": {"type": "string"}, "workflow_name": {"type": "string"}, "description": {"type": "string"},
-        "attribute": {"type": "string", "description": "The posture attribute an approval sets on your device; empty if the flow grants Okta groups only", "example": "custom:jit_db_ro"},
+        "attribute": {"type": "string", "description": "The posture attribute an approval sets on your device; empty if the flow grants groups only", "example": "custom:jit_db_ro"},
         "okta_groups": {"type": "array", "description": "Okta groups an approval adds the requester to until the access ends", "items": {"type": "object", "properties": {"id": {"type": "string", "example": "00g1abcdEFGHijkl2345"}, "name": {"type": "string", "example": "AWS-Prod-Admin"}}}},
+        "google_groups": {"type": "array", "description": "Google groups an approval adds the requester to until the access ends", "items": {"type": "object", "properties": {"id": {"type": "string"}, "name": {"type": "string", "example": "aws-admin@example.com"}}}},
         "resources": {"type": "array", "items": {"$ref": "#/components/schemas/Resource"}, "description": "Gives access to: what the policy unlocks for the attribute, as described by the admin"},
         "policy": {"$ref": "#/components/schemas/PolicyUse"},
         "max_duration": {"$ref": "#/components/schemas/Duration"}, "default_duration": {"$ref": "#/components/schemas/Duration"},
@@ -200,6 +284,7 @@ const openAPISpec = `{
         "workflow_id": {"type": "string"}, "workflow_name": {"type": "string"},
         "attribute": {"type": "string", "example": "custom:jit_db_ro"},
         "okta_groups": {"type": "array", "description": "Okta groups an approval adds the requester to until the access ends", "items": {"type": "object", "properties": {"id": {"type": "string", "example": "00g1abcdEFGHijkl2345"}, "name": {"type": "string", "example": "AWS-Prod-Admin"}}}},
+        "google_groups": {"type": "array", "description": "Google groups an approval adds the requester to until the access ends", "items": {"type": "object", "properties": {"id": {"type": "string"}, "name": {"type": "string", "example": "aws-admin@example.com"}}}},
         "resources": {"type": "array", "items": {"$ref": "#/components/schemas/Resource"}},
         "requester": {"$ref": "#/components/schemas/Identity"}, "target_device_id": {"type": "string"},
         "duration": {"$ref": "#/components/schemas/Duration"}, "reason": {"type": "string"},
@@ -225,8 +310,9 @@ const openAPISpec = `{
         "error": {"type": "string", "description": "Set when the policy could not be read; the other fields are then unknown"}}},
       "Workflow": {"type": "object", "required": ["name", "requesters"], "properties": {
         "id": {"type": "string", "readOnly": true}, "name": {"type": "string", "example": "Database access (read-only)"}, "description": {"type": "string"},
-        "attribute": {"type": "string", "description": "custom:jit_<name>; the prefix may be omitted when writing. Optional when okta_groups is set", "example": "custom:jit_db_ro"},
+        "attribute": {"type": "string", "description": "custom:jit_<name>; the prefix may be omitted when writing. Optional when okta_groups or google_groups is set", "example": "custom:jit_db_ro"},
         "okta_groups": {"type": "array", "description": "Okta groups an approval adds the requester to until the access ends. When writing, give each by id or by exact name", "items": {"type": "object", "properties": {"id": {"type": "string", "example": "00g1abcdEFGHijkl2345"}, "name": {"type": "string", "example": "AWS-Prod-Admin"}}}},
+        "google_groups": {"type": "array", "description": "Google groups an approval adds the requester to until the access ends. When writing, give each by its email address as name", "items": {"type": "object", "properties": {"id": {"type": "string"}, "name": {"type": "string", "example": "aws-admin@example.com"}}}},
         "resources": {"type": "array", "items": {"$ref": "#/components/schemas/Resource"}},
         "requesters": {"type": "array", "items": {"$ref": "#/components/schemas/Principal"}},
         "approvers": {"type": "array", "items": {"$ref": "#/components/schemas/Principal"}},
@@ -242,7 +328,8 @@ const openAPISpec = `{
         "created_at": {"type": "string", "format": "date-time", "readOnly": true}, "updated_at": {"type": "string", "format": "date-time", "readOnly": true}}},
       "ErrorBody": {"type": "object", "properties": {"error": {"type": "object", "properties": {
         "code": {"type": "string", "enum": ["bad_request", "forbidden", "not_found", "conflict", "identity_unavailable", "tailscale_api_error", "slack_error", "internal"]},
-        "message": {"type": "string"}, "request_id": {"type": "string"}, "url": {"type": "string"}}}}}
+        "message": {"type": "string"}, "request_id": {"type": "string"}, "url": {"type": "string"},
+        "force": {"type": "string", "enum": ["1"], "description": "Present when the same call goes through with force=1; the message says what that costs"}}}}}
     }
   }
 }`

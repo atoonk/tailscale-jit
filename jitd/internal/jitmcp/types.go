@@ -37,8 +37,9 @@ type requestableFlow struct {
 	WorkflowID        string      `json:"workflow_id" jsonschema:"pass this to request_access"`
 	WorkflowName      string      `json:"workflow_name"`
 	Description       string      `json:"description,omitempty"`
-	Attribute         string      `json:"attribute" jsonschema:"the posture attribute an approval sets on this device; empty if the flow grants Okta groups only"`
+	Attribute         string      `json:"attribute" jsonschema:"the posture attribute an approval sets on this device; empty if the flow grants groups only"`
 	OktaGroups        []oktaGroup `json:"okta_groups,omitempty" jsonschema:"Okta groups an approval adds the requester to until the access ends"`
+	GoogleGroups      []oktaGroup `json:"google_groups,omitempty" jsonschema:"Google groups an approval adds the requester to until the access ends"`
 	Resources         []resource  `json:"resources" jsonschema:"what the flow gives access to, as described by the admin: services, tags, hosts"`
 	Policy            *policyUse  `json:"policy,omitempty" jsonschema:"what the tailnet policy actually grants for the attribute, when jitd could read it"`
 	MaxDuration       string      `json:"max_duration"`
@@ -53,7 +54,7 @@ type requestableFlow struct {
 	ActiveExpiresAt   string      `json:"active_expires_at,omitempty"`
 }
 
-// oktaGroup is an Okta group a flow grants membership in.
+// oktaGroup is an Okta or Google group a flow grants membership in.
 type oktaGroup struct {
 	ID   string `json:"id,omitempty"`
 	Name string `json:"name,omitempty"`
@@ -123,6 +124,7 @@ type accessRequest struct {
 	WorkflowName   string      `json:"workflow_name"`
 	Attribute      string      `json:"attribute"`
 	OktaGroups     []oktaGroup `json:"okta_groups,omitempty"`
+	GoogleGroups   []oktaGroup `json:"google_groups,omitempty"`
 	Resources      []resource  `json:"resources"`
 	Status         string      `json:"status" jsonschema:"pending, scheduled (approved, starting at start_at), approved, declined, cancelled, expired or revoked"`
 	Duration       string      `json:"duration"`
@@ -267,18 +269,28 @@ func (r *accessRequest) services() []string {
 	return out
 }
 
-// oktaNames names Okta groups for a text result. The names are an admin's
-// text, so they are quoted.
-func oktaNames(gs []oktaGroup) string {
-	names := make([]string, len(gs))
-	for i, g := range gs {
-		names[i] = strconv.Quote(cmp.Or(g.Name, g.ID))
+// groupNames names Okta and Google groups for a text result. The names are
+// an admin's text, so they are quoted.
+func groupNames(okta, google []oktaGroup) string {
+	var parts []string
+	for _, k := range []struct {
+		label string
+		gs    []oktaGroup
+	}{{"Okta", okta}, {"Google", google}} {
+		if len(k.gs) == 0 {
+			continue
+		}
+		names := make([]string, len(k.gs))
+		for i, g := range k.gs {
+			names[i] = strconv.Quote(cmp.Or(g.Name, g.ID))
+		}
+		what := "the " + k.label + " group "
+		if len(k.gs) > 1 {
+			what = "the " + k.label + " groups "
+		}
+		parts = append(parts, what+strings.Join(names, ", "))
 	}
-	what := "the Okta group "
-	if len(gs) > 1 {
-		what = "the Okta groups "
-	}
-	return what + strings.Join(names, ", ")
+	return strings.Join(parts, " and ")
 }
 
 func summarizeRequestable(o listRequestableOutput) string {
@@ -293,11 +305,12 @@ func summarizeRequestable(o listRequestableOutput) string {
 		if f.Description != "" {
 			fmt.Fprintf(&b, "  %s\n", f.Description)
 		}
-		if len(f.OktaGroups) > 0 {
-			fmt.Fprintf(&b, "  adds the requester to %s until the access ends\n", oktaNames(f.OktaGroups))
+		groups := groupNames(f.OktaGroups, f.GoogleGroups)
+		if groups != "" {
+			fmt.Fprintf(&b, "  adds the requester to %s until the access ends\n", groups)
 		}
 		if len(f.Resources) == 0 {
-			if f.Attribute != "" || len(f.OktaGroups) == 0 {
+			if f.Attribute != "" || groups == "" {
 				b.WriteString("  gives access to: (not described by the admin)\n")
 			}
 		} else {
@@ -393,15 +406,16 @@ func summarizeRequest(r accessRequest, viewer identity) string {
 		b.WriteString("Nothing is granted until it starts, so do not try to use the access before then. There is no need to wait for it now.\n")
 	case string(jit.StatusApproved):
 		fmt.Fprintf(&b, "Access request %s%s for %s is APPROVED until %s.\n%s\n", r.ID, by, what, shortTime(r.ExpiresAt), r.URL)
+		groups := groupNames(r.OktaGroups, r.GoogleGroups)
 		switch {
 		case !mine:
 			fmt.Fprintf(&b, "The access is on %s's device %s, not on this one.\n", r.Requester.who(), r.Requester.DeviceName)
-		case r.Attribute == "" && len(r.OktaGroups) > 0:
-			fmt.Fprintf(&b, "The requester is in %s until then; nothing changes on this device.", oktaNames(r.OktaGroups))
+		case r.Attribute == "" && groups != "":
+			fmt.Fprintf(&b, "The requester is in %s until then; nothing changes on this device.", groups)
 		case r.Enforcement.ConfirmedAt != "":
 			b.WriteString("The access is in place on this device.")
-			if len(r.OktaGroups) > 0 {
-				fmt.Fprintf(&b, " The requester is also in %s until then.", oktaNames(r.OktaGroups))
+			if groups != "" {
+				fmt.Fprintf(&b, " The requester is also in %s until then.", groups)
 			}
 		default:
 			b.WriteString("jitd has not yet read the access back from the device; it usually takes a few seconds.")

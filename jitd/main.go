@@ -25,10 +25,13 @@ import (
 
 	"tailscale.com/tsnet"
 
+	"github.com/atoonk/tailscale-jit/jitd/internal/google"
+	"github.com/atoonk/tailscale-jit/jitd/internal/googlesetup"
 	"github.com/atoonk/tailscale-jit/jitd/internal/jit"
 	"github.com/atoonk/tailscale-jit/jitd/internal/jithttp"
 	"github.com/atoonk/tailscale-jit/jitd/internal/jitmcp"
 	"github.com/atoonk/tailscale-jit/jitd/internal/okta"
+	"github.com/atoonk/tailscale-jit/jitd/internal/oktasetup"
 	"github.com/atoonk/tailscale-jit/jitd/internal/setup"
 	"github.com/atoonk/tailscale-jit/jitd/internal/slackbot"
 	"github.com/atoonk/tailscale-jit/jitd/internal/tsapi"
@@ -107,6 +110,9 @@ func main() {
 	// (OKTA_CLIENT_ID, OKTA_PRIVATE_KEY, ...), plus the optional
 	// OKTA_GRANT_ALLOWLIST and OKTA_READ_ALLOWLIST, from the env file
 	// (re-read on use, so editing it needs no restart) or the environment.
+	// Without credentials there, the ones an admin saved on the Okta page
+	// (in the database) are used; the allowlists only ever come from the
+	// env file or the environment.
 	//
 	// A credential set in the env file wins over the environment when it
 	// is not empty. An allowlist counts as set as soon as its name is
@@ -142,16 +148,20 @@ func main() {
 		}
 		return vars, nil
 	}
+	oktaSetup := &oktasetup.Manager{Store: store, Svc: svc, Env: oktaVars, EnvFile: *envFile, Log: log}
+	if err := oktaSetup.Load(); err != nil {
+		log.Error("cannot read the Okta credentials saved on the Okta page from the database", "err", err)
+	}
 	// While the env file cannot be read (a bad line, a permission), Okta
 	// carries on with the settings read last, so that an edit gone wrong
 	// neither switches off the removal of memberships nor opens the
 	// allowlists. If it was never readable, Okta is off and no group is
 	// allowed.
-	oktaClient := &okta.Dynamic{Load: oktaVars, OnLoadError: func(err error) {
+	oktaClient := &okta.Dynamic{Load: oktaSetup.Vars, OnLoadError: func(err error) {
 		if err != nil {
-			log.Error("cannot read the Okta settings from the env file; carrying on with the ones read last, if any", "file", *envFile, "err", err)
+			log.Error("cannot read the Okta settings; carrying on with the ones read last, if any", "env_file", *envFile, "err", err)
 		} else {
-			log.Info("the Okta settings in the env file are readable again", "file", *envFile)
+			log.Info("the Okta settings are readable again", "env_file", *envFile)
 		}
 	}}
 	svc.Okta = oktaClient
@@ -173,13 +183,92 @@ func main() {
 		if vars, _ := oktaClient.Vars(); vars["OKTA_CLIENT_ID"] != "" {
 			auth = "service app " + vars["OKTA_CLIENT_ID"]
 		}
-		log.Info("okta enabled", "auth", auth, "grant_allowlist", lim.Grant, "read_allowlist", lim.Read)
+		from := "the environment or the env file"
+		if oktaSetup.Status().Source == oktasetup.SourceUI {
+			from = "the Okta page (jitd's database)"
+		}
+		log.Info("okta enabled", "auth", auth, "credentials_from", from, "grant_allowlist", lim.Grant, "read_allowlist", lim.Read)
 		if len(lim.Grant) == 0 || len(lim.Read) == 0 {
 			log.Warn("an Okta allowlist is set but empty: jitd may use no Okta group for that purpose", "grant_allowlist", lim.Grant, "read_allowlist", lim.Read)
 		}
 		if jit.AllowsAll(lim.Grant) || jit.AllowsAll(lim.Read) {
 			log.Info("an Okta allowlist is \"*\": jitd may use any Okta group its credential can reach for that purpose (" +
 				jit.EnvOktaGrantAllowlist + ", " + jit.EnvOktaReadAllowlist + ")")
+		}
+	}
+	// Google, for flows that grant Google group membership. Its settings
+	// are made on the Google page and kept in the database: the service
+	// account's key, the domains whose users may be added, and the groups
+	// flows may grant. Each of GOOGLE_SERVICE_ACCOUNT_JSON (the key file on
+	// one line), GOOGLE_ALLOWED_DOMAINS and GOOGLE_GRANT_ALLOWLIST in the
+	// env file or the environment wins over the page, for whoever runs
+	// jitd from a Secret. The key counts when it is not empty, a list as
+	// soon as its name is there; the file wins over the environment.
+	googleLists := []string{google.EnvDomains, google.EnvGrantAllowlist}
+	googleVars := func() (map[string]string, error) {
+		vars := map[string]string{}
+		if v := os.Getenv(google.EnvKey); strings.TrimSpace(v) != "" {
+			vars[google.EnvKey] = v
+		}
+		for _, k := range googleLists {
+			if v, set := os.LookupEnv(k); set {
+				vars[k] = v
+			}
+		}
+		if *envFile == "" {
+			return vars, nil
+		}
+		fromFile, err := setup.ReadEnvFile(*envFile)
+		if err != nil {
+			return nil, err
+		}
+		if v := fromFile[google.EnvKey]; v != "" {
+			vars[google.EnvKey] = v
+		}
+		for _, k := range googleLists {
+			if v, set := fromFile[k]; set {
+				vars[k] = v
+			}
+		}
+		return vars, nil
+	}
+	googleSetup := &googlesetup.Manager{Store: store, Svc: svc, Env: googleVars, EnvFile: *envFile, Log: log}
+	if err := googleSetup.Load(); err != nil {
+		log.Error("cannot read the Google settings saved on the Google page from the database", "err", err)
+	}
+	// As with Okta: while the env file cannot be read, Google carries on
+	// with the settings read last, and if it was never readable Google is
+	// off and no group is allowed.
+	googleClient := &google.Dynamic{Load: googleSetup.Vars, OnLoadError: func(err error) {
+		if err != nil {
+			log.Error("cannot read the Google settings; carrying on with the ones read last, if any", "env_file", *envFile, "err", err)
+		} else {
+			log.Info("the Google settings are readable again", "env_file", *envFile)
+		}
+	}}
+	svc.Google = googleClient
+	svc.GoogleLimits = func() jit.GoogleLimits {
+		vars, err := googleClient.Vars()
+		if err != nil {
+			return jit.NoGoogleGroups()
+		}
+		return jit.ParseGoogleLimits(vars)
+	}
+	if vars, err := googleClient.Vars(); err == nil && google.Configured(vars) {
+		if _, err := google.NewFromValues(vars); err != nil {
+			log.Error("the Google service account key is set but unusable; Google stays off until it is fixed", "err", err)
+		}
+	}
+	if svc.GoogleEnabled() {
+		lim := svc.GoogleLimits()
+		st := googleSetup.Status()
+		from := "the environment or the env file"
+		if st.Source == googlesetup.SourceUI {
+			from = "the Google page (jitd's database)"
+		}
+		log.Info("google enabled", "service_account", st.Account, "key_from", from, "allowed_domains", lim.Domains, "grant_allowlist", lim.Grant)
+		if len(lim.Domains) == 0 {
+			log.Warn("no allowed domains are set for Google: jitd adds nobody to a Google group until an admin names them on the Google page")
 		}
 	}
 	svc.PolicyCache = &jit.PolicyCache{TS: ts, TTL: time.Minute, Log: log}
@@ -210,7 +299,7 @@ func main() {
 		// group: and tag: admins are resolved through the Tailscale API: if
 		// the credential is missing or broken, nobody can reach the Setup
 		// page to fix it.
-		log.Warn("-admins lists no login: if the Tailscale API credential is missing or broken, group admins cannot be resolved and nobody can open /admin/setup; add at least one login")
+		log.Warn("-admins lists no login: if the Tailscale API credential is missing or broken, group admins cannot be resolved and nobody can open the Tailscale page (/admin/integrations/tailscale) to fix it; add at least one login")
 	}
 
 	if err := os.MkdirAll(*stateDir, 0o700); err != nil {
@@ -254,6 +343,7 @@ func main() {
 	}
 	checker := &setup.Checker{
 		EnvFile: *envFile,
+		Store:   store,
 		APIBase: *apiBase,
 		Tag:     *jitTag,
 		Target:  ts,
@@ -297,6 +387,8 @@ func main() {
 		Resolver: &jit.WhoIsResolver{Client: lc, Timeout: 5 * time.Second},
 		TS:       ts,
 		Setup:    checker,
+		Okta:     oktaSetup,
+		Google:   googleSetup,
 		JITTag:   *jitTag,
 		BaseURL:  scheme + "://" + cmp.Or(dns, *hostname),
 		Hosts:    append([]string{*hostname, dns, strings.Split(dns, ".")[0]}, ips...),

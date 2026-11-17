@@ -34,10 +34,11 @@ func TestSlackPageAndAPI(t *testing.T) {
 		status     int
 		want       []string
 	}{
-		{"root", "/admin/slack", 200, []string{"Connect Slack", "Create the Slack app", "manifest_json", `value="example.com"`, "SLACK_BOT_TOKEN"}},
-		{"alice", "/admin/slack", 403, []string{"Admins only"}},
+		{"root", "/admin/integrations/slack", 200, []string{"Connect Slack", "Create the Slack app", "manifest_json", `value="example.com"`, "SLACK_BOT_TOKEN"}},
+		{"alice", "/admin/integrations/slack", 403, []string{"Admins only"}},
 		{"root", "/admin/workflows/new", 200, []string{`name="slack_channel"`, "Connect Slack on the"}},
-		{"root", "/", 200, []string{`href="/admin/slack"`}},
+		{"root", "/", 200, []string{`href="/admin/integrations"`}},
+		{"root", "/admin/integrations/tailscale", 200, []string{`<a href="/admin/integrations/slack" >Slack`}},
 	} {
 		status, body := getPage(t, srv, tc.user, tc.path)
 		if status != tc.status {
@@ -82,7 +83,7 @@ func TestSlackPageAndAPI(t *testing.T) {
 		path string
 		want []string
 	}{
-		{"/admin/slack", []string{"Example Corp", "connected", "RDP flow", "#sre-oncall", "bob@example.com", "→ @bob", "Send a test message", "Disconnect"}},
+		{"/admin/integrations/slack", []string{"Example Corp", "connected", "RDP flow", "#sre-oncall", "bob@example.com", "→ @bob", "Send a test message", "Disconnect"}},
 		{"/admin/workflows/" + wf.ID, []string{`value="C0SREONCALL" data-name="sre-oncall" selected`, `name="slack_dm" checked`}},
 		{"/admin/workflows", []string{"Slack: #sre-oncall"}},
 	} {
@@ -94,7 +95,7 @@ func TestSlackPageAndAPI(t *testing.T) {
 		}
 	}
 	// The tokens appear nowhere.
-	for _, path := range []string{"/admin/slack", "/v1/slack", "/api/openapi.json"} {
+	for _, path := range []string{"/admin/integrations/slack", "/v1/slack", "/api/openapi.json"} {
 		_, body := getPage(t, srv, "root", path)
 		if strings.Contains(body, "secret-9999") || strings.Contains(body, "secret-8888") {
 			t.Errorf("%s shows a token", path)

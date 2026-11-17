@@ -31,7 +31,7 @@
     <td><span class="status {{.Status}}">{{.Status}}</span></td>
     <td><b>{{.Requester.Actor}}</b><div class="muted small">{{.Requester.DeviceName}}</div></td>
     <td><a href="/requests/{{.ID}}">{{.WorkflowName}}</a>
-      <div class="muted small" title="{{join .ResourceNames}}">{{with .Attribute}}<code>{{.}}</code>{{end}}{{with .OktaGroups}} Okta: {{oktagroups .}}{{end}}</div></td>
+      <div class="muted small" title="{{join .ResourceNames}}">{{with .Attribute}}<code>{{.}}</code>{{end}}{{range .GroupSets}} {{.Label}}: {{join .Labels}}{{end}}</div></td>
     <td><div class="reason">{{.Reason}}</div></td>
     <td class="nowrap">{{human .Duration}}</td>
     <td class="nowrap" title="{{ts .CreatedAt}}">{{ago .CreatedAt}}</td>

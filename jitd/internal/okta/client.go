@@ -124,7 +124,7 @@ var ErrNotFound = errors.New("not found in Okta")
 
 // ErrUnconfigured is returned by every call of a Dynamic client while no
 // Okta credentials are set.
-var ErrUnconfigured = errors.New("Okta is not configured: set OKTA_ORG_URL and either OKTA_API_TOKEN or OKTA_CLIENT_ID and OKTA_PRIVATE_KEY in jitd's env file")
+var ErrUnconfigured = errors.New("Okta is not configured: an admin can set it up on jitd's Okta page (or set OKTA_ORG_URL and either OKTA_API_TOKEN or OKTA_CLIENT_ID and OKTA_PRIVATE_KEY in jitd's env file)")
 
 // CredentialVars are the variables NewFromValues looks at.
 var CredentialVars = []string{"OKTA_ORG_URL", "OKTA_API_TOKEN", "OKTA_CLIENT_ID", "OKTA_PRIVATE_KEY", "OKTA_PRIVATE_KEY_ID", "OKTA_SCOPES"}
@@ -462,8 +462,9 @@ func logPath(p string) string {
 }
 
 // Dynamic is a Client that (re)builds its backing HTTP client from Load on
-// each call, so editing the env file takes effect without a restart. Until
-// Load returns a complete credential, every call fails with ErrUnconfigured.
+// each call, so editing the env file, or saving credentials on the Okta
+// page, takes effect without a restart. Until Load returns a complete
+// credential, every call fails with ErrUnconfigured.
 //
 // If Load fails (the env file cannot be read: a bad line, a permission),
 // Dynamic carries on with the settings it read last, and says so through
@@ -474,6 +475,9 @@ type Dynamic struct {
 	// OnLoadError, if set, is called when Load starts failing (with the
 	// error) and when it works again (with nil).
 	OnLoadError func(err error)
+	// New builds the client from what Load returned. It is NewFromValues
+	// unless set (the preview and tests put a fake behind it).
+	New func(vars map[string]string) (Client, error)
 
 	mu   sync.Mutex
 	last map[string]string // what Load returned when it last worked
@@ -549,9 +553,12 @@ func (d *Dynamic) get() (Client, error) {
 	defer d.mu.Unlock()
 	if key != d.key || (d.c == nil && d.berr == nil) {
 		d.key = key
-		c, err := NewFromValues(vars)
-		d.c, d.berr = nil, err
-		if err == nil {
+		d.c, d.berr = nil, nil
+		if d.New != nil && Configured(vars) {
+			d.c, d.berr = d.New(vars)
+		} else if c, err := NewFromValues(vars); err != nil {
+			d.berr = err
+		} else {
 			d.c = c
 		}
 	}
