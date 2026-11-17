@@ -132,7 +132,7 @@ func main() {
 		if *envFile == "" {
 			return vars, nil
 		}
-		fromFile, err := setup.ReadEnvFile(*envFile)
+		fromFile, err := setup.ReadOptionalEnvFile(*envFile)
 		if err != nil {
 			return nil, err
 		}
@@ -218,7 +218,7 @@ func main() {
 		if *envFile == "" {
 			return vars, nil
 		}
-		fromFile, err := setup.ReadEnvFile(*envFile)
+		fromFile, err := setup.ReadOptionalEnvFile(*envFile)
 		if err != nil {
 			return nil, err
 		}

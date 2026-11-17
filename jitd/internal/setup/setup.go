@@ -499,6 +499,17 @@ func (c *Checker) Remove(ctx context.Context, by string) (*Result, error) {
 	return c.runAndKeep(ctx), nil
 }
 
+// ReadOptionalEnvFile is ReadEnvFile for a file that need not exist: one
+// that is missing reads as empty. A file that is there and cannot be read
+// is still an error, since nobody can tell what it sets.
+func ReadOptionalEnvFile(path string) (map[string]string, error) {
+	vars, err := ReadEnvFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return map[string]string{}, nil
+	}
+	return vars, err
+}
+
 // ReadEnvFile parses KEY=VALUE lines. Blank lines and # comments are
 // ignored, a leading "export " is allowed, and values may be quoted.
 func ReadEnvFile(path string) (map[string]string, error) {

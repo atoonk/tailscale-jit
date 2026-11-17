@@ -155,3 +155,27 @@ func TestSavedSurvivesRestartAndFileWins(t *testing.T) {
 		t.Errorf("save without a store: %v", err)
 	}
 }
+
+// The env file is optional: one that does not exist reads as empty, so
+// Okta and Google work from what was saved on their pages. One that is
+// there and unreadable is an error, because nobody can tell what it sets.
+func TestReadOptionalEnvFile(t *testing.T) {
+	dir := t.TempDir()
+	vars, err := ReadOptionalEnvFile(filepath.Join(dir, "missing"))
+	if err != nil || vars == nil || len(vars) != 0 {
+		t.Errorf("a missing file = %v, %v; want empty and no error", vars, err)
+	}
+	file := filepath.Join(dir, "env")
+	if err := os.WriteFile(file, []byte("OKTA_GRANT_ALLOWLIST=\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if vars, err = ReadOptionalEnvFile(file); err != nil {
+		t.Fatal(err)
+	} else if v, set := vars["OKTA_GRANT_ALLOWLIST"]; !set || v != "" {
+		t.Errorf("an empty allowlist = %q, set %v; want set and empty", v, set)
+	}
+	// A directory is there and is not a readable file.
+	if _, err = ReadOptionalEnvFile(dir); err == nil {
+		t.Error("a path that cannot be read as a file gave no error")
+	}
+}
