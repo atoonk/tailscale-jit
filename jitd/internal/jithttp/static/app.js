@@ -36,8 +36,8 @@ async function api(method, url, body) {
 
 const list = (s) => s.split(",").map((x) => x.trim()).filter(Boolean);
 
-// resources reads the "Gives access to" rows; rows without a target are
-// ignored.
+// resources reads the flow form's "Gives access to" rows; rows without a
+// target are ignored.
 const resources = (f) => [...f.querySelectorAll(".resrow")].map((row) => ({
   name: row.querySelector('[name="res_name"]').value.trim(),
   description: row.querySelector('[name="res_desc"]').value.trim(),
@@ -100,13 +100,11 @@ document.addEventListener("click", (ev) => {
     // Newest last, just above the "Add another" row.
     box.insertBefore(s, box.querySelector("[data-picks]"));
     s.hidden = false;
-    delete s.dataset.removed;
     syncGrants(box);
     s.querySelector("input").focus();
   } else {
     const s = rm.closest("[data-action]");
     s.hidden = true;
-    s.dataset.removed = "1";
     syncGrants(box);
   }
 });
@@ -119,6 +117,7 @@ function workflowBody(f) {
     name: f.name.value,
     description: f.description.value,
     grants: grantsBody(f),
+    resources: resources(f),
     requesters: list(f.requesters.value),
     approvers: list(f.approvers.value),
     allow_self_approval: f.allow_self_approval.checked,
@@ -136,12 +135,7 @@ function workflowBody(f) {
 // added, as the API takes it.
 function grantsBody(f) {
   const g = {};
-  // "Gives access to" belongs to Tailscale access and goes when that is
-  // removed here. A flow that came without it keeps what it had.
-  const gives = f.querySelector('[data-action="tailscale"][data-removed]') ? [] : resources(f);
-  if (granted(f, "tailscale") || gives.length) {
-    g.tailscale = { attribute: granted(f, "tailscale") ? f.attribute.value.trim() : "", resources: gives };
-  }
+  if (granted(f, "tailscale")) g.tailscale = { attribute: f.attribute.value.trim() };
   for (const [kind, label] of [["okta", "Okta"], ["google", "Google"]]) {
     if (!granted(f, kind)) continue;
     const groups = list(f[kind + "_groups"].value).map((name) => ({ name }));

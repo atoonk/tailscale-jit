@@ -246,17 +246,28 @@ func (p *groupProvider) grantAllowed(g GroupRef) bool {
 }
 
 // resolveGroups fills in the ID (and the current name) of every group in
-// w, and refuses groups whose members jitd cannot change.
-func (s *Service) resolveGroups(ctx context.Context, w *Workflow) error {
+// w, and refuses groups whose members jitd cannot change. was is the flow
+// as it is stored, when w replaces one.
+//
+// A group given by ID and by name must be one group: the ID is what jitd
+// looks up, so a name that belongs to another group would otherwise be
+// dropped without a word, and the flow would grant a group its author did
+// not mean. A pair the stored flow already has is let through: that is a
+// flow read and sent back after the group was renamed.
+func (s *Service) resolveGroups(ctx context.Context, w, was *Workflow) error {
 	for _, p := range s.providers() {
-		if err := s.resolveGroupsOf(ctx, p, w); err != nil {
+		var stored []GroupRef
+		if was != nil {
+			stored = *p.flowGroups(was)
+		}
+		if err := s.resolveGroupsOf(ctx, p, w, stored); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (s *Service) resolveGroupsOf(ctx context.Context, p *groupProvider, w *Workflow) error {
+func (s *Service) resolveGroupsOf(ctx context.Context, p *groupProvider, w *Workflow, stored []GroupRef) error {
 	gs := p.flowGroups(w)
 	if len(*gs) == 0 {
 		return nil
@@ -280,6 +291,9 @@ func (s *Service) resolveGroupsOf(ctx context.Context, p *groupProvider, w *Work
 			return err
 		case err != nil:
 			return apiFailed("looking up %s group %q: %v", p.label, ref, err)
+		}
+		if g.ID != "" && g.Name != "" && !strings.EqualFold(g.Name, got.Name) && !slices.Contains(stored, g) {
+			return badRequest("%s group %s is %q, not %q: give a group by its id or by its name", p.label, g.ID, got.Name, g.Name)
 		}
 		(*gs)[i] = got
 		if !p.grantAllowed(got) {

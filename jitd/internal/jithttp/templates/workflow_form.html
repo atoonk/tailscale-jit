@@ -28,16 +28,6 @@
         <span class="prefixed"><span class="prefix">custom:jit_</span><input name="attribute" value="{{attrname .Attribute}}" placeholder="db_ro" class="short" required pattern="[a-z0-9_]{1,32}" title="1-32 of a-z, 0-9, _"></span>
         <span class="hint">An approval sets this attribute on the requester's device, with an expiry. What it unlocks is decided by the tailnet policy, through a grant with <code>srcPosture</code> on <code>posture:jit_&lt;name&gt;</code>.</span>
       </label>
-      <div class="field">
-        <span class="label">Gives access to <span class="opt">optional</span></span>
-        <div class="resrows" id="resrows">
-          <div class="reshead"><span>Target</span><span>Description</span><span></span></div>
-          {{range .Resources}}{{template "resrow" .}}{{end}}
-          {{if not .Resources}}{{template "resrow" .}}{{end}}
-        </div>
-        <button type="button" class="btn sm" id="addres">+ Add another</button>
-        <span class="hint">Target is the name as it appears in a policy grant: <code>svc:mysql-prod</code>, <code>tag:bastion</code>, a host name or a CIDR. Discovery only, for people and agents choosing what to request; it grants nothing, the policy does.</span>
-      </div>
       {{if and .ID .Attribute}}
       <div class="policycheck {{if $policy.OK}}ok{{else}}warn{{end}}">
         <b>Policy check</b>
@@ -87,6 +77,22 @@
       {{else if $oktapage}}<div class="pick off"><b>Okta groups</b><span class="d">Join Okta groups, for what Okta gates: AWS roles through single sign-on, apps.</span><span class="foot">Not connected · <a href="/admin/integrations/okta">Connect Okta</a></span></div>{{end}}
       {{if $hasGoogle}}<button type="button" class="pick" data-add="google"><b>Google groups</b><span class="d">Join Google groups, for what Google gates: Google Cloud roles, shared drives.</span></button>
       {{else if $googlepage}}<div class="pick off"><b>Google groups</b><span class="d">Join Google groups, for what Google gates: Google Cloud roles, shared drives.</span><span class="foot">Not connected · <a href="/admin/integrations/google">Connect Google</a></span></div>{{end}}
+    </div>
+  </div>
+
+  <div class="card fields">
+    <div class="field">
+      <h2>Gives access to <span class="opt">optional</span></h2>
+      <span class="hint">What this flow opens, for people and agents choosing what to request and for approvers. It describes the access and grants nothing: the tailnet policy and the groups do that.</span>
+    </div>
+    <div class="field">
+      <div class="resrows" id="resrows">
+        <div class="reshead"><span>Target</span><span>Description</span><span></span></div>
+        {{range .Resources}}{{template "resrow" .}}{{end}}
+        {{if not .Resources}}{{template "resrow" noresource}}{{end}}
+      </div>
+      <button type="button" class="btn sm" id="addres">+ Add another</button>
+      <span class="hint">One name without spaces per row. For Tailscale access, the name as it appears in the policy grant: <code>svc:mysql-prod</code>, <code>tag:bastion</code>, a host name or a CIDR. For groups, what the group opens, such as <code>aws-prod</code>.</span>
     </div>
   </div>
 
@@ -170,7 +176,7 @@
 </div>{{end}}
 
 {{define "resrow"}}<div class="resrow">
-  <input name="res_name" value="{{.Name}}" placeholder="svc:mysql-prod" class="mono" pattern="\S+" title="No spaces: svc:<name>, tag:<name>, a host or a CIDR" aria-label="Target">
+  <input name="res_name" value="{{.Name}}" placeholder="svc:mysql-prod" class="mono" pattern="\S+" title="One name without spaces: svc:<name>, tag:<name>, a host or a CIDR" aria-label="Target">
   <input name="res_desc" value="{{.Description}}" placeholder="Production MySQL, orders and customers (us-east-1)" maxlength="200" aria-label="Description">
   <button type="button" class="btn sm" data-removeres title="Remove">✕</button>
 </div>{{end}}

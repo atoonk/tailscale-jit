@@ -3,6 +3,7 @@ package jithttp
 import (
 	"encoding/json"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -60,13 +61,15 @@ func TestFlowJSONCoversWorkflow(t *testing.T) {
 	if err := json.Unmarshal(b, &top); err != nil {
 		t.Fatal(err)
 	}
-	for _, old := range []string{"attribute", "okta_groups", "google_groups", "resources"} {
+	for _, old := range []string{"attribute", "okta_groups", "google_groups"} {
 		if _, has := top[old]; has {
 			t.Errorf("the API's flow still has %q at the top:\n%s", old, b)
 		}
 	}
-	if _, has := top["grants"]; !has {
-		t.Errorf("the API's flow has no grants:\n%s", b)
+	for _, name := range []string{"grants", "resources"} {
+		if _, has := top[name]; !has {
+			t.Errorf("the API's flow has no %s:\n%s", name, b)
+		}
 	}
 	var back flowJSON
 	if err := json.Unmarshal(b, &back); err != nil {
@@ -76,14 +79,18 @@ func TestFlowJSONCoversWorkflow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(got, full) {
-		t.Errorf("a flow changed on its way through the API's layout:\n got %+v\nwant %+v", got, full)
+	for g, w, i := reflect.ValueOf(got), reflect.ValueOf(full), 0; i < w.NumField(); i++ {
+		if !reflect.DeepEqual(g.Field(i).Interface(), w.Field(i).Interface()) {
+			t.Errorf("jit.Workflow.%s changed on its way through the API's layout (see flowOut and flowJSON.workflow):\n got %+v\nwant %+v",
+				w.Type().Field(i).Name, g.Field(i).Interface(), w.Field(i).Interface())
+		}
 	}
 }
 
 // What an approval grants is under "grants" in everything /v1/workflows
-// answers, whichever layout the flow was written in; a flow read from the
-// API can be sent straight back; and a body in both layouts is refused.
+// answers, whichever layout the flow was written in, and what the flow
+// gives access to is beside it; a flow read from the API can be sent
+// straight back; and a body in both layouts is refused.
 func TestFlowAPIGrants(t *testing.T) {
 	srv, _, _ := newGoogleServer(t, nil)
 	key := google.FakeKey(googleAccount, "acme-prod")
@@ -94,29 +101,36 @@ func TestFlowAPIGrants(t *testing.T) {
 		ID     string `json:"id"`
 		Grants struct {
 			Tailscale *struct {
-				Attribute string         `json:"attribute"`
-				Resources []jit.Resource `json:"resources"`
+				Attribute string `json:"attribute"`
 			} `json:"tailscale"`
 			Okta   *struct{} `json:"okta"`
 			Google *struct {
 				Groups []jit.GroupRef `json:"groups"`
 			} `json:"google"`
 		} `json:"grants"`
+		Resources []jit.Resource `json:"resources"`
 		// Gone from the top level.
 		Attribute    *string         `json:"attribute"`
 		GoogleGroups json.RawMessage `json:"google_groups"`
-		Resources    json.RawMessage `json:"resources"`
 	}
-	check := func(what string, f flow, attribute string, google bool) {
+	check := func(what string, f flow, attribute string, google bool, resources ...string) {
 		t.Helper()
-		if f.Attribute != nil || f.GoogleGroups != nil || f.Resources != nil {
+		if f.Attribute != nil || f.GoogleGroups != nil {
 			t.Errorf("%s: the answer has the older top-level fields: %+v", what, f)
 		}
 		switch ts := f.Grants.Tailscale; {
 		case attribute == "" && ts != nil:
 			t.Errorf("%s: grants.tailscale = %+v, want none", what, ts)
-		case attribute != "" && (ts == nil || ts.Attribute != attribute || ts.Resources == nil):
-			t.Errorf("%s: grants.tailscale = %+v, want attribute %q and a list of resources", what, ts, attribute)
+		case attribute != "" && (ts == nil || ts.Attribute != attribute):
+			t.Errorf("%s: grants.tailscale = %+v, want attribute %q", what, ts, attribute)
+		}
+		var names []string
+		for _, r := range f.Resources {
+			names = append(names, r.Name)
+		}
+		// A list even when it is empty, never null.
+		if f.Resources == nil || !slices.Equal(names, resources) {
+			t.Errorf("%s: resources = %v, want the list %v", what, f.Resources, resources)
 		}
 		switch g := f.Grants.Google; {
 		case !google && g != nil:
@@ -136,26 +150,39 @@ func TestFlowAPIGrants(t *testing.T) {
 
 	var both, older, one flow
 	if code := call(t, srv, "root", "POST", "/v1/workflows", people(map[string]any{"name": "On-call", "grants": map[string]any{
-		"tailscale": map[string]any{"attribute": "oncall", "resources": []map[string]string{{"name": "tag:prod"}}},
+		"tailscale": map[string]any{"attribute": "oncall"},
 		"google":    map[string]any{"groups": groups},
-	}}), &both); code != 201 {
+	}, "resources": []map[string]string{{"name": "tag:prod"}}}), &both); code != 201 {
 		t.Fatalf("creating with grants = %d", code)
 	}
-	check("created with grants", both, "custom:jit_oncall", true)
+	check("created with grants", both, "custom:jit_oncall", true, "tag:prod")
 
 	// The older layout is still read, and answered in the new one.
-	if code := call(t, srv, "root", "POST", "/v1/workflows", people(map[string]any{"name": "Databases", "attribute": "db_ro"}), &older); code != 201 {
+	if code := call(t, srv, "root", "POST", "/v1/workflows", people(map[string]any{
+		"name": "Databases", "attribute": "db_ro", "resources": []map[string]string{{"name": "svc:mysql-prod"}},
+	}), &older); code != 201 {
 		t.Fatalf("creating in the older layout = %d", code)
 	}
-	check("created in the older layout", older, "custom:jit_db_ro", false)
+	check("created in the older layout", older, "custom:jit_db_ro", false, "svc:mysql-prod")
 
-	// A kind that is left out is not granted.
+	// A kind that is left out is not granted. What a flow gives access to
+	// belongs to the flow, not to Tailscale access: a flow that grants
+	// groups only can say it too, and keeps it through a GET and a PUT.
 	if code := call(t, srv, "root", "POST", "/v1/workflows", people(map[string]any{"name": "AWS admin", "grants": map[string]any{
 		"google": map[string]any{"groups": groups},
-	}}), &one); code != 201 {
+	}, "resources": []map[string]string{{"name": "aws-prod"}}}), &one); code != 201 {
 		t.Fatalf("creating with Google groups only = %d", code)
 	}
-	check("Google groups only", one, "", true)
+	check("Google groups only", one, "", true, "aws-prod")
+	var asRead map[string]any
+	if code := call(t, srv, "root", "GET", "/v1/workflows/"+one.ID, nil, &asRead); code != 200 {
+		t.Fatalf("reading the groups-only flow = %d", code)
+	}
+	var saved flow
+	if code := call(t, srv, "root", "PUT", "/v1/workflows/"+one.ID, asRead, &saved); code != 200 {
+		t.Fatalf("saving the groups-only flow as it was read = %d", code)
+	}
+	check("Google groups only, saved as read", saved, "", true, "aws-prod")
 
 	var list struct {
 		Workflows []flow `json:"workflows"`
@@ -165,7 +192,7 @@ func TestFlowAPIGrants(t *testing.T) {
 	}
 	for _, f := range list.Workflows {
 		if f.ID == both.ID {
-			check("listed", f, "custom:jit_oncall", true)
+			check("listed", f, "custom:jit_oncall", true, "tag:prod")
 		}
 	}
 
@@ -178,9 +205,21 @@ func TestFlowAPIGrants(t *testing.T) {
 	if code := call(t, srv, "root", "PUT", "/v1/workflows/"+both.ID, raw, &again); code != 200 {
 		t.Fatalf("saving a flow as it was read = %d", code)
 	}
-	check("saved as read", again, "custom:jit_oncall", true)
+	check("saved as read", again, "custom:jit_oncall", true, "tag:prod")
 
 	var e apiErr
+	// "resources" is the flow's, so it is not read under grants.tailscale;
+	// and a value of the wrong kind is refused in the API's own words.
+	if code := call(t, srv, "root", "POST", "/v1/workflows", people(map[string]any{"name": "Nested", "grants": map[string]any{
+		"tailscale": map[string]any{"attribute": "nested", "resources": []map[string]string{{"name": "tag:prod"}}},
+	}}), &e); code != 400 || !strings.Contains(e.Error.Message, `unknown field "resources"`) {
+		t.Errorf("resources under grants.tailscale = %d %q, want 400", code, e.Error.Message)
+	}
+	if code := call(t, srv, "root", "POST", "/v1/workflows", people(map[string]any{"name": "Strings", "grants": map[string]any{
+		"google": map[string]any{"groups": []string{googleAdminsA}},
+	}}), &e); code != 400 || !strings.Contains(e.Error.Message, "grants.google.groups") || !strings.Contains(e.Error.Message, "takes an object, and the body has a string there") || strings.Contains(e.Error.Message, "jit.") {
+		t.Errorf("groups as strings = %d %q, want 400 that names the field and no Go type", code, e.Error.Message)
+	}
 	raw["attribute"] = "oncall"
 	if code := call(t, srv, "root", "PUT", "/v1/workflows/"+both.ID, raw, &e); code != 400 || !strings.Contains(e.Error.Message, "not in both") {
 		t.Errorf("a body in both layouts = %d %q, want 400", code, e.Error.Message)

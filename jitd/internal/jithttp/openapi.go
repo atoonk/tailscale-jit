@@ -78,7 +78,7 @@ const openAPISpec = `{
       "get": {"tags": ["workflows"], "summary": "All approval flows", "operationId": "listWorkflows",
         "responses": {"200": {"description": "OK", "content": {"application/json": {"schema": {"type": "object", "properties": {"workflows": {"type": "array", "items": {"$ref": "#/components/schemas/Workflow"}}}}}}}, "403": {"$ref": "#/components/responses/Error"}}},
       "post": {"tags": ["workflows"], "summary": "Create an approval flow", "operationId": "createWorkflow",
-        "description": "What an approval grants goes under grants. A body written before grants existed, with attribute, resources, okta_groups and google_groups at the top level, is still accepted; the answer always uses grants. A body with both is refused (400).",
+        "description": "What an approval grants goes under grants; resources, beside it, says what the flow gives access to. A body written before grants existed, with attribute, okta_groups and google_groups at the top level, is still accepted; the answer always uses grants. A body with both is refused (400).",
         "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Workflow"}}}},
         "responses": {"201": {"$ref": "#/components/responses/Workflow"}, "400": {"$ref": "#/components/responses/Error"}, "403": {"$ref": "#/components/responses/Error"}, "409": {"description": "Another flow already sets this attribute; the flow names Okta or Google groups, or okta: principals, and that integration is not connected; or the flow would let people give themselves an approver or admin role through an Okta group", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorBody"}}}}, "502": {"description": "Looking up an Okta or Google group failed", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorBody"}}}}}}},
     "/v1/workflows/{id}": {
@@ -303,10 +303,10 @@ const openAPISpec = `{
         "approved_at": {"type": "string", "format": "date-time"}, "expires_at": {"type": "string", "format": "date-time"},
         "attributes": {"type": "array", "items": {"type": "string"}, "description": "The attribute, once approval set it; empty if access was never granted", "example": ["custom:jit_db_ro"]},
         "policy": {"$ref": "#/components/schemas/PolicyUse"},
-        "slack": {"type": "array", "description": "Slack messages posted about the request", "items": {"type": "object", "properties": {"channel": {"type": "string"}, "ts": {"type": "string"}, "kind": {"type": "string", "enum": ["channel", "dm"]}, "user": {"type": "string"}}}},
+        "slack": {"type": "array", "description": "Slack messages posted about the request", "items": {"type": "object", "properties": {"channel": {"type": "string"}, "ts": {"type": "string"}, "kind": {"type": "string", "enum": ["channel", "dm", "okta_alert"]}, "user": {"type": "string"}}}},
         "last_error": {"type": "string"}, "created_at": {"type": "string", "format": "date-time"}, "updated_at": {"type": "string", "format": "date-time"}}},
       "Resource": {"type": "object", "required": ["name"], "properties": {
-        "name": {"type": "string", "description": "As it appears in a policy grant: svc:, tag:, a host, a CIDR", "example": "svc:mysql-prod"},
+        "name": {"type": "string", "description": "One name without spaces. For Tailscale access, as it appears in a policy grant: svc:, tag:, a host, a CIDR", "example": "svc:mysql-prod"},
         "description": {"type": "string", "example": "Production MySQL, orders and customers (us-east-1)"}}},
       "PolicyUse": {"type": "object", "description": "What the tailnet policy says about the flow's posture attribute", "properties": {
         "no_attribute": {"type": "boolean", "description": "The flow sets no posture attribute (it grants groups only), so there is nothing in the policy to check; the other fields are empty"},
@@ -316,18 +316,18 @@ const openAPISpec = `{
         "missing": {"type": "array", "items": {"type": "string"}}, "extra": {"type": "array", "items": {"type": "string"}},
         "error": {"type": "string", "description": "Set when the policy could not be read; the other fields are then unknown"}}},
       "FlowGrants": {"type": "object", "description": "What an approval grants: one key per kind, and at least one. Most flows have one; with several, an approval grants all of them or none. A kind that is left out is not granted",
-        "example": {"tailscale": {"attribute": "custom:jit_prod_oncall", "resources": [{"name": "tag:prod", "description": "All production hosts"}]}, "okta": {"groups": [{"name": "AWS-Prod-Admin"}]}, "google": {"groups": [{"name": "gcp-prod-viewers@example.com"}]}},
+        "example": {"tailscale": {"attribute": "custom:jit_prod_oncall"}, "okta": {"groups": [{"name": "AWS-Prod-Admin"}]}, "google": {"groups": [{"name": "gcp-prod-viewers@example.com"}]}},
         "properties": {
           "tailscale": {"type": "object", "description": "Access over Tailscale: a posture attribute set on the requester's device until the access ends", "properties": {
-            "attribute": {"type": "string", "description": "custom:jit_<name>; the prefix may be omitted when writing", "example": "custom:jit_db_ro"},
-            "resources": {"type": "array", "description": "What the flow gives access to, as the admin describes it. Shown to requesters and approvers; the tailnet policy is what opens the access", "items": {"$ref": "#/components/schemas/Resource"}}}},
+            "attribute": {"type": "string", "description": "custom:jit_<name>; the prefix may be omitted when writing", "example": "custom:jit_db_ro"}}},
           "okta": {"type": "object", "description": "Okta groups the requester is added to until the access ends", "properties": {
-            "groups": {"type": "array", "description": "When writing, give each by id or by exact name", "items": {"type": "object", "properties": {"id": {"type": "string", "example": "00g1abcdEFGHijkl2345"}, "name": {"type": "string", "example": "AWS-Prod-Admin"}}}}}},
+            "groups": {"type": "array", "description": "When writing, give each by id or by exact name. With both, they must be the same group: an id beside another group's name is refused (400)", "items": {"type": "object", "properties": {"id": {"type": "string", "example": "00g1abcdEFGHijkl2345"}, "name": {"type": "string", "example": "AWS-Prod-Admin"}}}}}},
           "google": {"type": "object", "description": "Google groups the requester is added to until the access ends", "properties": {
-            "groups": {"type": "array", "description": "When writing, give each by its email address as name", "items": {"type": "object", "properties": {"id": {"type": "string"}, "name": {"type": "string", "example": "aws-admin@example.com"}}}}}}}},
+            "groups": {"type": "array", "description": "When writing, give each by its email address as name. An id beside another group's address is refused (400)", "items": {"type": "object", "properties": {"id": {"type": "string"}, "name": {"type": "string", "example": "aws-admin@example.com"}}}}}}}},
       "Workflow": {"type": "object", "required": ["name", "grants", "requesters"], "properties": {
         "id": {"type": "string", "readOnly": true}, "name": {"type": "string", "example": "Database access (read-only)"}, "description": {"type": "string"},
         "grants": {"$ref": "#/components/schemas/FlowGrants"},
+        "resources": {"type": "array", "description": "Gives access to: what the flow opens, as the admin describes it, whatever it grants. Shown to requesters, agents and approvers. It grants nothing: the tailnet policy and the groups do that", "items": {"$ref": "#/components/schemas/Resource"}},
         "requesters": {"type": "array", "items": {"$ref": "#/components/schemas/Principal"}},
         "approvers": {"type": "array", "items": {"$ref": "#/components/schemas/Principal"}},
         "allow_self_approval": {"type": "boolean"}, "approvals_required": {"type": "integer", "default": 1, "minimum": 1, "maximum": 10},

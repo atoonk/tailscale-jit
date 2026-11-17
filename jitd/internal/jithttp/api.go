@@ -6,10 +6,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
 	"net/http"
+	"reflect"
 	"strings"
 	"time"
 
@@ -581,10 +583,46 @@ func decode(w http.ResponseWriter, r *http.Request, v any) bool {
 	dec := json.NewDecoder(io.LimitReader(r.Body, 1<<20))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(v); err != nil && !errors.Is(err, io.EOF) {
-		writeErr(w, &jit.Error{Code: "bad_request", Status: http.StatusBadRequest, Message: "invalid JSON body: " + err.Error()})
+		msg := err.Error()
+		// A value of the wrong kind: say where and what, not Go's type names.
+		var kind *json.UnmarshalTypeError
+		if errors.As(err, &kind) && kind.Field != "" {
+			msg = fmt.Sprintf("%q takes %s, and the body has %s there", kind.Field, jsonWants(kind.Type), jsonHas(kind.Value))
+		}
+		writeErr(w, &jit.Error{Code: "bad_request", Status: http.StatusBadRequest, Message: "invalid JSON body: " + msg})
 		return false
 	}
 	return true
+}
+
+// jsonWants names the kind of JSON value a Go type is read from.
+func jsonWants(t reflect.Type) string {
+	switch t.Kind() {
+	case reflect.Pointer:
+		return jsonWants(t.Elem())
+	case reflect.Struct, reflect.Map:
+		return "an object"
+	case reflect.Slice, reflect.Array:
+		return "a list"
+	case reflect.String:
+		return "a string"
+	case reflect.Bool:
+		return "true or false"
+	}
+	return "a number"
+}
+
+// jsonHas names a kind of JSON value as encoding/json reports it.
+func jsonHas(kind string) string {
+	switch kind {
+	case "array":
+		return "a list"
+	case "object":
+		return "an object"
+	case "bool":
+		return "true or false"
+	}
+	return "a " + kind // string, number
 }
 
 // decodeFlow reads an approval flow from the body, in the API's layout

@@ -441,14 +441,17 @@ The fields:
   another** puts more on the same flow, and an approval then grants all of
   them or none.
   - **Tailscale access:** a posture attribute, `custom:jit_<name>`, set on
-    the requester's device. Each flow has its own. With it comes **Gives
-    access to** (optional): one row per target, with a description. People
-    and agents read this when they choose what to ask for. It grants
-    nothing by itself; the policy does that.
+    the requester's device. Each flow has its own.
   - **Okta groups** and **Google groups:** the requester is added to the
     groups until the access ends. Each can be picked once that integration
     is connected; see [Okta groups](#okta-groups) and
     [Google groups](#google-groups).
+- **Gives access to** (optional): one row per target, with a description.
+  People and agents read this when they choose what to ask for, and
+  approvers when they decide. It grants nothing by itself; the policy and
+  the groups do that. For Tailscale access, use the name as it appears in
+  the policy grant (`svc:mysql-prod`, `tag:bastion`), so the policy check
+  can compare the two.
 - **Who can request** and **who can approve**: logins, `group:`, `tag:`, or
   `autogroup:member` for everyone.
 - **How many approvals**, whether people may **approve their own** requests,
@@ -1177,7 +1180,8 @@ so jitd comes back as the same machine with the same flows. To go back, run
     so);
   - a new number of approvals applies (if you lower it, the next click on
     Approve grants it);
-  - a changed posture attribute ends its pending requests.
+  - a change to what the flow grants (the attribute or the groups) ends
+    its pending requests.
 
   Access that is already approved keeps running until it ends; revoke it
   if it shouldn't.
@@ -1283,20 +1287,19 @@ Errors look like `{"error": {"code": "...", "message": "..."}}`. Some carry
 at the request you already have.
 
 **Creating a flow from a script.** What an approval grants goes under
-`grants`, one key per kind; leave out the ones you don't want. Run it from
-a device whose user is an admin:
+`grants`, one key per kind; leave out the ones you don't want. `resources`
+is the form's "Gives access to". Run it from a device whose user is an
+admin:
 
 ```sh
 curl -X POST http://jit/v1/workflows -H 'Content-Type: application/json' -d '{
   "name": "Production on-call",
   "grants": {
-    "tailscale": {
-      "attribute": "custom:jit_prod_oncall",
-      "resources": [{"name": "tag:prod", "description": "All production hosts"}]
-    },
-    "okta":   {"groups": [{"name": "AWS-Prod-Admin"}]},
-    "google": {"groups": [{"name": "gcp-prod-viewers@example.com"}]}
+    "tailscale": {"attribute": "custom:jit_prod_oncall"},
+    "okta":      {"groups": [{"name": "AWS-Prod-Admin"}]},
+    "google":    {"groups": [{"name": "gcp-prod-viewers@example.com"}]}
   },
+  "resources": [{"name": "tag:prod", "description": "All production hosts"}],
   "requesters": ["group:sre"],
   "approvers": ["group:sre-leads"],
   "max_duration": "4h"
@@ -1304,10 +1307,11 @@ curl -X POST http://jit/v1/workflows -H 'Content-Type: application/json' -d '{
 ```
 
 The answer is the saved flow, with its `id` and the IDs of the groups.
-`PUT /v1/workflows/{id}` replaces a flow and takes the same body. Bodies
-written for an earlier release, with `attribute`, `resources`, `okta_groups`
-and `google_groups` at the top level, still work; answers always use
-`grants`.
+`PUT /v1/workflows/{id}` replaces a flow and takes the same body. Name a
+group by its `id` or its `name`; an `id` beside another group's name is
+refused. Bodies written for an earlier release, with `attribute`,
+`okta_groups` and `google_groups` at the top level, still work; answers
+always use `grants`.
 
 ## Development
 

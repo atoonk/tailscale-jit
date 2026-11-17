@@ -130,6 +130,10 @@ func ParseDuration(s string) (time.Duration, error) {
 // Workflow is an approval flow: who may request it, who approves, and what
 // an approval grants: a posture attribute on the requester's device, time
 // limited membership in Okta or Google groups, or a mix.
+//
+// This is the layout the store, the pages and Slack use. /v1/workflows has
+// its own (jithttp.flowJSON, with "grants"), written out by hand: a field
+// added here has to be added there, and a test there fails until it is.
 type Workflow struct {
 	ID          string `json:"id"`
 	Name        string `json:"name"`
@@ -214,7 +218,7 @@ type WorkflowSlack struct {
 type SlackMessage struct {
 	Channel string `json:"channel"`        // channel or DM conversation ID
 	TS      string `json:"ts"`             // the message's timestamp, Slack's message ID
-	Kind    string `json:"kind,omitempty"` // "channel" or "dm"
+	Kind    string `json:"kind,omitempty"` // "channel", "dm" or "okta_alert"
 	User    string `json:"user,omitempty"` // the Slack user a DM went to
 }
 

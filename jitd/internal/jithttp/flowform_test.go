@@ -73,3 +73,68 @@ func TestFlowFormShowsOnlyWhatAFlowGrants(t *testing.T) {
 		[]string{`value="db_ro"`, gClosed, addGoogle},
 		[]string{choose, tsClosed})
 }
+
+// "Gives access to" belongs to the flow, whatever it grants. Its rows are
+// outside the Tailscale section, which is hidden on a flow that grants
+// groups only: the form reads hidden rows too, so rows in there would be
+// saved without anybody having seen them. And a flow with no rows gets an
+// empty one, not one filled with the flow's own name.
+func TestFlowFormGivesAccessTo(t *testing.T) {
+	srv, _, _ := newGoogleServer(t, nil)
+	key := google.FakeKey(googleAccount, "acme-prod")
+	if code := call(t, srv, "root", "PUT", "/v1/google", map[string]any{"key": key, "allowed_domains": "example.com", "grant_allowlist": "*"}, nil); code != 200 {
+		t.Fatalf("saving = %d", code)
+	}
+	const blank = `name="res_name" value=""`
+	page := func(what, path string) string {
+		t.Helper()
+		code, body := getPage(t, srv, "root", path)
+		if code != 200 {
+			t.Fatalf("%s: %s = %d", what, path, code)
+		}
+		// No row sits in a section of "What an approval grants".
+		for rest := body; ; {
+			_, after, found := strings.Cut(rest, `<section class="action"`)
+			if !found {
+				break
+			}
+			section, _, _ := strings.Cut(after, `</section>`)
+			if strings.Contains(section, "res_name") {
+				t.Errorf("%s: a \"Gives access to\" row is inside a section that can be hidden", what)
+			}
+			rest = after
+		}
+		if !strings.Contains(body, `id="resrows"`) {
+			t.Errorf("%s: the form has no \"Gives access to\" rows", what)
+		}
+		return body
+	}
+	people := func(fields map[string]any) map[string]any {
+		fields["requesters"], fields["approvers"], fields["max_duration"] = []string{"autogroup:member"}, []string{"bob@example.com"}, "1h"
+		return fields
+	}
+	groups := map[string]any{"google": map[string]any{"groups": []map[string]string{{"name": googleAdminsA}}}}
+
+	if body := page("a new flow", "/admin/workflows/new"); !strings.Contains(body, blank) {
+		t.Errorf("a new flow: the form lacks an empty row (%s)", blank)
+	}
+
+	var bare, described jit.Workflow
+	if code := call(t, srv, "root", "POST", "/v1/workflows", people(map[string]any{"name": "AWS-admin", "grants": groups}), &bare); code != 201 {
+		t.Fatalf("creating = %d", code)
+	}
+	body := page("groups only, no rows", "/admin/workflows/"+bare.ID)
+	if !strings.Contains(body, blank) || strings.Contains(body, `name="res_name" value="AWS-admin"`) {
+		t.Errorf("groups only, no rows: want one empty row, not one that carries the flow's name")
+	}
+
+	if code := call(t, srv, "root", "POST", "/v1/workflows", people(map[string]any{
+		"name": "GCP viewers", "grants": groups, "resources": []map[string]string{{"name": "gcp-prod", "description": "the production project"}},
+	}), &described); code != 201 {
+		t.Fatalf("creating = %d", code)
+	}
+	body = page("groups only, with rows", "/admin/workflows/"+described.ID)
+	if !strings.Contains(body, `name="res_name" value="gcp-prod"`) || !strings.Contains(body, `value="the production project"`) || strings.Contains(body, blank) {
+		t.Errorf("groups only, with rows: want the flow's row and no empty one")
+	}
+}

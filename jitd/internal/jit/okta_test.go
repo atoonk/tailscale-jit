@@ -73,6 +73,43 @@ func TestOktaFlowValidation(t *testing.T) {
 	}
 }
 
+// A group given by ID and by name has to be one group. The ID is what is
+// looked up, so the name of another group beside it would be dropped and
+// the flow would grant a group its author did not name.
+func TestGroupIDAndNameMustAgree(t *testing.T) {
+	h, f := oktaHarness(t)
+	_, err := h.svc.CreateWorkflow(oktaFlow(OktaGroup{ID: gRead, Name: "AWS-Prod-Admin"}))
+	if code(err) != "bad_request" || !strings.Contains(err.Error(), gRead) ||
+		!strings.Contains(err.Error(), `"AWS-Prod-ReadOnly"`) || !strings.Contains(err.Error(), `"AWS-Prod-Admin"`) {
+		t.Fatalf("an ID and another group's name: %v, want a 400 that names both", err)
+	}
+	// The pair as jitd answers it is fine, and so is either half.
+	w, err := h.svc.CreateWorkflow(oktaFlow(OktaGroup{ID: gRead, Name: "AWS-Prod-ReadOnly"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The group is renamed in Okta. The flow as it was read still saves,
+	// and takes the new name; any other name for that ID is still refused.
+	f.AddGroup(gRead, "AWS-Prod-Viewers", "")
+	again := *w
+	got, err := h.svc.UpdateWorkflow(w.ID, again)
+	if err != nil {
+		t.Fatalf("saving a flow as it was read, after a rename: %v", err)
+	}
+	if len(got.OktaGroups) != 1 || got.OktaGroups[0] != (OktaGroup{ID: gRead, Name: "AWS-Prod-Viewers"}) {
+		t.Errorf("groups = %+v, want the new name", got.OktaGroups)
+	}
+	wrong := *got
+	wrong.OktaGroups = []OktaGroup{{ID: gRead, Name: "AWS-Prod-Admin"}}
+	if _, err := h.svc.UpdateWorkflow(w.ID, wrong); code(err) != "bad_request" {
+		t.Errorf("updating with an ID and another group's name: %v, want 400", err)
+	}
+	if kept, _ := h.svc.GetWorkflow(w.ID); len(kept.OktaGroups) != 1 || kept.OktaGroups[0].ID != gRead {
+		t.Errorf("the refused update changed the flow: %+v", kept.OktaGroups)
+	}
+}
+
 func TestOktaApproveExpire(t *testing.T) {
 	h, f := oktaHarness(t)
 	w := h.workflow(t, oktaFlow(OktaGroup{Name: "AWS-Prod-Admin"}, OktaGroup{Name: "AWS-Prod-ReadOnly"}))
