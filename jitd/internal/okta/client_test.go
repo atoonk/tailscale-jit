@@ -187,7 +187,7 @@ func TestNewFromValues(t *testing.T) {
 
 func TestDynamicReloads(t *testing.T) {
 	vars := map[string]string{}
-	d := &Dynamic{Load: func() map[string]string { return vars }}
+	d := &Dynamic{Load: func() (map[string]string, error) { return vars, nil }}
 	if d.Enabled() {
 		t.Fatal("enabled without credentials")
 	}

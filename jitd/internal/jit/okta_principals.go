@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"strings"
 	"sync"
 	"time"
@@ -28,134 +29,209 @@ const OktaPrefix = "okta:"
 // IsOkta reports whether p names an Okta group.
 func (p Principal) IsOkta() bool { return strings.HasPrefix(string(p), OktaPrefix) }
 
-// OktaRef is the group name or ID of an okta: principal.
-func (p Principal) OktaRef() string { return strings.TrimPrefix(string(p), OktaPrefix) }
+// OktaRef is the group name or ID of an okta: principal, without the
+// space people leave after the colon.
+func (p Principal) OktaRef() string {
+	return strings.TrimSpace(strings.TrimPrefix(string(p), OktaPrefix))
+}
 
 // OktaCacheTTL is how long Okta membership lookups are reused.
 const OktaCacheTTL = time.Minute
 
 // oktaErrTTL is how long a failed lookup is remembered, so a broken token
-// does not mean one API call per page view.
-const oktaErrTTL = 10 * time.Second
+// or an Okta that does not answer does not mean one API call (and one
+// timeout) per page view. It is longer than the lookup timeout, so lookups
+// that queued up behind a slow one find its failure still fresh.
+const oktaErrTTL = 30 * time.Second
 
-type cachedGroups struct {
-	groups []okta.Group
-	err    error
-	at     time.Time
+// oktaLookupTimeout bounds one lookup.
+const oktaLookupTimeout = 10 * time.Second
+
+type cached[T any] struct {
+	v   T
+	err error
+	at  time.Time // when the answer arrived
 }
 
-type cachedMembers struct {
-	keys []string
-	err  error
-	at   time.Time
+func (e cached[T]) fresh(now time.Time) bool {
+	ttl := OktaCacheTTL
+	if e.err != nil {
+		ttl = oktaErrTTL
+	}
+	return now.Sub(e.at) < ttl && !now.Before(e.at)
 }
 
-// oktaCache caches, per login, the user's groups, and, per group reference,
-// the member keys. The zero value is ready to use.
+// oktaCache caches, per login, the user's groups; per group reference, the
+// group it names; and, per group ID, the member keys. The zero value is
+// ready to use.
+//
+// Lookups run one at a time (fill), and after one that shows Okta itself is
+// failing (no answer, a 5xx, a refused credential) every lookup fails at
+// once until downUntil. Without that, a slow Okta would make each page view
+// wait out its own timeout, one after the other.
 type oktaCache struct {
-	mu      sync.Mutex
-	users   map[string]cachedGroups
-	members map[string]cachedMembers
+	fill sync.Mutex // held while calling Okta; taken before mu
+
+	mu        sync.Mutex
+	users     map[string]cached[[]okta.Group]
+	groups    map[string]cached[okta.Group]
+	members   map[string]cached[[]string]
+	downUntil time.Time
+	downErr   error
+}
+
+// oktaDown reports whether err says Okta as a whole is not usable, as
+// opposed to one user or group not being found.
+func oktaDown(err error) bool {
+	var ae *okta.APIError
+	if errors.As(err, &ae) {
+		return ae.Status == 401 || ae.Status == 403 || ae.Status == 429 || ae.Status >= 500
+	}
+	var ne net.Error
+	return errors.Is(err, context.DeadlineExceeded) || errors.Is(err, okta.ErrUnconfigured) || errors.As(err, &ne)
+}
+
+// oktaLookup returns the cached answer for key in the map pick selects, or
+// gets it with load, one lookup at a time.
+func oktaLookup[T any](ctx context.Context, s *Service, pick func(*oktaCache) *map[string]cached[T], key string, load func(context.Context) (T, error)) (T, error) {
+	c := &s.ocache
+	have := func() (T, error, bool) {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		now := s.now()
+		if e, ok := (*pick(c))[key]; ok && e.fresh(now) {
+			return e.v, e.err, true
+		}
+		if now.Before(c.downUntil) {
+			var zero T
+			return zero, c.downErr, true
+		}
+		return *new(T), nil, false
+	}
+	if v, err, ok := have(); ok {
+		return v, err
+	}
+	c.fill.Lock()
+	defer c.fill.Unlock()
+	if v, err, ok := have(); ok { // whoever held fill may have got it
+		return v, err
+	}
+	lctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), oktaLookupTimeout)
+	defer cancel()
+	v, err := load(lctx)
+	if err != nil {
+		s.Log.Error("Okta lookup failed; okta: principals that depend on it match nobody until it works", "lookup", key, "err", err)
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	now := s.now() // after the call: a slow answer is not already stale
+	m := pick(c)
+	if *m == nil {
+		*m = map[string]cached[T]{}
+	}
+	(*m)[key] = cached[T]{v: v, err: err, at: now}
+	if oktaDown(err) {
+		c.downUntil, c.downErr = now.Add(oktaErrTTL), err
+	}
+	return v, err
 }
 
 // oktaUserGroups returns the Okta groups of the person with this Tailscale
-// login. A login with no Okta user has no groups (and no error).
+// login. A login with no Okta user has no groups (and no error), and
+// neither has a user who is suspended or deactivated: Okta keeps their
+// memberships, but they must not count as an approver, a requester or an
+// admin.
 func (s *Service) oktaUserGroups(ctx context.Context, login string) ([]okta.Group, error) {
-	key := strings.ToLower(login)
-	now := s.now()
-	c := &s.ocache
-	c.mu.Lock()
-	if e, ok := c.users[key]; ok && fresh(e.at, e.err, now) {
-		c.mu.Unlock()
-		return e.groups, e.err
-	}
-	c.mu.Unlock()
+	return oktaLookup(ctx, s, func(c *oktaCache) *map[string]cached[[]okta.Group] { return &c.users }, strings.ToLower(login),
+		func(ctx context.Context) ([]okta.Group, error) {
+			u, err := s.Okta.FindUser(ctx, login)
+			switch {
+			case errors.Is(err, okta.ErrNotFound):
+				return nil, nil
+			case err != nil:
+				return nil, err
+			case !u.Active():
+				return nil, nil
+			}
+			return s.Okta.UserGroups(ctx, u.ID)
+		})
+}
 
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
-	defer cancel()
-	var groups []okta.Group
-	u, err := s.Okta.FindUser(ctx, login)
-	switch {
-	case errors.Is(err, okta.ErrNotFound):
-		err = nil // no Okta user: in no groups
-	case err == nil:
-		groups, err = s.Okta.UserGroups(ctx, u.ID)
+// oktaGroup returns the one Okta group ref names, by ID or exact name, if
+// it is on the read allowlist. A name that more than one group has is an
+// error: jitd will not guess which was meant.
+func (s *Service) oktaGroup(ctx context.Context, ref string) (okta.Group, error) {
+	g, err := oktaLookup(ctx, s, func(c *oktaCache) *map[string]cached[okta.Group] { return &c.groups }, ref,
+		func(ctx context.Context) (okta.Group, error) { return s.Okta.FindGroup(ctx, ref) })
+	if err != nil {
+		return okta.Group{}, err
 	}
-	c.mu.Lock()
-	if c.users == nil {
-		c.users = map[string]cachedGroups{}
+	if !s.readAllowed(g.ID, g.Name()) {
+		return okta.Group{}, fmt.Errorf("Okta group %q is not on jitd's read allowlist (%s)", ref, EnvOktaReadAllowlist)
 	}
-	c.users[key] = cachedGroups{groups: groups, err: err, at: now}
-	c.mu.Unlock()
-	return groups, err
+	return g, nil
 }
 
 // oktaGroupMemberKeys returns the member keys (lowercased emails) of the
 // group ref names.
 func (s *Service) oktaGroupMemberKeys(ctx context.Context, ref string) ([]string, error) {
-	now := s.now()
-	c := &s.ocache
-	c.mu.Lock()
-	if e, ok := c.members[ref]; ok && fresh(e.at, e.err, now) {
-		c.mu.Unlock()
-		return e.keys, e.err
-	}
-	c.mu.Unlock()
-
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 20*time.Second)
-	defer cancel()
-	var keys []string
-	g, err := s.Okta.FindGroup(ctx, ref)
-	if err == nil && !s.readAllowed(g.ID, g.Name()) {
-		err = fmt.Errorf("Okta group %q is not on jitd's read allowlist (%s)", ref, EnvOktaReadAllowlist)
-	}
-	if err == nil {
-		var us []okta.User
-		us, err = s.Okta.GroupMembers(ctx, g.ID)
-		for _, u := range us {
-			if u.Status == "" || u.Status == "ACTIVE" || u.Status == "PASSWORD_EXPIRED" || u.Status == "RECOVERY" {
-				keys = append(keys, u.Key())
-			}
-		}
-	}
-	c.mu.Lock()
-	if c.members == nil {
-		c.members = map[string]cachedMembers{}
-	}
-	c.members[ref] = cachedMembers{keys: keys, err: err, at: now}
-	c.mu.Unlock()
-	return keys, err
-}
-
-func fresh(at time.Time, err error, now time.Time) bool {
-	ttl := OktaCacheTTL
+	g, err := s.oktaGroup(ctx, ref)
 	if err != nil {
-		ttl = oktaErrTTL
+		return nil, err
 	}
-	return now.Sub(at) < ttl && !now.Before(at)
+	return oktaLookup(ctx, s, func(c *oktaCache) *map[string]cached[[]string] { return &c.members }, g.ID,
+		func(ctx context.Context) ([]string, error) {
+			us, err := s.Okta.GroupMembers(ctx, g.ID)
+			if err != nil {
+				return nil, err
+			}
+			var keys []string
+			for _, u := range us {
+				if u.Active() {
+					keys = append(keys, u.Key())
+				}
+			}
+			return keys, nil
+		})
 }
 
-// matchesOkta reports whether id is in the Okta group p names.
+// matchesOkta reports whether id is in the Okta group p names. The
+// reference is resolved to one group first and the person's groups are then
+// compared by ID, so a group that merely carries the same name as another
+// one (or a name that looks like another group's ID) confers nothing.
 func (s *Service) matchesOkta(ctx context.Context, p Principal, id Identity) bool {
 	if id.Tagged() || id.Login == "" || !s.oktaEnabled() {
 		return false
 	}
+	g, err := s.oktaGroup(ctx, p.OktaRef())
+	if err != nil {
+		return false // logged when the lookup failed
+	}
 	groups, err := s.oktaUserGroups(ctx, id.Login)
 	if err != nil {
-		s.Log.Error("cannot read Okta group membership; okta: principals will not match", "login", id.Login, "err", err)
 		return false
 	}
-	ref := p.OktaRef()
-	for _, g := range groups {
-		if g.Matches(ref) {
-			if !s.readAllowed(g.ID, g.Name()) {
-				s.Log.Warn("okta: principal names a group outside the read allowlist; it matches nobody", "group", ref)
-				return false
-			}
+	for _, ug := range groups {
+		if ug.ID == g.ID {
 			return true
 		}
 	}
 	return false
+}
+
+// CheckOktaPrincipal reports why the okta: principal p cannot be used right
+// now (the group is not found, the name is ambiguous, it is off the read
+// allowlist, Okta does not answer), or nil. It is for start-up checks of
+// principals that no flow form validates, such as -admins.
+func (s *Service) CheckOktaPrincipal(ctx context.Context, p Principal) error {
+	if !p.IsOkta() {
+		return nil
+	}
+	if !s.oktaEnabled() {
+		return errors.New("Okta is not configured")
+	}
+	_, err := s.oktaGroup(ctx, p.OktaRef())
+	return err
 }
 
 // checkOktaPrincipals makes sure every okta: principal of w names one

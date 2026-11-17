@@ -113,7 +113,7 @@
     <label class="check"><input type="checkbox" name="slack_dm" {{if $cur.DMApprovers}}checked{{end}} {{if not .F.Connected}}disabled{{end}}> Also send each approver a direct message</label>
     <div class="field">
       <label class="check"><input type="checkbox" name="slack_browser_only" {{if $cur.BrowserOnly}}checked{{end}}> Decide in the browser only</label>
-      <span class="hint">Leaves Approve and Decline off the Slack messages. In the browser an approver is identified by Tailscale; in Slack, by their Slack email.</span>
+      <span class="hint">Leaves Approve and Decline off the Slack messages. In the browser an approver is identified by Tailscale; in Slack, by their Slack email. A flow that approves automatically cannot be requested from Slack then; the API and agents still can.</span>
     </div>
   </div>{{end}}
 
