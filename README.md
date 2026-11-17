@@ -204,9 +204,9 @@ Start it as [jitd/README.md](jitd/README.md) describes: the credentials and
 the auth key are the same either way.
 
 Compiling needs roughly 2 GB of free memory. To publish binaries, push a
-tag such as `v0.7.0`: the Release workflow runs the tests, builds `jitd`
+tag such as `v0.8.0`: the Release workflow runs the tests, builds `jitd`
 for Linux and macOS (amd64 and arm64) and attaches the binaries, with
-checksums, to a GitHub release. A tag with a suffix (`v0.7.0-rc1`) becomes a
+checksums, to a GitHub release. A tag with a suffix (`v0.8.0-rc1`) becomes a
 prerelease; running the workflow by hand from the Actions tab builds the
 same binaries as a workflow artifact without releasing.
 
