@@ -454,13 +454,24 @@ async function credSave(f, path, busy) {
   b.disabled = true;
   b.textContent = busy;
   try {
-    await api("PUT", path, body);
+    await api("PUT", path + (f.dataset.force === "1" ? "?force=1" : ""), body);
     location.reload();
   } catch (e) {
-    err.textContent = (e.data && e.data.error && e.data.error.message) || e.message;
+    const said = (e.data && e.data.error) || {};
+    err.textContent = said.message || e.message;
     err.hidden = false;
     b.disabled = false;
     b.textContent = label;
+    if (said.force === "1" && f.dataset.force !== "1") {
+      // jitd said what saving this costs (memberships it holds stay
+      // behind). A second click saves anyway; changing the form starts over.
+      f.dataset.force = "1";
+      b.textContent = "Save anyway";
+      f.addEventListener("input", () => {
+        delete f.dataset.force;
+        b.textContent = label;
+      }, { once: true });
+    }
   }
 }
 

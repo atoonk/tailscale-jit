@@ -2,7 +2,7 @@
 {{$st := .Data.Status}}
 <div class="head">
   <div>
-    <h1>Google Groups {{if $st.Configured}}{{if $st.Working}}<span class="status approved">working</span>{{else if $st.Error}}<span class="status declined">needs a look</span>{{else}}<span class="status pending">not checked yet</span>{{end}}{{end}}</h1>
+    <h1>Google Groups {{if $st.Configured}}{{if $st.RoleSeen}}<span class="status approved">working</span>{{else if $st.Working}}<span class="status pending">key accepted</span>{{else if $st.Error}}<span class="status declined">needs a look</span>{{else}}<span class="status pending">not checked yet</span>{{end}}{{end}}</h1>
     <p class="sub">Let an approval put the requester in Google groups for as long as the access lasts. jitd takes people out again when the access ends.</p>
   </div>
   {{if $st.Configured}}<button class="btn" type="button" id="googlecheck">Check again</button>{{end}}
@@ -33,6 +33,7 @@
         <div class="actions"><button class="btn primary" type="submit">Test and save</button><span class="muted small">jitd signs in to Google with the key first. Nothing is saved unless that works.</span></div>
       </form>
     </li>
+    <li><b>Test a group.</b> Once the key is saved, this page has a <b>Test a group</b> box: try a group jitd should manage. Google does not tell jitd whether step 4 was done, so this is the test of it. A group that exists and is not found there means the role is not assigned yet.</li>
   </ol>
   {{template "googlekept" .}}
 </section>
@@ -45,8 +46,10 @@
 {{else}}
 {{if $st.Error}}
 <div class="flash error"><b>{{$st.Error}}</b>{{with $st.Fix}} {{.}}{{end}}{{if not $st.CheckedAt.IsZero}} <span class="small">Checked {{ago $st.CheckedAt}}.</span>{{end}}</div>
+{{else if $st.RoleSeen}}
+<div class="flash ok">Google accepts jitd's key, and the service account can see a group jitd's flows use. Checked {{ago $st.CheckedAt}}.</div>
 {{else if $st.Working}}
-<div class="flash ok">Google accepts jitd's key, and the service account can read groups. Checked {{ago $st.CheckedAt}}.</div>
+<div class="flash ok">Google accepts jitd's key, and the Cloud Identity API is on. Checked {{ago $st.CheckedAt}}. <b>This does not show the Groups Admin role:</b> Google answers the same with or without it. <b>Test a group</b> below to see it. Once a flow names a Google group, jitd looks for that group at every check and says here when it cannot see it.</div>
 {{end}}
 {{if and $st.Enabled (not $st.Domains)}}<div class="flash error"><b>No email domain is allowed, so jitd adds nobody to a Google group.</b> Fill in the domains below.</div>{{end}}
 
@@ -59,7 +62,7 @@
     <button class="btn" type="submit">Test</button>
   </form>
   <ul class="results oktaresult" id="googlecheck-result" hidden></ul>
-  <p class="muted small">This looks the group up with jitd's key and says whether a flow could use it. It only reads. Whether jitd may add and remove members shows at the first approval: Google has no way to ask without changing something.</p>
+  <p class="muted small">This looks the group up with jitd's key and says whether a flow could use it. It only reads. It is also how to see the Groups Admin role: without it, Google shows jitd no group at all. Whether jitd may add and remove members shows at the first approval: Google has no way to ask without changing something.</p>
 </section>
 
 <section class="card prose">
@@ -100,7 +103,7 @@
 <section class="card">
   <h2>Connection</h2>
   <table class="plain">
-    <tr><td>Signs in as</td><td>{{if $st.Account}}<code id="googleaccount">{{$st.Account}}</code> <button class="btn sm" type="button" data-copy="googleaccount">Copy</button><div class="muted small">The service account that holds the Groups Admin role.</div>{{else}}<span class="warn">unreadable key</span>{{end}}</td></tr>
+    <tr><td>Signs in as</td><td>{{if $st.Account}}<code id="googleaccount">{{$st.Account}}</code> <button class="btn sm" type="button" data-copy="googleaccount">Copy</button><div class="muted small">The service account that needs the Groups Admin role.</div>{{else}}<span class="warn">unreadable key</span>{{end}}</td></tr>
     {{with $st.Project}}<tr><td>Project</td><td><code>{{.}}</code> <a class="small" href="{{$st.EnableURL}}" target="_blank" rel="noopener">Cloud Identity API</a></td></tr>{{end}}
     {{with $st.KeyID}}<tr><td>Key ID</td><td><code>{{.}}</code></td></tr>{{end}}
     <tr><td>Key</td><td>{{if eq $st.Source "env"}}from the environment{{if $st.EnvFile}} or <code>{{$st.EnvFile}}</code>{{end}}{{else}}saved here{{if $st.SavedBy}} by {{$st.SavedBy}}, {{ago $st.SavedAt}}{{end}}{{end}}</td></tr>

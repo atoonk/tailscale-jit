@@ -100,12 +100,26 @@ func IsDisabled(err error) bool {
 }
 
 // IsRefusal reports whether err is Google answering that it did not do what
-// was asked (a 4xx). Any other failure (no answer, a timeout, a 5xx, a
-// change Google had not finished) leaves open whether it was applied.
+// was asked (a 4xx to the request that asks for the change). Any other
+// failure (no answer, a timeout, a 5xx, a change Google had not finished,
+// a 4xx to a question about a change Google had already taken) leaves open
+// whether it was applied.
 func IsRefusal(err error) bool {
+	var u *unsettledError
+	if errors.As(err, &u) {
+		return false
+	}
 	s := status(err)
 	return s >= 400 && s < 500
 }
+
+// unsettledError is a failure that leaves open whether a change was
+// applied, whatever its cause looks like: a 4xx inside it is Google's
+// answer to something else than the change itself.
+type unsettledError struct{ err error }
+
+func (e *unsettledError) Error() string { return e.err.Error() }
+func (e *unsettledError) Unwrap() error { return e.err }
 
 // hidden reports whether err is Google's answer for something that does
 // not exist or that the service account may not see: a 404, or a 403 that
@@ -117,6 +131,21 @@ func hidden(err error) bool {
 
 // ErrNotFound is returned by FindGroup when Google shows no such group.
 var ErrNotFound = errors.New("not found in Google, or not visible to jitd's service account")
+
+// NoGroupsError is a check that found the key working and none of the
+// groups jitd uses visible. Google answers the same for a group that does
+// not exist and for one the service account may not see, so this is the
+// Groups Admin role missing (never assigned, or taken away) or the groups
+// gone. Check alone cannot tell: its answer is the same with or without
+// the role.
+type NoGroupsError struct {
+	Tried []string // the groups looked for, by address
+}
+
+func (e *NoGroupsError) Error() string {
+	return "Google shows jitd's service account none of the groups jitd uses (looked for " + strings.Join(e.Tried, ", ") +
+		"): the Groups Admin role is not assigned to it, or these groups no longer exist"
+}
 
 // errGroupGone is the group itself answering 404.
 var errGroupGone = errors.New("Google no longer has this group")
@@ -335,7 +364,8 @@ func (c *HTTP) finish(ctx context.Context, what string, op operation) error {
 		name := op.Name
 		op = operation{}
 		if err := c.do(ctx, http.MethodGet, "/v1/"+name, nil, nil, &op); err != nil {
-			return err
+			// Google took the change and now will not say how it went.
+			return &unsettledError{fmt.Errorf("google: %s: asking Google whether the change is done: %w", what, err)}
 		}
 	}
 }
@@ -353,11 +383,18 @@ func (c *HTTP) AddMember(ctx context.Context, groupID, email string) error {
 	err := c.do(ctx, http.MethodPost, "/v1/groups/"+groupID+"/memberships", nil, in, &op)
 	if status(err) == http.StatusConflict {
 		// Already a member, Google says. Believe it once the membership
-		// shows.
-		if name, merr := c.membership(ctx, groupID, email); merr == nil && name != "" {
+		// shows. Until it does this is not a refusal: the 409 may be the
+		// answer to a repeat of a request that Google applied the first
+		// time (do repeats a POST after a 5xx), so the caller must treat
+		// the member as possibly added.
+		name, merr := c.membership(ctx, groupID, email)
+		switch {
+		case merr == nil && name != "":
 			return nil
+		case merr != nil:
+			return &unsettledError{fmt.Errorf("%w; checking whether the address is a member failed too: %v", err, merr)}
 		}
-		return err
+		return &unsettledError{fmt.Errorf("%w; yet the address does not show as a member of the group", err)}
 	}
 	if err != nil {
 		return err
@@ -405,6 +442,10 @@ func (c *HTTP) RemoveMember(ctx context.Context, groupID, email string) error {
 // service account's own address, which is never a group. Any answer but
 // "sign in again" and "the API is off" shows that Google takes the key and
 // that the Cloud Identity API is enabled.
+//
+// It does not show the Groups Admin role: without it Google answers this
+// lookup just as it does with it. Only a group that is found shows the
+// role (see NoGroupsError).
 func (c *HTTP) Check(ctx context.Context) error {
 	var out struct {
 		Name string `json:"name"`

@@ -15,6 +15,9 @@ type Error struct {
 	// RequestID points at a related access request, e.g. the one that
 	// already covers a duplicate submission.
 	RequestID string
+	// Force says that the same call goes through with force=1: the message
+	// tells what that costs.
+	Force bool
 }
 
 func (e *Error) Error() string { return e.Code + ": " + e.Message }

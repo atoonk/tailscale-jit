@@ -19,8 +19,10 @@ const (
 )
 
 // newGoogleServer is a test server with the Google page, wired as main.go
-// wires it, and a made-up Google: a key for an account that starts with
-// "norole@" is one whose service account has no admin role. env is what
+// wires it, and a made-up Google. A key for an account that starts with
+// "norole@" is one whose service account has no admin role: as with the
+// real Google the key is taken, and no group shows. One that starts with
+// "apioff@" is in a project without the Cloud Identity API. env is what
 // the environment and env file set.
 func newGoogleServer(t *testing.T, env map[string]string) (*httptest.Server, *Server, *google.Fake) {
 	t.Helper()
@@ -28,17 +30,23 @@ func newGoogleServer(t *testing.T, env map[string]string) (*httptest.Server, *Se
 	gf.AddGroup(googleAdmins, googleAdminsA, false)
 	gf.AddGroup("02ggdyn", "everyone@example.com", true)
 	srv, _, h := newTestServerWith(t, func(s *Server) {
+		pick := func(vars map[string]string) (google.Client, error) {
+			key, _ := google.ParseKey(vars[google.EnvKey])
+			switch {
+			case key != nil && strings.HasPrefix(key.Email, "norole@"):
+				f := google.NewFake()
+				f.SetBlind(true)
+				return f, nil
+			case key != nil && strings.HasPrefix(key.Email, "apioff@"):
+				f := google.NewFake()
+				f.Fail["check"] = googleAPIOff
+				return f, nil
+			}
+			return gf, nil
+		}
 		m := &googlesetup.Manager{Store: s.Svc.Store, Svc: s.Svc, EnvFile: "/etc/jitd/env", Log: s.Log,
-			Env: func() (map[string]string, error) { return env, nil },
-			Dial: func(vars map[string]string) (google.Client, error) {
-				if key, _ := google.ParseKey(vars[google.EnvKey]); key != nil && strings.HasPrefix(key.Email, "norole@") {
-					f := google.NewFake()
-					f.Fail["check"] = &google.APIError{Status: 403, Message: "Error(2028): Permission denied for membership resource"}
-					return f, nil
-				}
-				return gf, nil
-			}}
-		client := &google.Dynamic{Load: m.Vars, New: func(map[string]string) (google.Client, error) { return gf, nil }}
+			Env: func() (map[string]string, error) { return env, nil }, Dial: pick}
+		client := &google.Dynamic{Load: m.Vars, New: pick}
 		s.Google, s.Svc.Google = m, client
 		s.Svc.GoogleLimits = func() jit.GoogleLimits {
 			vars, err := client.Vars()
@@ -50,6 +58,11 @@ func newGoogleServer(t *testing.T, env map[string]string) (*httptest.Server, *Se
 	})
 	return srv, h, gf
 }
+
+// googleAPIOff is Google's answer when the Cloud Identity API is not
+// enabled in the service account's project.
+var googleAPIOff = &google.APIError{Status: 403, Code: "PERMISSION_DENIED", Reason: "SERVICE_DISABLED",
+	Message: "Cloud Identity API has not been used in project 1234 before or it is disabled."}
 
 // keySecret is something only the key file holds.
 func keySecret(t *testing.T, key string) string {
@@ -121,11 +134,11 @@ func TestGoogleSetupPage(t *testing.T) {
 		}
 	}
 
-	// A key whose service account has no role, something that is not a
-	// key, and a key with nobody allowed: told why, nothing kept.
+	// A key from a project without the API, something that is not a key,
+	// and a key with nobody allowed: told why, nothing kept.
 	var e apiErr
 	for name, in := range map[string]map[string]any{
-		"no role":    {"key": google.FakeKey("norole@acme-prod.iam.gserviceaccount.com", "acme-prod"), "allowed_domains": "example.com", "grant_allowlist": "*"},
+		"api off":    {"key": google.FakeKey("apioff@acme-prod.iam.gserviceaccount.com", "acme-prod"), "allowed_domains": "example.com", "grant_allowlist": "*"},
 		"not a key":  {"key": "hunter2", "allowed_domains": "example.com", "grant_allowlist": "*"},
 		"no domains": {"key": key, "allowed_domains": "", "grant_allowlist": "*"},
 	} {
@@ -133,8 +146,8 @@ func TestGoogleSetupPage(t *testing.T) {
 			!strings.Contains(e.Error.Message, "Nothing was saved") || strings.Contains(e.Error.Message, "PRIVATE KEY") || strings.Contains(e.Error.Message, "hunter2") {
 			t.Fatalf("%s: saving = %d %q", name, code, e.Error.Message)
 		}
-		if name == "no role" && !strings.Contains(e.Error.Message, "norole@acme-prod.iam.gserviceaccount.com") {
-			t.Errorf("a key without the role: the answer does not name the account to give it to: %q", e.Error.Message)
+		if name == "api off" && !strings.Contains(e.Error.Message, "Cloud Identity API is not enabled") {
+			t.Errorf("a key from a project without the API: the answer does not say so: %q", e.Error.Message)
 		}
 		if h.Google.Status().Configured() || h.Svc.GoogleEnabled() {
 			t.Fatalf("%s: something was saved", name)
@@ -145,7 +158,7 @@ func TestGoogleSetupPage(t *testing.T) {
 	if code := call(t, srv, "root", "PUT", "/v1/google", map[string]any{"key": key, "allowed_domains": "Example.com, corp.example", "grant_allowlist": "aws-*@example.com"}, &st); code != 200 {
 		t.Fatalf("saving = %d", code)
 	}
-	if st.Source != googlesetup.SourceUI || !st.Working() || st.SavedBy != "root@example.com" || st.Account != googleAccount || !h.Svc.GoogleEnabled() ||
+	if st.Source != googlesetup.SourceUI || !st.Working() || st.RoleSeen || st.SavedBy != "root@example.com" || st.Account != googleAccount || !h.Svc.GoogleEnabled() ||
 		strings.Join(st.Domains, " ") != "example.com corp.example" || strings.Join(st.GrantAllowlist, " ") != "aws-*@example.com" {
 		t.Errorf("status after saving = %+v", st)
 	}
@@ -161,7 +174,7 @@ func TestGoogleSetupPage(t *testing.T) {
 			t.Errorf("the %s does not say which service account is in use", name)
 		}
 	}
-	for _, want := range []string{"Google accepts jitd's key", `data-form="google-check"`, `data-form="google-limits"`, `id="googleremove" data-held="0"`,
+	for _, want := range []string{"Google accepts jitd's key", "This does not show the Groups Admin role", ">key accepted<", `data-form="google-check"`, `data-form="google-limits"`, `id="googleremove" data-held="0"`,
 		"saved here by root@example.com", `name="allowed_domains" value="example.com, corp.example"`, `name="grant_allowlist" value="aws-*@example.com"`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the page after setup lacks %q", want)
@@ -169,6 +182,10 @@ func TestGoogleSetupPage(t *testing.T) {
 	}
 	if strings.Contains(body, "Connect Google") {
 		t.Error("the page after setup still shows the first-time steps")
+	}
+	// No flow names a group yet, so nothing has shown the role.
+	if strings.Contains(body, ">working<") || strings.Contains(body, "can see a group") {
+		t.Error("the page says Google works before jitd has seen a single group")
 	}
 
 	// The limits change without pasting the key again.
@@ -195,14 +212,14 @@ func TestGoogleSetupPage(t *testing.T) {
 		t.Errorf("testing groups changed Google: %v", m)
 	}
 
-	// The role is taken away: the page says what to fix.
-	gf.Fail["check"] = &google.APIError{Status: 403, Message: "Error(2028): Permission denied for membership resource"}
+	// The API is switched off in the project: the page says what to fix.
+	gf.Fail["check"] = googleAPIOff
 	if code := call(t, srv, "root", "POST", "/v1/google/check", map[string]any{}, nil); code != 200 {
 		t.Errorf("check again = %d", code)
 	}
 	_, body = getPage(t, srv, "root", "/admin/integrations/google")
-	if !strings.Contains(body, "does not let the service account do this") || !strings.Contains(body, "Assign service accounts and add "+googleAccount) || strings.Contains(body, "Google accepts jitd's key") {
-		t.Error("the page does not say that Google refuses the service account, or how to fix it")
+	if !strings.Contains(body, "Cloud Identity API is not enabled") || !strings.Contains(body, "Enable it at") || strings.Contains(body, "Google accepts jitd's key") {
+		t.Error("the page does not say that the API is off, or how to fix it")
 	}
 	// Said once there, with the fix; every other page points to it.
 	if strings.Contains(body, `id="google-problems"`) || !strings.Contains(body, `<span class="dot bad" title="Google Groups needs a look">`) {
@@ -211,6 +228,79 @@ func TestGoogleSetupPage(t *testing.T) {
 	if _, home := getPage(t, srv, "root", "/"); !strings.Contains(home, `id="google-problems"`) || !strings.Contains(home, `<a href="/admin/integrations/google">Open the Google Groups page</a>`) ||
 		strings.Contains(home, `id="okta-problems"`) {
 		t.Error("the banner on other pages does not point to the Google page")
+	}
+}
+
+// Google answers a key the same with or without the Groups Admin role, so
+// jitd must not say more than it saw: the key is taken either way, and the
+// role shows only through a group.
+func TestGoogleRoleShowsOnlyThroughAGroup(t *testing.T) {
+	srv, _, gf := newGoogleServer(t, nil)
+	const noRole = "norole@acme-prod.iam.gserviceaccount.com"
+	flow := map[string]any{"name": "AWS admin", "google_groups": []map[string]string{{"name": googleAdminsA}},
+		"requesters": []string{"autogroup:member"}, "approvers": []string{"bob@example.com"}, "max_duration": "1h"}
+	check := func() (st googlesetup.Status) {
+		t.Helper()
+		var out struct {
+			Status googlesetup.Status `json:"status"`
+		}
+		if code := call(t, srv, "root", "POST", "/v1/google/check", map[string]any{}, &out); code != 200 {
+			t.Fatalf("check again = %d", code)
+		}
+		return out.Status
+	}
+
+	// A service account without the role: Google takes its key.
+	var st googlesetup.Status
+	if code := call(t, srv, "root", "PUT", "/v1/google", map[string]any{"key": google.FakeKey(noRole, "acme-prod"), "allowed_domains": "example.com", "grant_allowlist": "*"}, &st); code != 200 ||
+		!st.Working() || st.RoleSeen {
+		t.Fatalf("saving a key without the role = %d %+v, want it saved and the role not seen", code, st)
+	}
+	_, body := getPage(t, srv, "root", "/admin/integrations/google")
+	if strings.Contains(body, ">working<") || !strings.Contains(body, ">key accepted<") || !strings.Contains(body, "This does not show the Groups Admin role") {
+		t.Error("the page says Google works, or does not say that the role is unproven")
+	}
+	// Where it shows: testing a group, and naming one in a flow.
+	var e apiErr
+	if code := call(t, srv, "root", "POST", "/v1/google/check", map[string]any{"group": googleAdminsA}, &e); code != 404 || !strings.Contains(e.Error.Message, "Groups Admin role is not assigned") {
+		t.Errorf("testing a group without the role = %d %q", code, e.Error.Message)
+	}
+	e = apiErr{}
+	if code := call(t, srv, "root", "POST", "/v1/workflows", flow, &e); code != 400 || !strings.Contains(e.Error.Message, "Groups Admin role is not assigned") {
+		t.Errorf("a flow with a group jitd cannot see = %d %q", code, e.Error.Message)
+	}
+
+	// With the role, and still no flow: taken, and still unproven.
+	if code := call(t, srv, "root", "PUT", "/v1/google", map[string]any{"key": google.FakeKey(googleAccount, "acme-prod")}, &st); code != 200 || !st.Working() || st.RoleSeen {
+		t.Fatalf("saving the key with the role = %d %+v", code, st)
+	}
+	// A flow names a group: the next check looks for it.
+	if code := call(t, srv, "root", "POST", "/v1/workflows", flow, nil); code != 201 {
+		t.Fatalf("creating the flow = %d", code)
+	}
+	if st = check(); !st.Working() || !st.RoleSeen {
+		t.Fatalf("after a flow names a group: %+v, want the role seen", st)
+	}
+	if _, body = getPage(t, srv, "root", "/admin/integrations/google"); !strings.Contains(body, ">working<") || !strings.Contains(body, "can see a group jitd's flows use") {
+		t.Error("the page does not say that jitd sees a group")
+	}
+
+	// The role is taken away. Google still takes the key; the group is
+	// what tells.
+	gf.SetBlind(true)
+	if st = check(); st.Working() || st.RoleSeen || !strings.Contains(st.Error, googleAdminsA) || !strings.Contains(st.Fix, "Assign service accounts and add "+googleAccount) {
+		t.Fatalf("after the role is taken away: %+v", st)
+	}
+	if _, body = getPage(t, srv, "root", "/admin/integrations/google"); strings.Contains(body, "Google accepts jitd's key") || !strings.Contains(body, "none of the groups") ||
+		!strings.Contains(body, `<span class="dot bad" title="Google Groups needs a look">`) {
+		t.Error("the page does not say that jitd sees no groups any more")
+	}
+	if _, home := getPage(t, srv, "root", "/"); !strings.Contains(home, `id="google-problems"`) {
+		t.Error("the admins are not told")
+	}
+	gf.SetBlind(false)
+	if st = check(); !st.Working() || !st.RoleSeen {
+		t.Fatalf("after the role is back: %+v", st)
 	}
 }
 
@@ -284,6 +374,31 @@ func TestGoogleFlowAndRemoveWhileHeld(t *testing.T) {
 	}
 	if !h.Svc.GoogleEnabled() {
 		t.Fatal("a refused remove turned Google off")
+	}
+
+	// A key for another service account may be for another Workspace,
+	// where alice's membership cannot be found: a second, forced, save.
+	const otherAccount = "jitd@other-org.iam.gserviceaccount.com"
+	other := map[string]any{"key": google.FakeKey(otherAccount, "other-org")}
+	e = apiErr{}
+	if code := call(t, srv, "root", "PUT", "/v1/google", other, &e); code != 409 || e.Error.Force != "1" ||
+		!strings.Contains(e.Error.Message, "1 request") || !strings.Contains(e.Error.Message, googleAccount) || !strings.Contains(e.Error.Message, otherAccount) {
+		t.Fatalf("another service account while held = %d %+v, want 409 with force", code, e.Error)
+	}
+	if st := h.Google.Status(); st.Account != googleAccount {
+		t.Fatalf("a refused save changed the account to %s", st.Account)
+	}
+	// A new key for the same account, and a change of the limits, are no
+	// such risk.
+	if code := call(t, srv, "root", "PUT", "/v1/google", map[string]any{"key": google.FakeKey(googleAccount, "acme-prod")}, nil); code != 200 {
+		t.Fatalf("a new key for the same account while held = %d", code)
+	}
+	if code := call(t, srv, "root", "PUT", "/v1/google", map[string]any{"allowed_domains": "example.com", "grant_allowlist": "*"}, nil); code != 200 {
+		t.Fatalf("saving the limits while held = %d", code)
+	}
+	var forced googlesetup.Status
+	if code := call(t, srv, "root", "PUT", "/v1/google?force=1", other, &forced); code != 200 || forced.Account != otherAccount || forced.Held != 1 {
+		t.Fatalf("forced save = %d %+v", code, forced)
 	}
 	var st googlesetup.Status
 	if code := call(t, srv, "root", "DELETE", "/v1/google?force=1", nil, &st); code != 200 || st.Configured() || st.Held != 1 {

@@ -1,6 +1,7 @@
 package jit
 
 import (
+	"context"
 	"errors"
 	"slices"
 	"strings"
@@ -493,6 +494,37 @@ func TestBothKindsGrantAndEndIndependently(t *testing.T) {
 	cur := h.svc.Request(r.ID)
 	if g.Member(ggAdmin, mAlice) || cur.Google.RemovedAt == nil || cur.Enforcement.RemovedAt == nil || cur.GroupsRemovalPending() || len(h.svc.GoogleProblems()) != 0 {
 		t.Errorf("after Google recovered: google=%+v enforcement=%+v", cur.Google, cur.Enforcement)
+	}
+}
+
+// Google uses up its time in a tick (here: the tick's context ends while
+// Google's removal runs). Okta's removal is still made in that tick, not
+// left for one in which Google happens to be quick.
+func TestGoogleUsingUpTheTickDoesNotStarveOkta(t *testing.T) {
+	h, o, g := bothHarness(t)
+	w := h.workflow(t, bothFlow(""))
+	r, _ := h.svc.Submit(ctx, alice, NewRequest{WorkflowID: w.ID, Duration: Duration(time.Hour), Reason: "x"})
+	if _, err := h.svc.Approve(ctx, bob, r.ID, ""); err != nil {
+		t.Fatal(err)
+	}
+	h.now = t0.Add(time.Hour)
+	if n := h.svc.expireDue(); n != 1 {
+		t.Fatalf("expired %d", n)
+	}
+	tick, cancel := context.WithCancel(ctx)
+	defer cancel()
+	g.Hook = func(call string) {
+		if call == "remove" {
+			cancel()
+		}
+	}
+	h.svc.groupUpkeep(tick)
+	cur := h.svc.Request(r.ID)
+	if o.Member(gAdmin, uAlice) || cur.Okta.RemovedAt == nil {
+		t.Errorf("Okta's removal waited for another tick: member=%v okta=%+v", o.Member(gAdmin, uAlice), cur.Okta)
+	}
+	if g.Member(ggAdmin, mAlice) || cur.Google.RemovedAt == nil {
+		t.Errorf("Google's removal: member=%v google=%+v", g.Member(ggAdmin, mAlice), cur.Google)
 	}
 }
 

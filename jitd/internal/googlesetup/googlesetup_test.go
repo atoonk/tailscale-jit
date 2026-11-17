@@ -50,7 +50,7 @@ func (e *env) manager() *Manager {
 		Dial: func(vars map[string]string) (google.Client, error) {
 			if strings.Contains(vars[google.EnvKey], `"wrong@`) {
 				f := google.NewFake()
-				f.Fail["check"] = &google.APIError{Status: 403, Message: "Error(2028): Permission denied for resource groups."}
+				f.Fail["check"] = &google.TokenError{Status: 400, Code: "invalid_grant", Description: "Invalid grant: account not found"}
 				return f, nil
 			}
 			return e.g, nil
@@ -103,7 +103,7 @@ func TestSaveTestsFirst(t *testing.T) {
 	}
 
 	_, err := e.m.Save(ctx, root, Input{Key: google.FakeKey("wrong@proj-1.iam.gserviceaccount.com", "proj-1"), Domains: "example.com", Grant: "*"})
-	if code(err) != "bad_request" || !strings.Contains(err.Error(), "Nothing was saved") || !strings.Contains(err.Error(), "Groups Admin") ||
+	if code(err) != "bad_request" || !strings.Contains(err.Error(), "Nothing was saved") || !strings.Contains(err.Error(), "Google does not know") ||
 		!strings.Contains(err.Error(), "wrong@proj-1.iam.gserviceaccount.com") {
 		t.Fatalf("refused key: err = %v", err)
 	}

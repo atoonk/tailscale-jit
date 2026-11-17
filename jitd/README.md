@@ -795,7 +795,11 @@ late and close it late. Keep using the flow's posture attribute for that.
 The page walks through the steps, takes the key in a form (paste it or
 choose the file) and signs in to Google with it before it saves anything;
 if Google refuses, it says which step to look at again. Nothing needs a
-restart. In short:
+restart. Google does not tell jitd whether the service account holds the
+role of step 4, so finish with **Test a group** on the page: a group that
+exists and is not found there means the role is missing. Once a flow names
+a Google group, jitd looks for it every hour and tells the admins when it
+cannot see it. In short:
 
 1. In the Google Cloud console, pick or create a project and enable the
    **Cloud Identity API** in it.
@@ -811,6 +815,7 @@ restart. In short:
    service account's address. It can take a few minutes to apply.
 5. Paste the key on the page, with the email domains jitd may add and the
    groups flows may grant.
+6. **Test a group** on the page, to see that the role of step 4 is there.
 
 jitd uses the Cloud Identity Groups API as that service account. There is
 no domain-wide delegation, so the key reaches groups and nothing else: no

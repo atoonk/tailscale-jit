@@ -58,9 +58,14 @@ func Explain(err error, key *Key) (what, fix string) {
 	var te *TokenError
 	var ae *APIError
 	var ue *unreachable
+	var ne *NoGroupsError
 	switch {
 	case err == nil:
 		return "", ""
+	case errors.As(err, &ne):
+		return fmt.Sprintf("Google takes the key, but shows %s none of the groups jitd's flows use (looked for %s).", account, strings.Join(ne.Tried, ", ")),
+			"In the Google Admin console (" + RolesURL + "), open Groups Admin, choose Assign service accounts and add " + account +
+				". A new role can take a few minutes to apply. If these groups were deleted in Google instead, take them out of the flows."
 	case errors.As(err, &te):
 		why := strings.TrimSuffix(te.Description, ".")
 		switch {

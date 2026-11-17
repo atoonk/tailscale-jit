@@ -220,6 +220,26 @@ func TestOktaSetupRemoveWhileHeld(t *testing.T) {
 	if !h.Svc.OktaEnabled() {
 		t.Fatal("a refused remove turned Okta off")
 	}
+
+	// Credentials for another org would leave alice in the group with
+	// jitd counting her as removed: that takes a second, forced, save.
+	other := map[string]any{"org_url": "other.okta.com", "api_token": "00othertoken5678"}
+	e = apiErr{}
+	if code := call(t, srv, "root", "PUT", "/v1/okta", other, &e); code != 409 || e.Error.Force != "1" ||
+		!strings.Contains(e.Error.Message, "1 request") || !strings.Contains(e.Error.Message, "stay in acme.okta.com") {
+		t.Fatalf("another org while held = %d %+v, want 409 with force", code, e.Error)
+	}
+	if st := h.Okta.Status(); st.OrgURL != "https://acme.okta.com" {
+		t.Fatalf("a refused save changed the org to %s", st.OrgURL)
+	}
+	// New credentials for the same org are no such risk.
+	if code := call(t, srv, "root", "PUT", "/v1/okta", map[string]any{"org_url": "https://ACME.okta.com/", "api_token": "00secrettoken9999"}, nil); code != 200 {
+		t.Fatalf("a new token for the same org while held = %d", code)
+	}
+	var forced oktasetup.Status
+	if code := call(t, srv, "root", "PUT", "/v1/okta?force=1", other, &forced); code != 200 || forced.OrgURL != "https://other.okta.com" || forced.Held != 1 {
+		t.Fatalf("forced save = %d %+v", code, forced)
+	}
 	var st oktasetup.Status
 	if code := call(t, srv, "root", "DELETE", "/v1/okta?force=1", nil, &st); code != 200 || st.Configured() || st.Held != 1 {
 		t.Fatalf("forced remove = %d %+v", code, st)

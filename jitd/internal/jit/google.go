@@ -1,11 +1,13 @@
 package jit
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"slices"
 	"strings"
+	"sync/atomic"
 
 	"github.com/atoonk/tailscale-jit/jitd/internal/google"
 )
@@ -101,15 +103,58 @@ func (s *Service) googleProvider() *groupProvider {
 		health:    &s.ggHealth,
 	}
 	if s.Google != nil {
-		p.client = googleGroups{c: s.Google, domains: func() []string { return s.googleLimits().Domains }}
+		p.client = googleGroups{c: s.Google, domains: func() []string { return s.googleLimits().Domains },
+			known: s.googleKnown, seen: &s.ggSeen}
 	}
 	return p
 }
+
+// googleProbe is how many groups a check looks for before it concludes
+// that the service account sees none.
+const googleProbe = 3
+
+// googleKnown lists up to googleProbe Google groups jitd uses: the ones
+// flows name, then the ones of requests it still looks after.
+func (s *Service) googleKnown() []GroupRef {
+	var all []GroupRef
+	now, k := s.now(), googleKind
+	s.Store.View(func(d *Data) {
+		for _, w := range d.Workflows {
+			all = append(all, w.GoogleGroups...)
+		}
+		flows := len(all)
+		for _, r := range d.Requests {
+			if k.intent(r) != nil || k.pendingRemoval(r) || k.running(r, now) {
+				all = append(all, k.groups(r)...)
+			}
+		}
+		// The same ones on every check, flows first.
+		slices.SortFunc(all[:flows], func(a, b GroupRef) int { return strings.Compare(a.ID, b.ID) })
+		slices.SortFunc(all[flows:], func(a, b GroupRef) int { return strings.Compare(a.ID, b.ID) })
+	})
+	var out []GroupRef
+	for _, g := range all {
+		if len(out) == googleProbe {
+			break
+		}
+		if g.ID != "" && !slices.ContainsFunc(out, func(o GroupRef) bool { return o.ID == g.ID }) {
+			out = append(out, g)
+		}
+	}
+	return out
+}
+
+// GoogleRoleSeen reports whether the last check of Google found a group
+// jitd uses. Google gives jitd no other sign of the Groups Admin role, so
+// until a flow names a group it is false whether the role is there or not.
+func (s *Service) GoogleRoleSeen() bool { return s.ggSeen.Load() }
 
 // googleGroups is a Google client as a groupClient.
 type googleGroups struct {
 	c       google.Client
 	domains func() []string
+	known   func() []GroupRef // groups jitd uses, for Check to look for
+	seen    *atomic.Bool      // whether the last Check found one
 }
 
 // Member is the login itself, as an address: Google has members by email.
@@ -186,7 +231,33 @@ func (g googleGroups) Holding(ctx context.Context, memberID string, groupIDs []s
 	return in, nil
 }
 
-func (g googleGroups) Check(ctx context.Context) error { return g.c.Check(ctx) }
+// Check tries the key, then looks for the groups jitd uses. Google answers
+// the first the same with or without the Groups Admin role, so finding a
+// group is the only thing that shows the role: one is enough, and none of
+// them is a NoGroupsError. With no group to look for, the check passes and
+// the role stays unproven (seen).
+func (g googleGroups) Check(ctx context.Context) error {
+	g.seen.Store(false)
+	if err := g.c.Check(ctx); err != nil {
+		return err
+	}
+	var tried []string
+	for _, ref := range g.known() {
+		_, err := g.c.FindGroup(ctx, ref.ID)
+		if err == nil {
+			g.seen.Store(true)
+			return nil
+		}
+		if !errors.Is(err, google.ErrNotFound) {
+			return err
+		}
+		tried = append(tried, cmp.Or(ref.Name, ref.ID))
+	}
+	if len(tried) > 0 {
+		return &google.NoGroupsError{Tried: tried}
+	}
+	return nil
+}
 
 func (g googleGroups) Refused(err error) bool { return google.IsRefusal(err) }
 

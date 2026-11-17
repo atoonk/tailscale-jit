@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -75,6 +76,9 @@ type Service struct {
 	OktaAlertAfter time.Duration
 	okHealth       groupHealth
 	ggHealth       groupHealth
+	// ggSeen: the last Google check found a group jitd uses, which is what
+	// shows the Groups Admin role (see googleGroups.Check).
+	ggSeen atomic.Bool
 }
 
 // Notifier is told about access request changes: a new request, a vote, a
@@ -1579,9 +1583,7 @@ func (s *Service) Cancel(ctx context.Context, actor Identity, id, note string) (
 func (s *Service) ExpireDue() int {
 	s.startDue()
 	n := s.expireDue()
-	octx, cancel := context.WithTimeout(context.Background(), groupTimeout)
-	defer cancel()
-	s.groupUpkeep(octx)
+	s.groupUpkeep(context.Background())
 	return n
 }
 

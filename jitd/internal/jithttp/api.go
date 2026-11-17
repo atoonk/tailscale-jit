@@ -251,6 +251,7 @@ func (s *Server) Handler() http.Handler {
 		if !decode(w, r, &in) {
 			return
 		}
+		in.Force = r.URL.Query().Get("force") == "1"
 		out, err := s.Okta.Save(r.Context(), id, in)
 		s.reply(w, http.StatusOK, out, err)
 	}))
@@ -288,6 +289,7 @@ func (s *Server) Handler() http.Handler {
 		if !decode(w, r, &in) {
 			return
 		}
+		in.Force = r.URL.Query().Get("force") == "1"
 		out, err := s.Google.Save(r.Context(), id, in)
 		s.reply(w, http.StatusOK, out, err)
 	}))
@@ -598,6 +600,9 @@ func errBody(e *jit.Error) map[string]string {
 	m := map[string]string{"code": e.Code, "message": e.Message}
 	if e.RequestID != "" {
 		m["request_id"] = e.RequestID
+	}
+	if e.Force {
+		m["force"] = "1"
 	}
 	return m
 }

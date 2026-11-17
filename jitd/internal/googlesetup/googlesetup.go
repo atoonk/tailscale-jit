@@ -65,6 +65,10 @@ type Input struct {
 	// Grant lists the groups flows may grant, by address or ID, with * as
 	// a wildcard, separated by commas or spaces.
 	Grant string `json:"grant_allowlist"`
+	// Force saves a key for another service account although jitd still
+	// has memberships to look after (see Save). From ?force=1, not from
+	// the body.
+	Force bool `json:"-"`
 }
 
 // Sources of the key in force.
@@ -96,6 +100,11 @@ type Status struct {
 	CheckedAt time.Time `json:"checked_at,omitzero"`
 	Error     string    `json:"error,omitempty"`
 	Fix       string    `json:"fix,omitempty"`
+	// RoleSeen: that check found a group jitd's flows use, which takes the
+	// Groups Admin role. False also when there was no group to look for:
+	// Google's answer to the key alone is the same with or without the
+	// role.
+	RoleSeen bool `json:"role_seen"`
 	// The limits in force: whose logins may be added (none: nobody), and
 	// which groups flows may grant ("*" is every group; empty is none).
 	// The FromEnv flags say that the value comes from the environment or
@@ -112,7 +121,8 @@ type Status struct {
 // Configured reports whether there is a service account key at all.
 func (st Status) Configured() bool { return st.Source != "" }
 
-// Working reports whether the key was tried and Google took it.
+// Working reports whether the key was tried and Google took it. That the
+// service account can manage groups is RoleSeen.
 func (st Status) Working() bool { return st.Enabled && st.Error == "" && !st.CheckedAt.IsZero() }
 
 func (m *Manager) now() time.Time {
@@ -242,6 +252,7 @@ func (m *Manager) Status() Status {
 	if state.Enabled {
 		st.CheckedAt = state.CheckedAt
 	}
+	st.RoleSeen = st.Working() && m.Svc.GoogleRoleSeen()
 	return st
 }
 
@@ -249,6 +260,13 @@ func (m *Manager) Status() Status {
 // and stored only if Google takes it; it is in force from the next Google
 // call on. Without a key in the input, the key jitd has stays and only the
 // limits change.
+//
+// jitd cannot tell which Workspace a service account manages. One for
+// another Workspace does not see the groups jitd added people to, so it
+// cannot take them out, and where Google answers that such a group does
+// not exist jitd records the removal as done. So while jitd holds any
+// membership, a key for another service account needs in.Force; a new key
+// for the same account does not.
 func (m *Manager) Save(ctx context.Context, admin jit.Identity, in Input) (Status, error) {
 	env, err := m.env()
 	if err != nil {
@@ -291,11 +309,20 @@ func (m *Manager) Save(ctx context.Context, admin jit.Identity, in Input) (Statu
 		return Status{}, bad("Nothing was saved: fill in which groups approval flows may grant: * for every group the service account can manage, or a list like aws-*@example.com.")
 	}
 	fresh := s.Key != ""
+	cur := m.Status()
+	other := false
 	switch {
 	case fresh:
 		key, err := google.ParseKey(s.Key)
 		if err != nil {
 			return Status{}, bad("Nothing was saved: " + err.Error() + ".")
+		}
+		other = cur.Source == SourceUI && cur.Held > 0 && cur.Account != "" && !strings.EqualFold(cur.Account, key.Email)
+		if other && !in.Force {
+			return Status{}, &jit.Error{Code: "conflict", Status: http.StatusConflict, Force: true,
+				Message: "Nothing was saved. jitd still has Google group memberships to look after, for " + plural(cur.Held, "request") + ", and it added them as " + cur.Account +
+					". This key is for another service account, " + key.Email + ". If that one manages the same groups, nothing is lost. If it is for another Workspace, jitd cannot remove those memberships when the access ends, and may count them as removed while they stay in Google." +
+					" End those requests first, or save anyway with force."}
 		}
 		dial := m.Dial
 		if dial == nil {
@@ -307,6 +334,8 @@ func (m *Manager) Save(ctx context.Context, admin jit.Identity, in Input) (Statu
 		}
 		cctx, cancel := context.WithTimeout(ctx, checkTimeout)
 		defer cancel()
+		// This shows the key and the API, not the Groups Admin role:
+		// Google gives no sign of that until a group is looked up.
 		if err := c.Check(cctx); err != nil {
 			what, fix := google.Explain(err, key)
 			return Status{}, bad(strings.TrimSpace("Nothing was saved. " + what + " " + fix))
@@ -328,6 +357,9 @@ func (m *Manager) Save(ctx context.Context, admin jit.Identity, in Input) (Statu
 	if key, _ := google.ParseKey(s.Key); key != nil {
 		account = key.Email
 	}
+	if other {
+		m.log().Warn("a key for another google service account saved while jitd holds memberships added with the old one", "was", cur.Account, "requests_still_held", cur.Held, "by", admin.Login)
+	}
 	m.log().Info("google settings saved on the Google page", "service_account", account, "new_key", fresh,
 		"allowed_domains", s.Domains, "grant_allowlist", s.Grant, "by", admin.Login)
 	m.Svc.GoogleCheckNow(ctx)
@@ -348,7 +380,7 @@ func (m *Manager) Remove(ctx context.Context, admin jit.Identity, force bool) (S
 	}
 	st := m.Status()
 	if st.Source == SourceUI && st.Held > 0 && !force {
-		return Status{}, &jit.Error{Code: "conflict", Status: http.StatusConflict,
+		return Status{}, &jit.Error{Code: "conflict", Status: http.StatusConflict, Force: true,
 			Message: "jitd still has Google group memberships to look after, for " + plural(st.Held, "request") +
 				". Without a key it cannot remove them when the access ends; they stay in Google until Google is set up again. Remove anyway with force."}
 	}

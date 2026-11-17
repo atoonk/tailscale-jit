@@ -127,7 +127,7 @@ func call(t *testing.T, srv *httptest.Server, user, method, path string, body an
 }
 
 type apiErr struct {
-	Error struct{ Code, Message string } `json:"error"`
+	Error struct{ Code, Message, Force string } `json:"error"`
 }
 
 func TestAPIFlow(t *testing.T) {

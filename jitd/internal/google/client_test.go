@@ -81,6 +81,8 @@ type server struct {
 	pending   int    // how many times an operation answers "not done"
 	opError   string // operations finish with this error
 	conflict  bool   // create answers 409 without adding
+	lost      int    // create adds the member, then answers 503, this many times
+	opDenied  bool   // asking about an operation answers 403
 	calls     []string
 }
 
@@ -166,6 +168,8 @@ func (s *server) serve(w http.ResponseWriter, r *http.Request) {
 	p := strings.TrimPrefix(r.URL.Path, "/v1/")
 	parts := strings.Split(p, "/")
 	switch {
+	case p == "operations/op1" && r.Method == http.MethodGet && s.opDenied:
+		denied()
 	case p == "operations/op1" && r.Method == http.MethodGet:
 		if s.pending > 0 {
 			s.pending--
@@ -228,6 +232,10 @@ func (s *server) serve(w http.ResponseWriter, r *http.Request) {
 			gerr(w, 400, "INVALID_ARGUMENT", "bad membership", "")
 		case s.conflict || s.members[parts[1]][in.Key.ID]:
 			gerr(w, 409, "ALREADY_EXISTS", "Member already exists.", "")
+		case s.lost > 0:
+			s.lost--
+			s.members[parts[1]][in.Key.ID] = true
+			gerr(w, 503, "UNAVAILABLE", "The service is currently unavailable.", "")
 		default:
 			if s.opError == "" {
 				s.members[parts[1]][in.Key.ID] = true
@@ -404,12 +412,19 @@ func TestAddMember(t *testing.T) {
 	if err := c.AddMember(ctx, "g0001", "bob@example.com"); err != nil {
 		t.Fatalf("adding a member again: %v", err)
 	}
-	// A 409 with no membership to show for it is an error.
+	// A 409 with no membership to show for it is an error, and not a
+	// refusal: the member may have been added all the same.
 	s.conflict = true
-	if err := c.AddMember(ctx, "g0001", "cat@example.com"); status(err) != 409 {
-		t.Fatalf("unexplained 409: %v", err)
+	if err := c.AddMember(ctx, "g0001", "cat@example.com"); status(err) != 409 || IsRefusal(err) {
+		t.Fatalf("unexplained 409: %v (refusal: %v)", err, IsRefusal(err))
 	}
 	s.conflict = false
+	// Google adds the member and answers 503; the repeat gets a 409, and
+	// the membership shows.
+	s.lost = 1
+	if err := c.AddMember(ctx, "g0001", "hal@example.com"); err != nil || !s.members["g0001"]["hal@example.com"] {
+		t.Fatalf("an add Google applied before it failed: %v", err)
+	}
 
 	// A change still running is waited for.
 	s.pending = 2
@@ -433,6 +448,14 @@ func TestAddMember(t *testing.T) {
 	if err == nil || IsRefusal(err) || !strings.Contains(err.Error(), "group is full") {
 		t.Fatalf("failed change: %v", err)
 	}
+	// So is one Google took and then will not answer for: the 403 is to
+	// the question, not to the change.
+	s.opError, s.pending, s.opDenied = "", 1, true
+	err = c.AddMember(ctx, "g0001", "ian@example.com")
+	if err == nil || IsRefusal(err) || status(err) != 403 || !strings.Contains(err.Error(), "whether the change is done") {
+		t.Fatalf("a change Google will not answer for: %v", err)
+	}
+	s.pending, s.opDenied = 0, false
 	// Google refusing outright is a refusal.
 	s.opError, s.blind = "", true
 	if err := c.AddMember(ctx, "g0001", "gus@example.com"); !IsRefusal(err) {

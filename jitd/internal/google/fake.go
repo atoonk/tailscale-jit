@@ -19,6 +19,10 @@ type Fake struct {
 	Members map[string]map[string]bool // group ID -> email -> member
 	Fail    map[string]error           // "findgroup:<ref>", "ismember:<group>", "add:<group>", "remove:<group>", "check" -> error
 	Calls   []string
+	// Blind makes the Fake answer as Google does to a service account
+	// without the Groups Admin role: Check still passes, no group is
+	// found, and membership calls are refused. Set it with SetBlind.
+	Blind bool
 	// Hook, if set, runs at the start of every call with its name
 	// ("findgroup", "ismember", "add", "remove", "check"), before the Fake
 	// takes its own lock, so it may call back into the code under test.
@@ -34,6 +38,19 @@ func (f *Fake) hook(call string) {
 	if f.Hook != nil {
 		f.Hook(call)
 	}
+}
+
+// SetBlind takes the Groups Admin role away, or gives it back (see Blind).
+func (f *Fake) SetBlind(blind bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.Blind = blind
+}
+
+// denied is Google's answer about a group to an account that may not see it.
+func denied(groupID string) error {
+	return &APIError{Status: 403, Code: "PERMISSION_DENIED",
+		Message: "Error(2028): Permission denied for membership resource 'groups/" + groupID + "' (or it may not exist)."}
 }
 
 // AddGroup registers a group.
@@ -74,6 +91,9 @@ func (f *Fake) FindGroup(ctx context.Context, ref string) (Group, error) {
 	if err := f.Fail["findgroup:"+ref]; err != nil {
 		return Group{}, err
 	}
+	if f.Blind {
+		return Group{}, ErrNotFound
+	}
 	if g, ok := f.Groups[ref]; ok {
 		return g, nil
 	}
@@ -92,6 +112,9 @@ func (f *Fake) IsMember(ctx context.Context, groupID, email string) (bool, error
 	if err := f.Fail["ismember:"+groupID]; err != nil {
 		return false, err
 	}
+	if f.Blind {
+		return false, denied(groupID)
+	}
 	return f.Members[groupID][strings.ToLower(email)], nil
 }
 
@@ -102,6 +125,9 @@ func (f *Fake) AddMember(ctx context.Context, groupID, email string) error {
 	f.Calls = append(f.Calls, "ADD "+groupID+" "+email)
 	if err := f.Fail["add:"+groupID]; err != nil {
 		return err
+	}
+	if f.Blind {
+		return denied(groupID)
 	}
 	f.set(groupID, email)
 	return nil
@@ -115,11 +141,15 @@ func (f *Fake) RemoveMember(ctx context.Context, groupID, email string) error {
 	if err := f.Fail["remove:"+groupID]; err != nil {
 		return err
 	}
+	if f.Blind {
+		return denied(groupID)
+	}
 	delete(f.Members[groupID], strings.ToLower(email))
 	return nil
 }
 
-// Check fails with Fail["check"], if set.
+// Check fails with Fail["check"], if set. Like Google's, it passes with or
+// without the role (Blind).
 func (f *Fake) Check(ctx context.Context) error {
 	f.hook("check")
 	f.mu.Lock()

@@ -112,7 +112,8 @@ const openAPISpec = `{
       "get": {"tags": ["okta"], "summary": "The Okta connection, without the key or the token", "operationId": "oktaStatus",
         "responses": {"200": {"$ref": "#/components/responses/Okta"}, "403": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"}}},
       "put": {"tags": ["okta"], "summary": "Sign in to Okta with these credentials and, if that works, save them", "operationId": "oktaSave",
-        "description": "Either a service app (client_id and private_key) or an api_token. Nothing is saved when Okta refuses them (400). Replaces credentials saved here before. Refused (409) when the credentials come from jitd's environment or env file. The allowlists are not set here.",
+        "description": "Either a service app (client_id and private_key) or an api_token. Nothing is saved when Okta refuses them (400). Replaces credentials saved here before. Refused (409) when the credentials come from jitd's environment or env file. Also refused (409, with force in the error) when they are for another Okta org while jitd still holds memberships in the one it uses now: it could not remove those, and would count them as removed; force=1 saves anyway. The allowlists are not set here.",
+        "parameters": [{"name": "force", "in": "query", "schema": {"type": "string", "enum": ["1"]}, "description": "1: save credentials for another Okta org although jitd still holds memberships in the current one"}],
         "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "required": ["org_url"], "properties": {
           "org_url": {"type": "string", "example": "https://example.okta.com"}, "client_id": {"type": "string", "example": "0oa1abcdEFGHijkl2345"},
           "private_key": {"type": "string", "description": "The service app's private key, PEM (RSA or EC)"}, "private_key_id": {"type": "string", "description": "The key's kid, when the app has more than one key"},
@@ -132,7 +133,8 @@ const openAPISpec = `{
       "get": {"tags": ["google"], "summary": "The Google connection, without the key", "operationId": "googleStatus",
         "responses": {"200": {"$ref": "#/components/responses/Google"}, "403": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"}}},
       "put": {"tags": ["google"], "summary": "Save the Google settings; a new key is tried against Google first", "operationId": "googleSave",
-        "description": "key is a service account's JSON key file, whole. Nothing is saved when Google refuses it (400). Leave key out to keep the one jitd has and change only the domains and groups; a list left out stays as it is saved. A value that jitd's environment or env file sets is not changed here; sending a key while one is set there is refused (409).",
+        "description": "key is a service account's JSON key file, whole. Nothing is saved when Google refuses it (400). Leave key out to keep the one jitd has and change only the domains and groups; a list left out stays as it is saved. A value that jitd's environment or env file sets is not changed here; sending a key while one is set there is refused (409). A key for another service account is refused too (409, with force in the error) while jitd still holds memberships: if that account is for another Workspace jitd could not remove them; force=1 saves anyway.",
+        "parameters": [{"name": "force", "in": "query", "schema": {"type": "string", "enum": ["1"]}, "description": "1: save a key for another service account although jitd still holds memberships"}],
         "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "properties": {
           "key": {"type": "string", "description": "The service account's JSON key file, as Google downloaded it"},
           "allowed_domains": {"type": "string", "description": "Email domains whose users jitd may add to groups, separated by commas or spaces", "example": "example.com"},
@@ -218,6 +220,7 @@ const openAPISpec = `{
         "checked_at": {"type": "string", "format": "date-time"}, "error": {"type": "string"}, "fix": {"type": "string"},
         "allowed_domains": {"type": "array", "items": {"type": "string"}, "description": "Email domains whose users jitd may add; none means nobody"}, "allowed_domains_from_env": {"type": "boolean"},
         "grant_allowlist": {"type": "array", "items": {"type": "string"}, "description": "Groups a flow may grant; * is every group"}, "grant_allowlist_from_env": {"type": "boolean"},
+        "role_seen": {"type": "boolean", "description": "The last check found a group jitd's flows use, which takes the Groups Admin role. False also when no flow names a group yet: Google's answer to the key alone is the same with or without the role"},
         "held": {"type": "integer", "description": "Requests whose Google memberships jitd still looks after"}}},
       "GoogleGroupCheck": {"type": "object", "properties": {
         "id": {"type": "string"}, "email": {"type": "string"}, "name": {"type": "string"},
@@ -325,7 +328,8 @@ const openAPISpec = `{
         "created_at": {"type": "string", "format": "date-time", "readOnly": true}, "updated_at": {"type": "string", "format": "date-time", "readOnly": true}}},
       "ErrorBody": {"type": "object", "properties": {"error": {"type": "object", "properties": {
         "code": {"type": "string", "enum": ["bad_request", "forbidden", "not_found", "conflict", "identity_unavailable", "tailscale_api_error", "slack_error", "internal"]},
-        "message": {"type": "string"}, "request_id": {"type": "string"}, "url": {"type": "string"}}}}}
+        "message": {"type": "string"}, "request_id": {"type": "string"}, "url": {"type": "string"},
+        "force": {"type": "string", "enum": ["1"], "description": "Present when the same call goes through with force=1; the message says what that costs"}}}}}
     }
   }
 }`

@@ -128,7 +128,7 @@ func main() {
 	slackConnected := flag.Bool("slack", true, "start with a made-up Slack workspace connected (false: the Slack page shows the setup steps)")
 	tsMode := flag.String("tailscale", "page", "how the Tailscale API credential is set up: page (saved on the Tailscale page), env (in the env file), off (the page shows the setup steps); a client secret starting with tskey-client-wrong is refused")
 	oktaMode := flag.String("okta", "page", "how the made-up Okta org is set up: page (credentials saved on the Okta page), env (set in the env file, with allowlists), off (the Okta page shows the setup steps), failing (saved on the page, but Okta refuses them)")
-	googleMode := flag.String("google", "page", "how the made-up Google account is set up: page (key saved on the Google Groups page), env (key in the env file), off (the page shows the setup steps), failing (saved on the page, but the service account has lost its role); a pasted key for an account starting with norole@ is refused")
+	googleMode := flag.String("google", "page", "how the made-up Google account is set up: page (key saved on the Google Groups page), env (key in the env file), off (the page shows the setup steps), failing (saved on the page, but the service account has lost its role); a pasted key for an account starting with norole@ is taken, as Google takes it, and sees no groups")
 	flag.Parse()
 	admins := []jit.Principal{"root@example.com"}
 	if *demo {
@@ -196,30 +196,30 @@ func main() {
 		}
 	}
 	// A made-up Google account, set up the same way. A key for a service
-	// account whose address starts with "norole@" is refused the way Google
-	// refuses one that was never given the Groups Admin role.
+	// account whose address starts with "norole@" is one that was never
+	// given the Groups Admin role: Google takes the key all the same, and
+	// shows it no groups.
 	gf := google.NewFake()
 	gf.AddGroup("01gcpprodviewers", "gcp-prod-viewers@example.com", false)
 	gf.AddGroup("02gcpprodadmins0", "gcp-prod-admins@example.com", false)
 	gf.AddGroup("03allengineering", "engineering@example.com", true)
 	const googleAccount = "jitd@example-prod.iam.gserviceaccount.com"
-	noRole := &google.APIError{Status: 403, Message: "Error(2028): Permission denied for membership resource 'groups/-' (or it may not exist)."}
+	pickGoogle := func(vars map[string]string) (google.Client, error) {
+		if key, _ := google.ParseKey(vars[google.EnvKey]); key != nil && strings.HasPrefix(key.Email, "norole@") {
+			blind := google.NewFake()
+			blind.SetBlind(true)
+			return blind, nil
+		}
+		return gf, nil
+	}
 	googleEnv := map[string]string{}
 	if *googleMode == "env" {
 		googleEnv = map[string]string{google.EnvKey: google.FakeKey(googleAccount, "example-prod"), google.EnvDomains: "example.com"}
 	}
 	googleSetup := &googlesetup.Manager{Store: st, Svc: svc, EnvFile: filepath.Join(dir, "env"), Log: log,
-		Env: func() (map[string]string, error) { return googleEnv, nil },
-		Dial: func(vars map[string]string) (google.Client, error) {
-			if key, _ := google.ParseKey(vars[google.EnvKey]); key != nil && strings.HasPrefix(key.Email, "norole@") {
-				bad := google.NewFake()
-				bad.Fail["check"] = noRole
-				return bad, nil
-			}
-			return gf, nil
-		}}
+		Env: func() (map[string]string, error) { return googleEnv, nil }, Dial: pickGoogle}
 	googleSetup.Load()
-	googleClient := &google.Dynamic{Load: googleSetup.Vars, New: func(map[string]string) (google.Client, error) { return gf, nil }}
+	googleClient := &google.Dynamic{Load: googleSetup.Vars, New: pickGoogle}
 	svc.Google = googleClient
 	svc.GoogleLimits = func() jit.GoogleLimits {
 		vars, err := googleClient.Vars()
@@ -292,8 +292,20 @@ func main() {
 		of.Fail["check"] = &okta.APIError{Method: "GET", Path: "/api/v1/groups?limit=1", Status: 403, Code: "E0000006", Summary: "You do not have permission to perform the requested action"}
 		svc.OktaCheckNow(context.Background())
 	}
-	if *googleMode == "failing" {
-		gf.Fail["check"] = noRole
+	// A flow that names a Google group: jitd's check looks for it, which
+	// is the only way the Groups Admin role shows.
+	if svc.GoogleEnabled() {
+		if _, err := svc.CreateWorkflow(jit.Workflow{
+			Name: "GCP production viewer", Description: "Google group membership: read-only roles in the production projects",
+			GoogleGroups: []jit.GroupRef{{Name: "gcp-prod-viewers@example.com"}},
+			Requesters:   []jit.Principal{"autogroup:member"}, Approvers: []jit.Principal{"autogroup:member"},
+			MaxDuration: jit.Duration(4 * time.Hour), DefaultDuration: jit.Duration(time.Hour),
+		}); err != nil {
+			log.Error("preview google flow", "err", err)
+		}
+		if *googleMode == "failing" {
+			gf.SetBlind(true)
+		}
 		svc.GoogleCheckNow(context.Background())
 	}
 

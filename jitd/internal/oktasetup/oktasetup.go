@@ -60,6 +60,10 @@ type Input struct {
 	PrivateKeyID string `json:"private_key_id"`
 	Scopes       string `json:"scopes"`
 	APIToken     string `json:"api_token"`
+	// Force saves credentials for another Okta org although jitd still
+	// has memberships to look after in the one it uses now (see Save).
+	// From ?force=1, not from the body.
+	Force bool `json:"-"`
 }
 
 // Sources of the credentials in force.
@@ -248,14 +252,29 @@ func (m *Manager) Status() Status {
 
 // Save tries the credentials against Okta and, only if Okta takes them,
 // stores them. They are in force from the next Okta call on.
+//
+// Memberships jitd added are in the org it added them in. With credentials
+// for another org it looks for them there when the access ends, Okta
+// answers that there is no such membership, and jitd records the removal
+// as done while the person stays in the group. So while jitd holds any,
+// credentials for another org need in.Force.
 func (m *Manager) Save(ctx context.Context, admin jit.Identity, in Input) (Status, error) {
-	if m.Status().Source == SourceEnv {
+	cur := m.Status()
+	if cur.Source == SourceEnv {
 		return Status{}, &jit.Error{Code: "conflict", Status: http.StatusConflict,
 			Message: "Okta is set up in jitd's environment or env file (OKTA_ORG_URL and the rest); change it there"}
 	}
 	s, err := clean(in)
 	if err != nil {
 		return Status{}, err
+	}
+	other := cur.Source == SourceUI && cur.Held > 0 && !strings.EqualFold(cur.OrgURL, s.OrgURL)
+	if other && !in.Force {
+		was := host(cur.OrgURL)
+		return Status{}, &jit.Error{Code: "conflict", Status: http.StatusConflict, Force: true,
+			Message: "Nothing was saved. jitd still has Okta group memberships to look after, for " + plural(cur.Held, "request") + ", and they are in " + was +
+				". With credentials for another Okta org it cannot remove them when the access ends: it looks in the new org, does not find them, and counts them as removed while they stay in " + was +
+				". End those requests first, or save anyway with force."}
 	}
 	vars := s.Vars()
 	dial := m.Dial
@@ -289,6 +308,9 @@ func (m *Manager) Save(ctx context.Context, admin jit.Identity, in Input) (Statu
 	if s.APIToken != "" {
 		auth = AuthAPIToken
 	}
+	if other {
+		m.log().Warn("okta credentials for another org saved while jitd holds memberships in the old one; they stay there", "was", cur.OrgURL, "requests_still_held", cur.Held, "by", admin.Login)
+	}
 	m.log().Info("okta credentials saved on the Okta page", "org", s.OrgURL, "auth", auth, "by", admin.Login)
 	m.Svc.OktaCheckNow(ctx)
 	return m.Status(), nil
@@ -307,7 +329,7 @@ func (m *Manager) Remove(ctx context.Context, admin jit.Identity, force bool) (S
 	}
 	st := m.Status()
 	if st.Source == SourceUI && st.Held > 0 && !force {
-		return Status{}, &jit.Error{Code: "conflict", Status: http.StatusConflict,
+		return Status{}, &jit.Error{Code: "conflict", Status: http.StatusConflict, Force: true,
 			Message: "jitd still has Okta group memberships to look after, for " + plural(st.Held, "request") +
 				". Without credentials it cannot remove them when the access ends; they stay in Okta until Okta is set up again. Remove anyway with force."}
 	}
@@ -320,6 +342,14 @@ func (m *Manager) Remove(ctx context.Context, admin jit.Identity, force bool) (S
 	m.log().Info("okta credentials removed on the Okta page", "org", saved.OrgURL, "by", admin.Login, "requests_still_held", st.Held)
 	m.Svc.OktaCheckNow(ctx)
 	return m.Status(), nil
+}
+
+// host is the host of an Okta address, for a message.
+func host(orgURL string) string {
+	if u, err := url.Parse(orgURL); err == nil && u.Host != "" {
+		return u.Host
+	}
+	return orgURL
 }
 
 // clean checks the form's values and puts them in the shape jitd stores.

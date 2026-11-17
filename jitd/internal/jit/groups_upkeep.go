@@ -32,7 +32,8 @@ import (
 // them would leave memberships in place with nobody told.
 
 const (
-	// groupTimeout bounds a provider's calls of one expiry tick.
+	// groupTimeout bounds one provider's calls of one expiry tick. Each
+	// provider has its own: see groupUpkeep.
 	groupTimeout = 30 * time.Second
 	// DefaultGroupAlertAfter is how long a removal may keep failing before
 	// the admins are told.
@@ -61,19 +62,30 @@ func groupStepContext(ctx context.Context) (context.Context, context.CancelFunc)
 
 // groupUpkeep is the group providers' part of the expiry tick. The caller
 // must not hold mu.
+//
+// Each provider gets groupTimeout to itself, whatever the one before it
+// took: with one budget for all, a provider that is slow on every tick
+// (Google is written first) would leave the next one's removals undone for
+// as long as it stays slow.
 func (s *Service) groupUpkeep(ctx context.Context) {
 	for _, p := range s.providers() {
 		if p.client == nil {
 			continue
 		}
-		s.dropIntents(ctx, p)
-		s.releaseDue(ctx, p)
-		s.alertStuck(p)
-		if p.on() {
-			s.verifyGroups(ctx, p)
-		}
-		s.checkProvider(ctx, p)
+		s.providerUpkeep(ctx, p)
 	}
+}
+
+func (s *Service) providerUpkeep(ctx context.Context, p *groupProvider) {
+	ctx, cancel := groupStepContext(ctx)
+	defer cancel()
+	s.dropIntents(ctx, p)
+	s.releaseDue(ctx, p)
+	s.alertStuck(p)
+	if p.on() {
+		s.verifyGroups(ctx, p)
+	}
+	s.checkProvider(ctx, p)
 }
 
 // owed counts the requests with memberships of p's kind that jitd still
