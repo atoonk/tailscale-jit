@@ -106,5 +106,5 @@ Set `release.version` and both `release.sha256` entries from the new release's `
 - **One replica, always.** Two jitd processes must never share the database or the node identity. The chart fixes `replicas: 1` and uses the `Recreate` strategy.
 - **Keep the volume.** It holds the node identity (`tsnet-state`) and every flow and request (`jit.db`). The claim is annotated `helm.sh/resource-policy: keep`, so `helm uninstall` leaves it. Lose it and jitd joins the tailnet as a new machine, with nothing in it. See [Backups](../../jitd/README.md#backups-and-digging-into-the-history).
 - **No probes.** The kubelet can't reach jitd's tailnet-only listener. Its health shows in the admin console and on its Integrations page.
-- **Okta removals need jitd running.** If you use Okta groups, memberships are removed by jitd itself when access ends. Keep the pod running, and see the Okta section of jitd's README.
+- **Okta and Google removals need jitd running.** If you use Okta or Google groups, memberships are removed by jitd itself when access ends. Keep the pod running, and see the Okta and Google sections of jitd's README.
 - **Hardened by default.** The pod runs as UID 65534 with a read-only root filesystem and no capabilities, and it mounts no service account token: jitd never calls the Kubernetes API.

@@ -314,7 +314,8 @@ values and upgrades.
 Things to know:
 
 - **`-admins`** decides who may manage approval flows and see every request.
-  It takes logins, `group:` and `tag:`, separated by commas; `group:jit-admins`
+  It takes logins, `group:`, `tag:` and (with Okta connected) `okta:`,
+  separated by commas; `group:jit-admins`
   from step 1 is the usual choice. Include at least one login as well:
   groups are looked up through the Tailscale API, so with a broken
   credential only a login can still get in to fix it. With no admins, nobody
@@ -436,11 +437,18 @@ people can ask for. For example:
 
 The fields:
 
-- **Posture attribute:** the one thing an approval sets, `custom:jit_<name>`.
-  Each flow has its own.
-- **Gives access to** (optional): one row per target, with a description.
-  People and agents read this when they choose what to ask for. It grants
-  nothing by itself; the policy does that.
+- **What an approval grants:** pick one. Most flows grant one thing; **Add
+  another** puts more on the same flow, and an approval then grants all of
+  them or none.
+  - **Tailscale access:** a posture attribute, `custom:jit_<name>`, set on
+    the requester's device. Each flow has its own. With it comes **Gives
+    access to** (optional): one row per target, with a description. People
+    and agents read this when they choose what to ask for. It grants
+    nothing by itself; the policy does that.
+  - **Okta groups** and **Google groups:** the requester is added to the
+    groups until the access ends. Each can be picked once that integration
+    is connected; see [Okta groups](#okta-groups) and
+    [Google groups](#google-groups).
 - **Who can request** and **who can approve**: logins, `group:`, `tag:`, or
   `autogroup:member` for everyone.
 - **How many approvals**, whether people may **approve their own** requests,
@@ -685,9 +693,10 @@ OKTA_API_TOKEN=00a...
 
 Set one or the other, not both. jitd re-reads the file on use, so no
 restart is needed; at startup it logs which one it uses and where it came
-from, or why the credentials it found are unusable. The flow form then
-shows an **Okta groups** field: group names or IDs (`00g…`), separated by
-commas. jitd looks each one up when you save, and stores its ID.
+from, or why the credentials it found are unusable. On the flow form,
+**Okta groups** can then be picked under *What an approval grants*: group
+names or IDs (`00g…`), separated by commas. jitd looks each one up when
+you save, and stores its ID.
 
 How it behaves:
 
@@ -783,7 +792,7 @@ OKTA_READ_ALLOWLIST=Team-*,On-Call
 Entries are group names or IDs, separated by commas; `*` matches any run
 of characters. A list that is left out means `*`, every group. A list that
 is set but empty allows no group, and so does an env file jitd cannot read
-when it starts. If the file becomes unreadable later (a bad line, a
+when it starts (one that does not exist is fine: it sets nothing). If the file becomes unreadable later (a bad line, a
 permission), jitd carries on with the Okta settings and lists it read
 last, and says so in the log and in the admins' banner until the file is
 fixed. jitd logs the lists in effect at startup.
@@ -857,9 +866,9 @@ GOOGLE_SERVICE_ACCOUNT_JSON={"type":"service_account","project_id":"…","privat
 # GOOGLE_GRANT_ALLOWLIST=aws-*@example.com,gcp-*@example.com
 ```
 
-The flow form then shows a **Google groups** field: group addresses,
-separated by commas. jitd looks each one up when you save, and stores its
-ID. **Test a group** on the page tells you beforehand whether a flow could
+On the flow form, **Google groups** can then be picked under *What an
+approval grants*: group addresses, separated by commas. jitd looks each one
+up when you save, and stores its ID. **Test a group** on the page tells you beforehand whether a flow could
 use a group.
 
 How it differs from Okta groups (everything else under "How it behaves"
@@ -960,8 +969,8 @@ B's systemd setup:
 
 ```sh
 # A consistent copy, safe while jitd runs. umask keeps it private:
-# it holds every login, device and reason, and the Slack tokens if Slack
-# was connected on the page.
+# it holds every login, device and reason, and every credential saved on
+# the Integrations pages (Tailscale, Slack, Okta, Google).
 sudo -u jitd sh -c 'umask 077; sqlite3 -readonly /var/lib/jitd/jit.db ".backup /var/lib/jitd/jit-backup.db"'
 
 # Who asked for what
@@ -989,8 +998,8 @@ Moving to a newer jitd is three things: download the binary from the
 release, put it in place of the old one, restart. jitd is one
 self-contained file, so no repository, no Go and no rebuild come into it,
 and nothing around it changes: the node's identity in `tsnet-state`, the
-flows and history in `jit.db`, the credentials in the env file and your
-tailnet policy all stay as they are. You don't need a new auth key either;
+flows and history in `jit.db`, the credentials (in `jit.db` too, or in the
+env file) and your tailnet policy all stay as they are. You don't need a new auth key either;
 that is only for a node's very first start.
 
 What each release changed is on the
@@ -1156,8 +1165,9 @@ so jitd comes back as the same machine with the same flows. To go back, run
   browser or from an agent, or one you pick with `/jit request` in Slack
   (only your own untagged devices are offered, and jitd checks again when
   you submit). Nobody can request access for someone else's machine.
-- **One open request per flow and device.** Asking again points you at the
-  request you already have.
+- **One open request per flow and device for any one time.** Asking again
+  points you at the request you already have. A scheduled request only
+  blocks another whose time overlaps it.
 - **Approvals follow the flow as it is now.** Edit a flow and its pending
   requests follow:
   - a removed approver's vote no longer counts;
@@ -1195,7 +1205,7 @@ expired attribute about a minute after the expiry time (we measured about
 
 | Flag | Default | |
 |---|---|---|
-| `-admins` | none | who may manage flows and see every request: logins, `group:`, `tag:` (not `autogroup:admin`; use a group such as `group:jit-admins`). With a group, adding an admin is a policy edit that takes effect within a minute, no restart |
+| `-admins` | none | who may manage flows and see every request: logins, `group:`, `okta:`, `tag:` (not `autogroup:admin`; use a group such as `group:jit-admins`). With a group, adding an admin is a policy edit that takes effect within a minute, no restart |
 | `-state-dir` | `tsnet-state` | the node's identity; keep it |
 | `-data` | `jit.db` | the SQLite database with the approval flows and access requests. Name an older jitd's `.json` file and jitd uses the `.db` of the same name, filled from the `.json` the first time |
 | `-env-file` | `~/.config/jitd/env` (Linux), `~/Library/Application Support/jitd/env` (macOS) | optional: credentials you would rather keep out of the database. They win over what is saved on the Integrations pages. Tailscale API: `TS_OAUTH_CLIENT_ID` with `TS_OAUTH_CLIENT_SECRET` (OAuth client) or `TS_ID_TOKEN` (federated identity), or `TS_API_KEY`. Also `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN` and `SLACK_ALLOWED_DOMAINS` (see Slack), the `OKTA_*` settings (see Okta groups) and `GOOGLE_SERVICE_ACCOUNT_JSON` (see Google groups) |
@@ -1220,7 +1230,8 @@ Tailscale connection, as for every other request, and the tools act as that
 person on that device. The tools are `list_requestable`, `request_access`,
 `wait_for_access`, `get_access_request` and `cancel_access_request`; there is
 no approve tool, on purpose. After `request_access`, the agent shows the
-approval link and ends its turn; it waits (`wait_for_access`, up to 50
+approval link and ends its turn (`request_access` takes `start_at` to
+schedule the access for later); it waits (`wait_for_access`, up to 50
 seconds a call) once you say the request is approved or ask it to wait. The
 first `wait_for_access` for a pending request returns at once, so an agent
 that skips the link still has to show it before anything blocks: hosts such
@@ -1253,7 +1264,7 @@ In the API, an approval flow is called a *workflow*.
 | `GET /v1/requestable` | flows the caller may request, with any open request and what the policy grants |
 | `GET/POST /v1/workflows`, `GET/PUT/DELETE /v1/workflows/{id}` | approval flows (admins) |
 | `GET /v1/requests?scope=mine\|approvals\|all&status=` | requests the caller may see |
-| `POST /v1/requests` | submit `{workflow_id, duration, reason}`; durations like `90m`, `2h`, `3d`, `1d12h`; leave `duration` out for the flow's default |
+| `POST /v1/requests` | submit `{workflow_id, duration, reason}`; durations like `90m`, `2h`, `3d`, `1d12h`; leave `duration` out for the flow's default; add `start_at` (an RFC 3339 time) to schedule it for later |
 | `GET /v1/requests/{id}` | status and timeline |
 | `POST /v1/requests/{id}/approve` · `decline` · `cancel` · `revoke` | `{note}`; declining needs one |
 | `GET /v1/changes` | a change counter, for polling |
@@ -1262,11 +1273,39 @@ In the API, an approval flow is called a *workflow*.
 | `GET /v1/policy-snippet?missing=1` | the policy snippet (admins) |
 | `GET /v1/devices/{id}/attributes` | a device's posture attributes (admins) |
 | `GET/PUT/DELETE /v1/okta`, `POST /v1/okta/check` | the Okta connection (admins): its status, save credentials (tested first), remove them, try them again or test a group; keys and tokens are never returned |
+| `GET/PUT/DELETE /v1/google`, `POST /v1/google/check` | the Google connection (admins): its status, save the service account key and its limits (tested first), remove them, try them again or test a group; the key is never returned |
 | `GET /v1/slack`, `POST /v1/slack/connect` · `disconnect` · `test`, `PUT /v1/slack/domains`, `GET /v1/slack/channels` · `check` | the Slack connection (admins); tokens are never returned |
 
 Errors look like `{"error": {"code": "...", "message": "..."}}`. Some carry
 `request_id` and `url`, for example when you ask twice and jitd points you
 at the request you already have.
+
+**Creating a flow from a script.** What an approval grants goes under
+`grants`, one key per kind; leave out the ones you don't want. Run it from
+a device whose user is an admin:
+
+```sh
+curl -X POST http://jit/v1/workflows -H 'Content-Type: application/json' -d '{
+  "name": "Production on-call",
+  "grants": {
+    "tailscale": {
+      "attribute": "custom:jit_prod_oncall",
+      "resources": [{"name": "tag:prod", "description": "All production hosts"}]
+    },
+    "okta":   {"groups": [{"name": "AWS-Prod-Admin"}]},
+    "google": {"groups": [{"name": "gcp-prod-viewers@example.com"}]}
+  },
+  "requesters": ["group:sre"],
+  "approvers": ["group:sre-leads"],
+  "max_duration": "4h"
+}'
+```
+
+The answer is the saved flow, with its `id` and the IDs of the groups.
+`PUT /v1/workflows/{id}` replaces a flow and takes the same body. Bodies
+written for an earlier release, with `attribute`, `resources`, `okta_groups`
+and `google_groups` at the top level, still work; answers always use
+`grants`.
 
 ## Development
 

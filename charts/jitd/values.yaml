@@ -47,8 +47,9 @@ verbose: false
 # More jitd flags, e.g. ["-ts-api=https://api.tailscale.com"].
 extraArgs: []
 
-# Credentials, read from the environment (jitd also reads an env file on the
-# data volume, which its Setup page can write).
+# Credentials, read from the environment. Any left out here can be pasted
+# on jitd's Integrations page, which keeps them in its database on the data
+# volume. An env file at /data/env, if you create one, overrides both.
 #
 # Keys jitd uses:
 #   TS_OAUTH_CLIENT_ID, TS_OAUTH_CLIENT_SECRET (or TS_API_KEY): Tailscale API

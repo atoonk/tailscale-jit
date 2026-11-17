@@ -4,8 +4,8 @@ It listens only on the tailnet, at http://{{ .Values.hostname }}/ once its node 
 {{- if not (include "jitd.secretName" .) }}
 
 No credentials Secret is configured (credentials.existingSecret or
-credentials.values). jitd will start and serve its Setup page, but can't
-grant anything until it has Tailscale API credentials.
+credentials.values). jitd will start and serve its Integrations page, but can't
+grant anything until you paste Tailscale API credentials there.
 {{- end }}
 
 First start: without TS_AUTHKEY in the credentials, jitd logs a login URL and waits:

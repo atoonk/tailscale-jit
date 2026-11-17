@@ -24,8 +24,10 @@ Meanwhile, the approver opens the link and sees this:
 
 <img src="docs/approve.png" alt="The jitd approval page: who asked, for how long, why, and Approve or Decline" width="760">
 
-*Recorded with the real Claude Code and plugin, against jitd's demo mode:
-made-up people (Maya asks, Sam approves) and a stand-in for the ops host.*
+*Recorded with the real Claude Code, against jitd's demo mode: made-up
+people (Maya asks, Sam approves) and a stand-in for the ops host. The
+recording installs the earlier plugin; today it is the one `claude mcp add`
+command below.*
 
 > **Experimental.** This is a working proof of concept, tested on a real
 > tailnet. Expect rough edges.
