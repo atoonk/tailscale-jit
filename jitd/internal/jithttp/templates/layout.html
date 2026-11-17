@@ -23,8 +23,7 @@
     <a href="/admin/requests" {{if eq .Nav "admin-requests"}}class="on"{{end}}>All requests</a>
     <a href="/admin/workflows" {{if eq .Nav "admin-workflows"}}class="on"{{end}}>Approval flows</a>
     <a href="/admin/policy" {{if eq .Nav "admin-policy"}}class="on"{{end}}>Policy snippet</a>
-    <a href="/admin/setup" {{if eq .Nav "admin-setup"}}class="on"{{end}}>Setup{{if .SetupBad}} <span class="dot bad" title="The setup check failed"></span>{{end}}</a>
-    {{if .SlackOn}}<a href="/admin/slack" {{if eq .Nav "admin-slack"}}class="on"{{end}}>Slack{{if .SlackBad}} <span class="dot bad" title="Slack is not connected: {{.SlackBad}}"></span>{{end}}</a>{{end}}
+    <a href="/admin/integrations" {{if eq .Nav "admin-integrations"}}class="on"{{end}}>Integrations{{if or .SetupBad .OktaDot .SlackBad}} <span class="dot bad" title="An integration needs a look"></span>{{end}}</a>
     <a href="/api/docs">API docs</a>
     {{end}}
   </nav>
@@ -44,7 +43,13 @@
   <div id="flash" class="flash" hidden></div>
   {{if .OktaBad}}<div class="flash error" id="okta-problems"><b>Okta needs a look.</b>
     {{range .OktaBad}}<div>{{.Text}}{{with .RequestID}} · <a href="/requests/{{.}}">open the request</a>{{end}}</div>{{end}}
+    {{if and .OktaOn (ne .Tab "okta")}}<div><a href="/admin/integrations/okta">Open the Okta page</a> to see what to fix.</div>{{end}}
   </div>{{end}}
+  {{if .Tab}}<nav class="tabs" aria-label="Integrations">
+    <a href="/admin/integrations/tailscale" {{if eq .Tab "tailscale"}}class="on"{{end}}>Tailscale{{if .SetupBad}} <span class="dot bad" title="The Tailscale check failed"></span>{{end}}</a>
+    {{if .SlackOn}}<a href="/admin/integrations/slack" {{if eq .Tab "slack"}}class="on"{{end}}>Slack{{if .SlackBad}} <span class="dot bad" title="Slack is not connected: {{.SlackBad}}"></span>{{end}}</a>{{end}}
+    {{if .OktaOn}}<a href="/admin/integrations/okta" {{if eq .Tab "okta"}}class="on"{{end}}>Okta{{if .OktaDot}} <span class="dot bad" title="Okta needs a look"></span>{{end}}</a>{{end}}
+  </nav>{{end}}
   {{template "content" .}}
 </main>
 </body>

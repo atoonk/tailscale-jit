@@ -1,5 +1,5 @@
 {{define "content"}}
-{{$policy := .Data.Policy}}{{$slack := .Data.Slack}}{{$okta := .Data.Okta}}
+{{$policy := .Data.Policy}}{{$slack := .Data.Slack}}{{$okta := .Data.Okta}}{{$oktapage := .Data.OktaPage}}
 {{with .Data.Flow}}
 <div class="crumbs"><a href="/admin/workflows">Approval flows</a> › {{if .ID}}{{.Name}}{{else}}New{{end}}</div>
 <h1>{{if .ID}}Edit approval flow{{else}}New approval flow{{end}}</h1>
@@ -22,6 +22,8 @@
       <input name="okta_groups" value="{{oktagroups .OktaGroups}}" placeholder="AWS-Prod-ReadOnly, 00g1abcdEFGHijkl2345">
       <span class="hint">Group names or IDs, separated by commas. An approval adds the requester's Okta user (matched by login, then by email) to each group, and jitd removes them when the access ends. Okta memberships have no expiry of their own, so removal needs jitd running; a group the person was already in stays as it was. Only Okta-mastered groups can be used.{{if not $okta}} <b>Okta is not configured</b>: set <code>OKTA_ORG_URL</code> and either <code>OKTA_API_TOKEN</code> or <code>OKTA_CLIENT_ID</code> and <code>OKTA_PRIVATE_KEY</code> in jitd's env file.{{end}}</span>
     </label>
+    {{else if $oktapage}}
+    <p class="hint">An approval can also put the requester in Okta groups, for what Okta gates (AWS roles through single sign-on, say). <a href="/admin/integrations/okta">Connect Okta</a> first.</p>
     {{end}}
     <div class="field">
       <span class="label">Gives access to <span class="opt">optional</span></span>
@@ -106,7 +108,7 @@
         {{range .F.Channels}}<option value="{{.ID}}" data-name="{{.Name}}" {{if eq .ID $cur.Channel}}selected{{end}}>{{if .IsPrivate}}🔒 {{else}}# {{end}}{{.Name}}</option>{{end}}
         {{with .F.Missing}}<option value="{{.}}" data-name="{{$cur.ChannelName}}" selected>#{{or $cur.ChannelName .}} (not found in Slack)</option>{{end}}
       </select>
-      {{if not .F.Connected}}<span class="hint">Connect Slack on the <a href="/admin/slack">Slack page</a> first.</span>
+      {{if not .F.Connected}}<span class="hint">Connect Slack on the <a href="/admin/integrations/slack">Slack page</a> first.</span>
       {{else if .F.Error}}<span class="hint bad">Could not list the channels: {{.F.Error}}</span>
       {{else}}<span class="hint">The message updates as the request moves on. Public channels work as they are; a private one shows here once you <code>/invite @JIT access</code> into it.</span>{{end}}
     </label>

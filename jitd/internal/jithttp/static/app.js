@@ -118,6 +118,12 @@ document.addEventListener("submit", async (ev) => {
     } else if (f.dataset.form === "slack-test") {
       await api("POST", "/v1/slack/test", { channel: f.channel.value });
       flash("Sent. Have a look in Slack.", true);
+    } else if (f.dataset.form === "okta-save") {
+      await credSave(f, "/v1/okta", "Signing in to Okta…");
+    } else if (f.dataset.form === "ts-save") {
+      await credSave(f, "/v1/setup/credentials", "Trying it against Tailscale…");
+    } else if (f.dataset.form === "okta-check") {
+      await oktaGroup(f);
     }
   } catch (e) {
     flash(e.message);
@@ -426,6 +432,114 @@ document.addEventListener("click", (ev) => {
       flash(e.message);
       b.disabled = false;
       b.textContent = "Check again";
+    }
+  });
+})();
+
+// Okta and Tailscale pages: try the credentials and save them. What went
+// wrong stays in the form, next to what has to be fixed.
+async function credSave(f, path, busy) {
+  const body = {};
+  for (const el of f.querySelectorAll("input[name], textarea[name]")) body[el.name] = el.value.trim();
+  const err = f.querySelector(".formerr"), b = f.querySelector("button[type=submit]"), label = b.textContent;
+  err.hidden = true;
+  b.disabled = true;
+  b.textContent = busy;
+  try {
+    await api("PUT", path, body);
+    location.reload();
+  } catch (e) {
+    err.textContent = (e.data && e.data.error && e.data.error.message) || e.message;
+    err.hidden = false;
+    b.disabled = false;
+    b.textContent = label;
+  }
+}
+
+// Okta page: what jitd can tell about one group.
+async function oktaGroup(f) {
+  const out = document.getElementById("oktacheck-result");
+  const line = (ok, text) => {
+    const li = document.createElement("li");
+    li.className = ok ? "ok" : "bad";
+    li.textContent = text;
+    out.append(li);
+  };
+  out.replaceChildren();
+  out.hidden = false;
+  try {
+    const g = (await api("POST", "/v1/okta/check", { group: f.group.value.trim() })).group;
+    line(true, "Found " + g.name + " (" + g.id + ").");
+    if (g.manageable) line(true, "Okta manages its members itself, so they can be changed through the API.");
+    else line(false, "It is a " + g.type + " group: its members come from a directory, an app or a rule, so Okta does not let jitd change them. A flow cannot grant it.");
+    if (g.grant_allowed) line(true, "It is on the grant allowlist: a flow may grant it.");
+    else line(false, "It is not on the grant allowlist (OKTA_GRANT_ALLOWLIST): a flow may not grant it.");
+    if (g.read_allowed) line(true, "It is on the read allowlist: a flow may name okta:" + g.name + " as requesters or approvers.");
+    else line(false, "It is not on the read allowlist (OKTA_READ_ALLOWLIST): it cannot be used as an okta: requester or approver.");
+    if (g.members_error) line(false, "jitd cannot list its members: " + g.members_error);
+    else line(true, "jitd can list its members: " + g.members + (g.members_capped ? " or more." : "."));
+  } catch (e) {
+    line(false, (e.data && e.data.error && e.data.error.message) || e.message);
+  }
+}
+
+// Okta page: try the credentials again, and remove them with a second
+// click to confirm.
+(() => {
+  const check = document.getElementById("oktacheck");
+  if (check) check.addEventListener("click", async () => {
+    check.disabled = true;
+    check.textContent = "Checking…";
+    try {
+      await api("POST", "/v1/okta/check", {});
+      location.reload();
+    } catch (e) {
+      flash(e.message);
+      check.disabled = false;
+      check.textContent = "Check again";
+    }
+  });
+  const b = document.getElementById("oktaremove");
+  if (!b) return;
+  b.addEventListener("click", async () => {
+    if (b.dataset.armed !== "1") {
+      b.dataset.armed = "1";
+      b.textContent = "Click again to remove";
+      const warn = document.getElementById("oktaremove-warn");
+      if (warn) warn.hidden = false;
+      return;
+    }
+    b.disabled = true;
+    try {
+      // force: the page said how many memberships jitd still looks after.
+      await api("DELETE", "/v1/okta" + (Number(b.dataset.held) > 0 ? "?force=1" : ""));
+      location.reload();
+    } catch (e) {
+      flash(e.message);
+      b.disabled = false;
+    }
+  });
+})();
+
+// Tailscale page: forget the saved credential, with a second click.
+(() => {
+  const b = document.getElementById("tsremove");
+  if (!b) return;
+  b.addEventListener("click", async () => {
+    if (b.dataset.armed !== "1") {
+      b.dataset.armed = "1";
+      b.textContent = "Click again to remove";
+      const warn = document.getElementById("tsremove-warn");
+      if (warn) warn.hidden = false;
+      return;
+    }
+    b.disabled = true;
+    try {
+      await api("DELETE", "/v1/setup/credentials");
+      location.reload();
+    } catch (e) {
+      flash(e.message);
+      b.disabled = false;
     }
   });
 })();

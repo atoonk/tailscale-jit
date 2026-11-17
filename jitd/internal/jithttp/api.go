@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/atoonk/tailscale-jit/jitd/internal/jit"
+	"github.com/atoonk/tailscale-jit/jitd/internal/oktasetup"
 	"github.com/atoonk/tailscale-jit/jitd/internal/setup"
 	"github.com/atoonk/tailscale-jit/jitd/internal/slackbot"
 	"github.com/atoonk/tailscale-jit/jitd/internal/tsapi"
@@ -24,11 +25,14 @@ type Server struct {
 	Svc      *jit.Service
 	Resolver jit.Resolver
 	TS       tsapi.Client   // for the attribute passthrough endpoint
-	Setup    *setup.Checker // the setup check behind /admin/setup; nil hides it
-	Slack    *slackbot.Bot  // the Slack integration behind /admin/slack; nil hides it
-	MCP      http.Handler   // the MCP server at /mcp (jitmcp); nil leaves it out
-	JITTag   string         // tag used in the policy snippet, e.g. "tag:jit"
-	BaseURL  string         // e.g. "http://jit"; used for approval links in responses
+	Setup    *setup.Checker // the Tailscale credential and its check, behind /admin/integrations/tailscale; nil hides it
+	Slack    *slackbot.Bot  // the Slack integration behind /admin/integrations/slack; nil hides it
+	// Okta is the Okta credentials behind /admin/integrations/okta; nil
+	// hides the page.
+	Okta    *oktasetup.Manager
+	MCP     http.Handler // the MCP server at /mcp (jitmcp); nil leaves it out
+	JITTag  string       // tag used in the policy snippet, e.g. "tag:jit"
+	BaseURL string       // e.g. "http://jit"; used for approval links in responses
 	// Hosts are the names and addresses jitd answers to (Host header,
 	// without the port). A request for any other host is refused, so a page
 	// whose DNS name is rebound to jitd's address cannot act as the viewer.
@@ -208,10 +212,68 @@ func (s *Server) Handler() http.Handler {
 		s.Log.Info("setup check requested", "by", id.Login)
 		writeJSON(w, 200, s.Setup.Run(r.Context()))
 	}))
+	// A credential pasted on the page: tried first, kept only if it works.
+	mux.HandleFunc("PUT /v1/setup/credentials", s.withAdmin(func(w http.ResponseWriter, r *http.Request, id jit.Identity) {
+		if s.Setup == nil {
+			writeErr(w, &jit.Error{Code: "not_found", Status: 404, Message: "no setup check in this build"})
+			return
+		}
+		var in setup.Input
+		if !decode(w, r, &in) {
+			return
+		}
+		out, err := s.Setup.Save(r.Context(), id.Login, in)
+		s.reply(w, http.StatusOK, out, err)
+	}))
+	mux.HandleFunc("DELETE /v1/setup/credentials", s.withAdmin(func(w http.ResponseWriter, r *http.Request, id jit.Identity) {
+		if s.Setup == nil {
+			writeErr(w, &jit.Error{Code: "not_found", Status: 404, Message: "no setup check in this build"})
+			return
+		}
+		out, err := s.Setup.Remove(r.Context(), id.Login)
+		s.reply(w, http.StatusOK, out, err)
+	}))
 	mux.HandleFunc("GET /v1/policy-snippet", s.withAdmin(func(w http.ResponseWriter, r *http.Request, _ jit.Identity) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		snip, _ := s.Svc.CheckedSnippet(r.Context(), s.JITTag, r.URL.Query().Get("missing") == "1")
 		io.WriteString(w, snip)
+	}))
+
+	mux.HandleFunc("GET /v1/okta", s.withOkta(func(w http.ResponseWriter, r *http.Request, _ jit.Identity) {
+		writeJSON(w, http.StatusOK, s.Okta.Status())
+	}))
+	mux.HandleFunc("PUT /v1/okta", s.withOkta(func(w http.ResponseWriter, r *http.Request, id jit.Identity) {
+		var in oktasetup.Input
+		if !decode(w, r, &in) {
+			return
+		}
+		out, err := s.Okta.Save(r.Context(), id, in)
+		s.reply(w, http.StatusOK, out, err)
+	}))
+	mux.HandleFunc("DELETE /v1/okta", s.withOkta(func(w http.ResponseWriter, r *http.Request, id jit.Identity) {
+		out, err := s.Okta.Remove(r.Context(), id, r.URL.Query().Get("force") == "1")
+		s.reply(w, http.StatusOK, out, err)
+	}))
+	// With a group: what jitd can tell about it, reading only. Without:
+	// try the credentials now.
+	mux.HandleFunc("POST /v1/okta/check", s.withOkta(func(w http.ResponseWriter, r *http.Request, id jit.Identity) {
+		var in struct {
+			Group string `json:"group"`
+		}
+		if !decode(w, r, &in) {
+			return
+		}
+		if strings.TrimSpace(in.Group) == "" {
+			s.Svc.OktaCheckNow(r.Context())
+			writeJSON(w, http.StatusOK, map[string]any{"status": s.Okta.Status()})
+			return
+		}
+		g, err := s.Svc.CheckOktaGroup(r.Context(), in.Group)
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"status": s.Okta.Status(), "group": g})
 	}))
 
 	mux.HandleFunc("GET /v1/slack", s.withSlack(func(w http.ResponseWriter, r *http.Request, _ jit.Identity) {
@@ -414,6 +476,17 @@ func (s *Server) withSlack(h func(http.ResponseWriter, *http.Request, jit.Identi
 	return s.withAdmin(func(w http.ResponseWriter, r *http.Request, id jit.Identity) {
 		if s.Slack == nil {
 			writeErr(w, &jit.Error{Code: "not_found", Status: http.StatusNotFound, Message: "no Slack integration in this build"})
+			return
+		}
+		h(w, r, id)
+	})
+}
+
+// withOkta is withAdmin for the endpoints behind the Okta page.
+func (s *Server) withOkta(h func(http.ResponseWriter, *http.Request, jit.Identity)) http.HandlerFunc {
+	return s.withAdmin(func(w http.ResponseWriter, r *http.Request, id jit.Identity) {
+		if s.Okta == nil {
+			writeErr(w, &jit.Error{Code: "not_found", Status: http.StatusNotFound, Message: "no Okta setup in this build"})
 			return
 		}
 		h(w, r, id)

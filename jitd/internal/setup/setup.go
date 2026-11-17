@@ -6,6 +6,7 @@ package setup
 
 import (
 	"bufio"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -50,6 +51,48 @@ type Credentials struct {
 	FileWarning string   `json:"file_warning,omitempty"`
 	FromFile    []string `json:"from_file,omitempty"` // variable names found in the file
 	FromEnv     []string `json:"from_env,omitempty"`  // variable names taken from the environment
+
+	// Source is "env" when the credential comes from the file or the
+	// environment, "ui" when it was saved on the page, "" when there is none.
+	Source string `json:"source,omitempty"`
+	// CanSave: this jitd keeps credentials pasted on the page.
+	CanSave bool `json:"can_save,omitempty"`
+	// What was saved on the page, never the secret: the OAuth client's ID,
+	// or the last four characters of an API access token.
+	ClientID string    `json:"client_id,omitempty"`
+	KeyHint  string    `json:"key_hint,omitempty"`
+	SavedBy  string    `json:"saved_by,omitempty"`
+	SavedAt  time.Time `json:"saved_at,omitzero"`
+	// Shadowed: a credential is saved on the page, but the file or the
+	// environment sets one too, and that one wins.
+	Shadowed   bool   `json:"shadowed,omitempty"`
+	SavedError string `json:"saved_error,omitempty"` // the saved one could not be read
+}
+
+// Input is a credential pasted on the page: an OAuth client, or an API
+// access token.
+type Input struct {
+	ClientID     string `json:"client_id"`
+	ClientSecret string `json:"client_secret"`
+	APIKey       string `json:"api_key"`
+}
+
+// saved is what the settings table keeps under settingKey.
+type saved struct {
+	ClientID     string    `json:"client_id,omitempty"`
+	ClientSecret string    `json:"client_secret,omitempty"`
+	APIKey       string    `json:"api_key,omitempty"`
+	SavedBy      string    `json:"saved_by,omitempty"`
+	SavedAt      time.Time `json:"saved_at"`
+}
+
+const settingKey = "tailscale"
+
+func (s saved) vars() map[string]string {
+	if s.APIKey != "" {
+		return map[string]string{"TS_API_KEY": s.APIKey}
+	}
+	return map[string]string{"TS_OAUTH_CLIENT_ID": s.ClientID, "TS_OAUTH_CLIENT_SECRET": s.ClientSecret}
 }
 
 // Result is what the last check found.
@@ -69,6 +112,9 @@ type Result struct {
 // Checker runs the setup check and keeps the last result.
 type Checker struct {
 	EnvFile string // KEY=VALUE file with the credentials; may not exist
+	// Store keeps a credential pasted on the page (Save); nil means the file
+	// and the environment are the only sources. Those win when they hold one.
+	Store   *jit.Store
 	APIBase string
 	Tag     string // the tag the node should run as, e.g. "tag:jit"
 	// Node returns the node jitd runs as; nil or an error means unknown.
@@ -102,6 +148,11 @@ func (c *Checker) Last() *Result {
 func (c *Checker) Run(ctx context.Context) *Result {
 	c.run1.Lock()
 	defer c.run1.Unlock()
+	return c.runAndKeep(ctx)
+}
+
+// runAndKeep is Run for a caller that holds run1.
+func (c *Checker) runAndKeep(ctx context.Context) *Result {
 	res := c.run(ctx)
 	c.mu.Lock()
 	c.last = res
@@ -121,16 +172,35 @@ func (c *Checker) Run(ctx context.Context) *Result {
 }
 
 func (c *Checker) run(ctx context.Context) *Result {
-	res := &Result{CheckedAt: time.Now(), Tag: c.Tag}
+	// Credentials: the file first, the environment for anything it lacks,
+	// and the one saved on the page when those hold none.
+	vars, cred := c.credentials()
+	return c.check(ctx, vars, cred, c.hint(cred), c.setTarget)
+}
+
+// hint says where to put a working credential, for the fix under a failed
+// check.
+func (c *Checker) hint(cred Credentials) string {
+	file := fmt.Sprintf("put TS_OAUTH_CLIENT_ID and TS_OAUTH_CLIENT_SECRET in %s (one KEY=VALUE per line), then click Check again.", cred.File)
+	switch {
+	case cred.Source == "ui":
+		return "Paste a working one under Replace the credential on this page."
+	case c.Store != nil && cred.Kind == "" && cred.FileError == "":
+		return "Paste an OAuth client under Connect Tailscale on this page, or " + file
+	}
+	return "P" + file[1:]
+}
+
+// check tries vars against the Tailscale API the way an approval uses
+// them. adopt receives the client to serve with afterwards, or nil when
+// the credential was rejected outright.
+func (c *Checker) check(ctx context.Context, vars map[string]string, cred Credentials, fileHint string, adopt func(tsapi.Client)) *Result {
+	res := &Result{CheckedAt: time.Now(), Tag: c.Tag, Credentials: cred}
 	// Detached from the caller: an admin leaving the page mid-check must not
 	// turn into a "could not reach the API" result.
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 60*time.Second)
 	defer cancel()
 
-	// Credentials: the file first, the environment for anything it lacks.
-	vars, cred := c.credentials()
-	res.Credentials = cred
-	fileHint := fmt.Sprintf("Put TS_OAUTH_CLIENT_ID and TS_OAUTH_CLIENT_SECRET in %s (one KEY=VALUE per line), then click Check again.", cred.File)
 	step := func(name string, ok bool, detail, fix string) bool {
 		res.Checks = append(res.Checks, Check{Name: name, OK: ok, Detail: detail, Fix: fix})
 		return ok
@@ -184,6 +254,9 @@ func (c *Checker) run(ctx context.Context) *Result {
 		if len(cred.FromEnv) > 0 {
 			src = append(src, strings.Join(cred.FromEnv, " and ")+" from the environment")
 		}
+		if cred.Source == "ui" {
+			src = append(src, "saved on this page")
+		}
 		fix := ""
 		if cred.Kind == "api_key" {
 			fix = "API access tokens expire after at most 90 days; an OAuth client does not. Consider switching before this one expires."
@@ -192,7 +265,7 @@ func (c *Checker) run(ctx context.Context) *Result {
 	}
 	if cred.Kind == "" || cred.FileError != "" {
 		skip("Policy file read", "Posture attributes read", "Posture attributes write")
-		c.setTarget(nil)
+		adopt(nil)
 		return res
 	}
 
@@ -208,7 +281,7 @@ func (c *Checker) run(ctx context.Context) *Result {
 	if err != nil {
 		step("Policy file read", false, err.Error(), fileHint)
 		skip("Posture attributes read", "Posture attributes write")
-		c.setTarget(nil)
+		adopt(nil)
 		return res
 	}
 
@@ -255,11 +328,11 @@ func (c *Checker) run(ctx context.Context) *Result {
 	}
 	res.OK = ok && allOK(res.Checks)
 	if rejected {
-		c.setTarget(nil)
+		adopt(nil)
 	} else {
 		// It works, or nothing said it does not (the API was unreachable):
 		// serve with it. A wrong node tag does not affect API calls.
-		c.setTarget(client)
+		adopt(client)
 	}
 	return res
 }
@@ -321,7 +394,109 @@ func (c *Checker) credentials() (map[string]string, Credentials) {
 		}
 	}
 	cred.Kind = tsapi.CredentialKind(vars)
+	if cred.Kind != "" {
+		cred.Source = "env"
+	}
+	if c.Store == nil {
+		return vars, cred
+	}
+	cred.CanSave = true
+	var s saved
+	switch found, err := c.Store.GetSetting(settingKey, &s); {
+	case err != nil:
+		cred.SavedError = err.Error()
+	case !found:
+	case cred.Kind != "" || cred.FileError != "":
+		// The file and the environment win, and an unreadable file may
+		// well hold one: whoever runs the host has the last word.
+		cred.Shadowed = true
+	default:
+		vars = s.vars()
+		cred.Kind, cred.Source = tsapi.CredentialKind(vars), "ui"
+		cred.FromFile, cred.FromEnv = nil, nil
+		cred.ClientID, cred.KeyHint = s.ClientID, lastFour(s.APIKey)
+		cred.SavedBy, cred.SavedAt = s.SavedBy, s.SavedAt
+	}
 	return vars, cred
+}
+
+func lastFour(secret string) string {
+	if len(secret) < 12 {
+		return ""
+	}
+	return "…" + secret[len(secret)-4:]
+}
+
+// apiChecks are the checks that try the credential itself.
+var apiChecks = []string{"Policy file read", "Posture attributes read", "Posture attributes write"}
+
+// Save tries a credential pasted on the page against the Tailscale API
+// and keeps it only if every check passes; jitd then serves with it. The
+// result of a refused one says which check failed.
+func (c *Checker) Save(ctx context.Context, by string, in Input) (*Result, error) {
+	if c.Store == nil {
+		return nil, &jit.Error{Code: "not_found", Status: http.StatusNotFound, Message: "this jitd does not keep credentials; set them in its env file"}
+	}
+	bad := func(msg string) (*Result, error) {
+		return nil, &jit.Error{Code: "bad_request", Status: http.StatusBadRequest, Message: msg}
+	}
+	s := saved{ClientID: strings.TrimSpace(in.ClientID), ClientSecret: strings.TrimSpace(in.ClientSecret), APIKey: strings.TrimSpace(in.APIKey), SavedBy: by, SavedAt: time.Now().UTC()}
+	switch {
+	case s.APIKey != "" && (s.ClientID != "" || s.ClientSecret != ""):
+		return bad("Paste an OAuth client or an API access token, not both.")
+	case s.APIKey == "" && (s.ClientID == "" || s.ClientSecret == ""):
+		return bad("Paste both the OAuth client's ID and its secret.")
+	case strings.HasPrefix(s.ClientID, "tskey-client-") && !strings.HasPrefix(s.ClientSecret, "tskey-client-"):
+		return bad("That looks like the secret in the client ID field: the secret starts with tskey-client-, the client ID is the short one.")
+	}
+	c.run1.Lock()
+	defer c.run1.Unlock()
+	if _, cur := c.credentials(); cur.Source == "env" || cur.FileError != "" {
+		return nil, &jit.Error{Code: "conflict", Status: http.StatusConflict,
+			Message: fmt.Sprintf("The Tailscale credential is set in %s or in jitd's environment, and that one wins. Change it there, or take it out there first.", c.EnvFile)}
+	}
+	vars := s.vars()
+	tried := c.check(ctx, vars, Credentials{File: c.EnvFile, Kind: tsapi.CredentialKind(vars), Source: "ui", CanSave: true}, "Nothing was saved.", func(tsapi.Client) {})
+	for _, name := range apiChecks {
+		for _, ch := range tried.Checks {
+			if ch.Name != name || ch.OK {
+				continue
+			}
+			msg := name + " failed"
+			if ch.Skipped {
+				msg = name + " could not run"
+			}
+			if ch.Detail != "" {
+				msg += ": " + ch.Detail
+			}
+			return bad(strings.TrimSpace(msg + ". " + cmp.Or(ch.Fix, "Nothing was saved.")))
+		}
+	}
+	if err := c.Store.PutSetting(settingKey, s); err != nil {
+		return nil, err
+	}
+	if c.Log != nil {
+		c.Log.Info("Tailscale API credential saved on the setup page", "by", by, "kind", tsapi.CredentialKind(vars))
+	}
+	return c.runAndKeep(ctx), nil
+}
+
+// Remove forgets the credential saved on the page. Approvals, revokes and
+// clean-up fail until there is one again, unless the file or the
+// environment holds one.
+func (c *Checker) Remove(ctx context.Context, by string) (*Result, error) {
+	if c.Store == nil {
+		return nil, &jit.Error{Code: "not_found", Status: http.StatusNotFound, Message: "this jitd does not keep credentials"}
+	}
+	c.run1.Lock()
+	defer c.run1.Unlock()
+	if err := c.Store.DeleteSetting(settingKey); err != nil {
+		return nil, err
+	}
+	if c.Log != nil {
+		c.Log.Warn("Tailscale API credential saved on the setup page removed", "by", by)
+	}
+	return c.runAndKeep(ctx), nil
 }
 
 // ReadEnvFile parses KEY=VALUE lines. Blank lines and # comments are

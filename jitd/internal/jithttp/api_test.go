@@ -333,8 +333,8 @@ func TestWebPages(t *testing.T) {
 		{"nobody", "/requests", 200, []string{"No identity"}},
 		{"alice", "/requests/req_missing", 404, []string{"not found"}},
 		{"alice", "/static/app.js", 200, []string{"/v1/requests"}},
-		{"root", "/admin/setup", 200, []string{"no setup check", "Setup"}},
-		{"alice", "/admin/setup", 403, []string{"Admins only"}},
+		{"root", "/admin/integrations/tailscale", 200, []string{"no setup check", "Tailscale"}},
+		{"alice", "/admin/integrations/tailscale", 403, []string{"Admins only"}},
 	} {
 		status, body := get(tc.user, tc.path)
 		if status != tc.status {
@@ -390,7 +390,7 @@ func TestSetupPage(t *testing.T) {
 	if res.OK || !strings.Contains(res.Checks[1].Detail, "does not exist") {
 		t.Fatalf("expected a failed check on the missing file, got %+v", res.Checks)
 	}
-	status, body := getPage(t, srv, "root", "/admin/setup")
+	status, body := getPage(t, srv, "root", "/admin/integrations/tailscale")
 	if status != 200 || !strings.Contains(body, "Something needs fixing") || !strings.Contains(body, envFile) {
 		t.Fatalf("page: %d %q", status, body)
 	}
@@ -402,7 +402,7 @@ func TestSetupPage(t *testing.T) {
 	if !res.OK {
 		t.Fatalf("after fixing the file: %+v", res.Checks)
 	}
-	status, body = getPage(t, srv, "root", "/admin/setup")
+	status, body = getPage(t, srv, "root", "/admin/integrations/tailscale")
 	if status != 200 || !strings.Contains(body, "Everything works") || strings.Contains(body, "hunter2value") {
 		t.Fatalf("page after fix: %d, shows secret=%v", status, strings.Contains(body, "hunter2value"))
 	}

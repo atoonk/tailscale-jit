@@ -292,4 +292,18 @@ pre.code { background: #1f1e1e; color: #ece9e6; padding: 18px 20px; border-radiu
 .slackform { margin-top: 10px; gap: 12px; max-width: 520px; }
 .slackflows td { vertical-align: top; padding-right: 14px; }
 .card table.plain td:first-child { padding-right: 14px; }
+
+/* Okta */
+.oktaform { margin-top: 10px; gap: 12px; max-width: 560px; }
+.oktaform textarea { font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; resize: vertical; }
+.oktaform .formerr { margin: 0; }
+details.more { margin: 4px 0 14px; }
+.tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin: -6px 0 24px; }
+.tabs a { padding: 8px 14px; color: var(--muted); font-weight: 500; border-bottom: 2px solid transparent; margin-bottom: -1px; }
+.tabs a:hover { color: var(--ink); text-decoration: none; }
+.tabs a.on { color: var(--ink); border-bottom-color: var(--accent); }
+details.more > summary { cursor: pointer; color: var(--accent); font-weight: 500; }
+details.more[open] > summary { margin-bottom: 10px; }
+.oktaresult { margin-top: 12px; }
+.oktaresult + p { margin-top: 12px; }
 .ok { color: var(--ok); }

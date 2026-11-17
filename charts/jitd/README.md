@@ -10,7 +10,9 @@ There is no Service or Ingress. jitd listens only on its tailnet address, so the
 
 Do steps 1 and 2 of jitd's [Install](../../jitd/README.md#install) guide first:
 1. In the policy file, add `tag:jit` and a grant that lets people reach it.
-2. Create an OAuth client for the Tailscale API and, optionally, an auth key tagged `tag:jit`.
+2. Create an auth key tagged `tag:jit` (optional: without one, jitd logs a login URL).
+
+The OAuth client for the Tailscale API (step 4 of that guide) can go in the Secret too, as below. Leave it out and you paste it on jitd's Integrations page after the install; it is then kept in jitd's database on the data volume.
 
 Then put the credentials in a Secret, using whatever you normally use for secrets (External Secrets, Sealed Secrets, SOPS, ...). For example:
 
@@ -71,7 +73,7 @@ The main ones, all in [values.yaml](values.yaml):
 | `persistence.*` | 1Gi, `ReadWriteOnce` | The data volume. `existingClaim` reuses one. |
 | `extraArgs` | `[]` | More jitd [flags](../../jitd/README.md#flags) |
 
-The credentials Secret and `env` are environment variables. jitd also reads the env file `/data/env` on the data volume, which its Setup page can write. Where a key is set in both, the file wins.
+The credentials Secret and `env` are environment variables. jitd also reads the env file `/data/env` on the data volume, Where a key is set in both, the file wins.
 
 ## Upgrading jitd
 
@@ -81,6 +83,6 @@ Set `release.version` and both `release.sha256` entries from the new release's `
 
 - **One replica, always.** Two jitd processes must never share the database or the node identity. The chart fixes `replicas: 1` and uses the `Recreate` strategy.
 - **Keep the volume.** It holds the node identity (`tsnet-state`) and every flow and request (`jit.db`). The claim is annotated `helm.sh/resource-policy: keep`, so `helm uninstall` leaves it. Lose it and jitd joins the tailnet as a new machine, with nothing in it. See [Backups](../../jitd/README.md#backups-and-digging-into-the-history).
-- **No probes.** The kubelet can't reach jitd's tailnet-only listener. Its health shows in the admin console and on its Setup page.
+- **No probes.** The kubelet can't reach jitd's tailnet-only listener. Its health shows in the admin console and on its Integrations page.
 - **Okta removals need jitd running.** If you use Okta groups, memberships are removed by jitd itself when access ends. Keep the pod running, and see the Okta section of jitd's README.
 - **Hardened by default.** The pod runs as UID 65534 with a read-only root filesystem and no capabilities, and it mounts no service account token: jitd never calls the Kubernetes API.

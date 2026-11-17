@@ -183,7 +183,7 @@ type Switchable struct {
 }
 
 // ErrUnconfigured is the error every call returns while no client is set.
-var ErrUnconfigured = errors.New("the Tailscale API credentials are not configured or do not work; an admin can fix this on the Setup page (/admin/setup)")
+var ErrUnconfigured = errors.New("the Tailscale API credentials are not configured or do not work; an admin can fix this on the Tailscale page under Integrations (/admin/integrations/tailscale)")
 
 // Set replaces the backing client; nil makes calls fail again.
 func (s *Switchable) Set(c Client) {

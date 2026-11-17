@@ -86,16 +86,12 @@ can't see Tailscale roles), and a group can't contain an autogroup. Adding or
 removing a jitd admin is then a policy edit, with no restart; jitd picks it up
 within a minute.
 
-### 2. Create the credentials
+### 2. Create an auth key
 
-jitd needs two things from the admin console, and you make both now: an
-**auth key**, which it uses once to join the tailnet, and an **OAuth
-client**, which it uses from then on to set and remove posture
-attributes. Both are shown only once, so paste them somewhere safe as you
-go; step 3 asks for them. You need an Owner, Admin, IT admin or Network
-admin role to create them.
-
-**An auth key, for jitd's own node.**
+jitd joins the tailnet as a machine of its own, and an **auth key** is what
+lets it in. It is used once, on the first start. You need an Owner, Admin,
+IT admin or Network admin role to create one. (The credential for the
+Tailscale API comes later, in step 4, from jitd's own page.)
 
 1. Open **Settings → Keys**
    ([direct link](https://console.tailscale.com/admin/settings/keys)) and
@@ -116,29 +112,6 @@ admin role to create them.
    If you'd rather not make a key at all, you can skip it: jitd then logs
    a login URL on its first start. Open it, approve the machine, and tag
    it `tag:jit` yourself in the admin console.
-
-**An OAuth client, for the Tailscale API.**
-
-1. Open **Settings → Trust credentials → New credential**
-   ([direct link](https://console.tailscale.com/admin/settings/trust-credentials/add))
-   and pick **OAuth**.
-2. Add a description such as `jitd`.
-3. On the **Scopes** step, give it these three:
-
-   - **Devices → Posture attributes: Write**, so it can set and remove the
-     attributes. This is how an approval turns access on and off.
-   - **Devices → Core: Read**, so it can list a person's devices when they
-     request access from Slack (`/jit request`), where it can't tell which
-     device they are on.
-   - **Policy file: Read**, so it can resolve `group:` approvers, check each
-     flow against the policy, and tell you what to add to it.
-
-4. Create the client, then copy the **client ID** and the **secret**
-   (`tskey-client-...`). The secret is shown only once.
-
-An API access token (`TS_API_KEY=tskey-api-...`) works in place of the
-OAuth client, but it expires within 90 days and then jitd stops being able
-to grant anything. Use the OAuth client.
 
 ### 3. Run it
 
@@ -177,19 +150,6 @@ memory to compile: `go install github.com/atoonk/tailscale-jit/jitd@latest`
 puts `jitd` in `~/go/bin` without a clone, or clone the repository and run
 `go build -o jitd ./jitd`.
 
-**Put the OAuth client in a file** that only you can read, with the client
-ID and secret from step 2 in place of the `...`. On macOS jitd reads
-`~/Library/Application Support/jitd/env` unless you pass `-env-file`:
-
-```sh
-mkdir -p ~/Library/Application\ Support/jitd
-cat > ~/Library/Application\ Support/jitd/env <<'EOF'
-TS_OAUTH_CLIENT_ID=...
-TS_OAUTH_CLIENT_SECRET=tskey-client-...
-EOF
-chmod 600 ~/Library/Application\ Support/jitd/env
-```
-
 **Start it.** Pass the auth key from step 2 (just this once: later starts
 don't need it), and make the `group:jit-admins` group the admins, plus
 your own login as a fallback. Put your key and your login in place of
@@ -200,7 +160,7 @@ TS_AUTHKEY=tskey-auth-... ./jitd -admins group:jit-admins,you@example.com
 ```
 
 When the log says `serving url=http://jit.<your-tailnet>.ts.net/`, open
-**http://jit/** from any device on the tailnet and carry on with step 4.
+**http://jit/** from any device on the tailnet and carry on with step 4, which connects it to the Tailscale API.
 
 While you're trying it out:
 
@@ -262,22 +222,12 @@ the right file for this machine.
 move to a new release, see
 [Upgrading to a new release](#upgrading-to-a-new-release).
 
-**3. Make a user and give it the OAuth client.** jitd needs no privileges
-of its own. Fill in the client ID and secret from step 2 in place of the
-`...` before you run this; the file ends up readable only by the `jitd`
-user:
+**3. Make a user.** jitd needs no privileges of its own:
 
 ```sh
 sudo useradd --system --home-dir /var/lib/jitd --create-home jitd
 sudo install -d -o jitd -m 700 /etc/jitd
-sudo -u jitd sh -c 'umask 077; cat > /etc/jitd/env' <<'EOF'
-TS_OAUTH_CLIENT_ID=...
-TS_OAUTH_CLIENT_SECRET=tskey-client-...
-EOF
 ```
-
-(Or write the same two lines with `sudo -u jitd vi /etc/jitd/env`, then
-`sudo chmod 600 /etc/jitd/env`.)
 
 **4. Write the service.** Open an empty unit file:
 
@@ -346,8 +296,9 @@ instances against the same database file.
 The Helm chart in [`charts/jitd`](../charts/jitd) runs jitd as one pod.
 An init container downloads the release binary and checks its checksum,
 and a persistent volume keeps the node identity and the database. Put the
-two credentials from step 2 in a Secret, then install the chart from a
-checkout of this repository:
+auth key from step 2 in a Secret, then install the chart from a checkout
+of this repository. (The same Secret can hold the OAuth client from step
+4, which then never touches the database.)
 
 ```sh
 helm install jitd ./charts/jitd -n jitd \
@@ -391,22 +342,67 @@ Things to know:
 - **No auth key?** Then jitd logs a login URL instead (path B: find it
   with `sudo journalctl -u jitd`; path C: `kubectl -n jitd logs deploy/jitd`).
   Open it, approve the machine, and tag it `tag:jit` in the admin console.
-- **Wrong credential, or none?** jitd still starts and serves the UI; it
-  just can't grant anything. Step 4 says what's wrong, and a fixed env
-  file needs no restart.
+- **No API credential yet?** jitd still starts and serves the UI; it just
+  can't grant anything until step 4 is done.
 
-### 4. Check the setup
+### 4. Connect it to the Tailscale API
 
-As an admin, open **http://jit/admin/setup**. It tests the credential the
-same way an approval will use it:
+As an admin, open **http://jit/admin/integrations**. The first tab,
+**Tailscale**, has the steps and a form. jitd needs an **OAuth client** to
+set and remove posture attributes, which is how an approval turns access
+on and off:
+
+1. Open **Settings → Trust credentials → New credential**
+   ([direct link](https://console.tailscale.com/admin/settings/trust-credentials/add))
+   and pick **OAuth**.
+2. Add a description such as `jitd`.
+3. On the **Scopes** step, give it these three:
+
+   - **Devices → Posture attributes: Write**, so it can set and remove the
+     attributes. This is how an approval turns access on and off.
+   - **Devices → Core: Read**, so it can list a person's devices when they
+     request access from Slack (`/jit request`), where it can't tell which
+     device they are on.
+   - **Policy file: Read**, so it can resolve `group:` approvers, check each
+     flow against the policy, and tell you what to add to it.
+
+4. Create the client, then copy the **client ID** and the **secret**
+   (`tskey-client-...`). The secret is shown only once.
+5. Paste both into the form on the page and click **Test and save**.
+
+jitd tries the credential before it keeps it, the same way an approval
+will use it:
 
 1. It reads the policy file.
 2. It reads jitd's own device attributes.
 3. It writes a throwaway attribute (`custom:jit_selfcheck`) on jitd's own
    node, and deletes it again.
 
-If something fails, the page says what to fix and where. It never shows the
-credential. Fix the file, then click **Check again**. No restart needed.
+If something fails, the page says what to fix and nothing is saved. When
+everything passes, the client is stored in jitd's database and used from
+then on, with no restart. The secret is never shown again, on the page or
+in the API. **Replace** takes a new client the same way, and **Remove**
+forgets it.
+
+An API access token (`tskey-api-...`) works in place of the OAuth client
+(the page takes one too), but it expires within 90 days and then jitd
+stops being able to grant anything. Use the OAuth client.
+
+**Rather keep the secret out of the database?** Put it in jitd's env file
+(`-env-file`; `/etc/jitd/env` in path B) or in its environment (the
+Secret in path C) instead:
+
+```sh
+TS_OAUTH_CLIENT_ID=...
+TS_OAUTH_CLIENT_SECRET=tskey-client-...
+```
+
+A credential set there wins over one saved on the page, and the page then
+shows the check without the form. A changed file needs no restart: click
+**Check again**.
+
+The other tabs under Integrations (Slack, Okta) are optional and work the
+same way: steps, a form, and a test before anything is saved.
 
 ### 5. Create an approval flow
 
@@ -555,7 +551,7 @@ access.
 - **My requests:** cancel a pending request, or end your access early.
 - **Approvals** show up on the overview: approve, or decline with a reason.
 - **Manage** (admins): every request, the approval flows, the policy
-  snippet, Setup, Slack, and the API docs.
+  snippet, Integrations (Tailscale, Slack, Okta), and the API docs.
 - **Help** (`/help`) explains all of this inside the app.
 
 Pages update on their own when something changes.
@@ -603,7 +599,21 @@ roles through SSO, admin roles in SaaS apps, anything assigned by group.
 An approval adds the requester's Okta user to each of the flow's groups;
 when the access expires or is revoked, jitd takes them out again.
 
-**Set it up.** jitd signs in to Okta in one of two ways.
+**Set it up.** As an admin, open **Integrations → Okta** in jitd. The page
+walks through the steps below, takes the credentials in a form, and signs
+in to Okta with them before it saves anything; if Okta refuses, it says
+which step to look at again. Afterwards the page shows whether Okta still
+accepts the credentials, the groups jitd may use and how many memberships
+it holds, and **Test a group** tells you whether a flow could use a group.
+Nothing needs a restart.
+
+Credentials saved on the page are kept in jitd's database (like the Slack
+tokens) and are never shown again, on the page or in the API. To keep them
+out of the database, set them in the env file or the environment instead
+(below). Credentials set there win over the saved ones, and the page then
+shows the status and the test only.
+
+jitd signs in to Okta in one of two ways.
 
 *As an API service app* (recommended). The app has its own identity in
 the Okta system log, only the scopes you grant it, and its own admin role,
@@ -623,7 +633,8 @@ admin console:
    manage. Scopes say what kind of call the app may make; the role says on
    which groups.
 
-Then add to jitd's env file:
+Then paste the Okta address, the client ID and the private key on the
+Okta page. Or add them to jitd's env file:
 
 ```sh
 OKTA_ORG_URL=https://example.okta.com
@@ -642,7 +653,8 @@ environment (a Kubernetes Secret, say), real line breaks work too.
 *With an API token.* Create one under **Security → API → Tokens**, ideally
 while signed in as a dedicated service account that holds the **Group
 Administrator** role limited to the groups jitd should manage: the token
-can do whatever that account can. Then:
+can do whatever that account can. Then paste it under **Use an API token
+instead** on the Okta page, or set:
 
 ```sh
 OKTA_ORG_URL=https://example.okta.com
@@ -650,8 +662,8 @@ OKTA_API_TOKEN=00a...
 ```
 
 Set one or the other, not both. jitd re-reads the file on use, so no
-restart is needed; at startup it logs which one it uses, or why the
-credentials it found are unusable. The flow form then
+restart is needed; at startup it logs which one it uses and where it came
+from, or why the credentials it found are unusable. The flow form then
 shows an **Okta groups** field: group names or IDs (`00g…`), separated by
 commas. jitd looks each one up when you save, and stores its ID.
 
@@ -686,7 +698,8 @@ How it behaves:
   the clean-up: memberships jitd added are still its to remove. While any
   are in place the admins' banner says how many and that jitd cannot remove
   them until Okta is configured again, and it removes them as soon as it
-  is.
+  is. **Remove** on the Okta page says how many it holds and asks for a
+  second click.
 - **All or nothing.** If adding any group fails, jitd takes back what it
   already added (and the posture attribute) and the request stays pending,
   so the approver can try again.
@@ -733,8 +746,10 @@ groups.
 - The token needs read access to users and groups (Read-Only Administrator
   is enough for this part).
 
-**Limit which groups jitd uses.** Two optional allowlists in the env file,
-re-read on use like the credentials:
+**Limit which groups jitd uses.** Two optional allowlists in the env file
+or the environment, re-read on use like the credentials. The Okta page
+shows them but cannot change them, on purpose: they are how whoever runs
+jitd limits what an admin in the browser can make it do.
 
 ```sh
 # Groups a flow may add people to.
@@ -767,7 +782,7 @@ fixed. jitd logs the lists in effect at startup.
 ### Slack
 
 jitd can post access requests to Slack and let approvers approve or decline
-from the message. Set it up on **Manage → Slack**; it takes about two
+from the message. Set it up on **Integrations → Slack**; it takes about two
 minutes and no restart:
 
 1. **Create the Slack app.** The button opens Slack's "create app" page
@@ -977,8 +992,8 @@ Back up the database first, as in step 1 below.
 
 6. **Check it.** Open **http://jit/**: your flows, requests and history
    should all be there, and anything granted is still running. Then open
-   **http://jit/admin/setup**, which tests the credential the same way an
-   approval does.
+   **http://jit/admin/integrations**, which tests the Tailscale API
+   credential the same way an approval does.
 
 **Going back.** If the new version misbehaves:
 
@@ -1071,7 +1086,7 @@ expired attribute about a minute after the expiry time (we measured about
 | `-admins` | none | who may manage flows and see every request: logins, `group:`, `tag:` (not `autogroup:admin`; use a group such as `group:jit-admins`). With a group, adding an admin is a policy edit that takes effect within a minute, no restart |
 | `-state-dir` | `tsnet-state` | the node's identity; keep it |
 | `-data` | `jit.db` | the SQLite database with the approval flows and access requests. Name an older jitd's `.json` file and jitd uses the `.db` of the same name, filled from the `.json` the first time |
-| `-env-file` | `~/.config/jitd/env` (Linux), `~/Library/Application Support/jitd/env` (macOS) | Tailscale API credentials: `TS_OAUTH_CLIENT_ID` and `TS_OAUTH_CLIENT_SECRET`, or `TS_API_KEY`. Optionally `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN` and `SLACK_ALLOWED_DOMAINS` (see Slack) |
+| `-env-file` | `~/.config/jitd/env` (Linux), `~/Library/Application Support/jitd/env` (macOS) | optional: credentials you would rather keep out of the database. They win over what is saved on the Integrations pages. Tailscale API: `TS_OAUTH_CLIENT_ID` and `TS_OAUTH_CLIENT_SECRET`, or `TS_API_KEY`. Also `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN` and `SLACK_ALLOWED_DOMAINS` (see Slack) |
 | `-hostname` | `jit` | the machine name on the tailnet |
 | `-tag` | `tag:jit` | the tag jitd runs as, used in the policy snippet |
 | `-https` | off | serve :443 with a Tailscale certificate and redirect :80; needs HTTPS turned on for the tailnet (admin console → DNS) |
@@ -1130,9 +1145,11 @@ In the API, an approval flow is called a *workflow*.
 | `GET /v1/requests/{id}` | status and timeline |
 | `POST /v1/requests/{id}/approve` · `decline` · `cancel` · `revoke` | `{note}`; declining needs one |
 | `GET /v1/changes` | a change counter, for polling |
-| `GET /v1/setup`, `POST /v1/setup/check` | the setup check's result, and run it again (admins) |
+| `GET /v1/setup`, `POST /v1/setup/check` | the Tailscale API credential check: its result, and run it again (admins) |
+| `PUT/DELETE /v1/setup/credentials` | save a Tailscale API credential (tested first; refused while the env file or environment sets one), or forget the saved one (admins); the secret is never returned |
 | `GET /v1/policy-snippet?missing=1` | the policy snippet (admins) |
 | `GET /v1/devices/{id}/attributes` | a device's posture attributes (admins) |
+| `GET/PUT/DELETE /v1/okta`, `POST /v1/okta/check` | the Okta connection (admins): its status, save credentials (tested first), remove them, try them again or test a group; keys and tokens are never returned |
 | `GET /v1/slack`, `POST /v1/slack/connect` · `disconnect` · `test`, `PUT /v1/slack/domains`, `GET /v1/slack/channels` · `check` | the Slack connection (admins); tokens are never returned |
 
 Errors look like `{"error": {"code": "...", "message": "..."}}`. Some carry
@@ -1171,7 +1188,7 @@ jitd/internal/jit        the model and the rules: flows, requests, approvals, po
 jitd/internal/jithttp    HTTP API, web UI (templates/, static/), OpenAPI spec
 jitd/internal/jitmcp     the MCP server at /mcp: the request tools and the MCP Apps view (app.html)
 jitd/internal/tsapi      Tailscale API client: posture attributes, policy file, device list
-jitd/internal/setup      the credential check behind /admin/setup
+jitd/internal/setup      the Tailscale API credential and its check (Integrations → Tailscale)
 jitd/internal/slack      Slack Web API and Socket Mode client, Block Kit helpers, slack.Fake
 jitd/internal/slackbot   the Slack integration: request messages, Approve/Decline, /jit, identity by email
 jitd/preview             the UI preview

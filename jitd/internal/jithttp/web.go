@@ -13,6 +13,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/atoonk/tailscale-jit/jitd/internal/jit"
+	"github.com/atoonk/tailscale-jit/jitd/internal/oktasetup"
 	"github.com/atoonk/tailscale-jit/jitd/internal/setup"
 	"github.com/atoonk/tailscale-jit/jitd/internal/slack"
 	"github.com/atoonk/tailscale-jit/jitd/internal/slackbot"
@@ -179,6 +180,8 @@ type flowRow struct {
 	Policy *jit.PolicyUse
 	Slack  *slackField // nil: no Slack integration in this build
 	Okta   bool        // Okta credentials are configured
+	// OktaPage: there is an Okta page to send the admin to when they are not.
+	OktaPage bool
 }
 
 // slackField fills the Slack part of the flow form.
@@ -213,6 +216,7 @@ func (s *Server) slackField(r *http.Request, w *jit.Workflow) *slackField {
 type page struct {
 	Title    string
 	Nav      string
+	Tab      string // on an Integrations page: which one (tailscale, slack, okta)
 	Me       *jit.Identity
 	MeErr    string
 	Admin    bool
@@ -220,6 +224,8 @@ type page struct {
 	SetupBad bool   // the last setup check failed: marks the Setup link (admins)
 	SlackOn  bool   // the build has the Slack integration (admins see its page)
 	SlackBad string // Slack is set up but not connected: why (marks the Slack link)
+	OktaOn   bool   // there is an Okta page (admins)
+	OktaDot  bool   // something is wrong with Okta (admins): the dot on its sidebar entry
 	// OktaBad is what is wrong with Okta right now (admins): the
 	// credentials, or memberships that should be gone and are not.
 	OktaBad []jit.OktaProblem
@@ -239,6 +245,9 @@ func (s *Server) renderAdmin(w http.ResponseWriter, r *http.Request, name, title
 
 func (s *Server) renderStatus(w http.ResponseWriter, r *http.Request, status int, name, title, nav string, data any) {
 	p := page{Title: title, Nav: nav, Data: data, Changes: s.Svc.Store.Changes()}
+	if tab, ok := strings.CutPrefix(nav, "admin-integrations/"); ok {
+		p.Nav, p.Tab = "admin-integrations", tab
+	}
 	if id, err := s.Resolver.Resolve(r.Context(), r); err != nil {
 		p.MeErr = jit.AsError(err).Message
 	} else {
@@ -254,7 +263,13 @@ func (s *Server) renderStatus(w http.ResponseWriter, r *http.Request, status int
 			p.SlackOn, p.SlackBad = true, s.Slack.Problem()
 		}
 		if p.Admin {
-			p.OktaBad = s.Svc.OktaProblems()
+			p.OktaOn, p.OktaBad = s.Okta != nil, s.Svc.OktaProblems()
+			p.OktaDot = len(p.OktaBad) > 0
+			if own, ok := data.(oktaPageData); ok && own.Status.Configured() {
+				// The Okta page says what is wrong with the connection
+				// itself, and how to fix it; the banner keeps the requests.
+				p.OktaBad = slices.DeleteFunc(p.OktaBad, func(x jit.OktaProblem) bool { return x.RequestID == "" })
+			}
 		}
 	}
 	var buf bytes.Buffer
@@ -302,7 +317,7 @@ func (s *Server) webRoutes(mux *http.ServeMux) {
 		wf := &jit.Workflow{MaxDuration: jit.DefaultMaxDuration, ApprovalTimeout: jit.DefaultApprovalTimeout}
 		wf.Normalize()
 		wf.Attribute = ""
-		s.renderAdmin(w, r, "workflow_form", "New approval flow", "workflows", flowRow{Flow: wf, Slack: s.slackField(r, wf), Okta: s.Svc.OktaEnabled()})
+		s.renderAdmin(w, r, "workflow_form", "New approval flow", "workflows", flowRow{Flow: wf, Slack: s.slackField(r, wf), Okta: s.Svc.OktaEnabled(), OktaPage: s.Okta != nil})
 	}))
 	mux.HandleFunc("GET /admin/workflows/{id}", s.adminPage(func(w http.ResponseWriter, r *http.Request, _ jit.Identity) {
 		wf, err := s.Svc.GetWorkflow(r.PathValue("id"))
@@ -310,7 +325,7 @@ func (s *Server) webRoutes(mux *http.ServeMux) {
 			s.notFound(w, r, err)
 			return
 		}
-		s.renderAdmin(w, r, "workflow_form", "Edit approval flow", "workflows", flowRow{Flow: wf, Policy: s.Svc.PolicyUse(r.Context(), wf), Slack: s.slackField(r, wf), Okta: s.Svc.OktaEnabled()})
+		s.renderAdmin(w, r, "workflow_form", "Edit approval flow", "workflows", flowRow{Flow: wf, Policy: s.Svc.PolicyUse(r.Context(), wf), Slack: s.slackField(r, wf), Okta: s.Svc.OktaEnabled(), OktaPage: s.Okta != nil})
 	}))
 	mux.HandleFunc("GET /admin/policy", s.adminPage(func(w http.ResponseWriter, r *http.Request, _ jit.Identity) {
 		missing := r.URL.Query().Get("missing") == "1"
@@ -321,19 +336,36 @@ func (s *Server) webRoutes(mux *http.ServeMux) {
 		}
 		s.renderAdmin(w, r, "policy", "Policy snippet", "policy", data)
 	}))
-	mux.HandleFunc("GET /admin/setup", s.adminPage(func(w http.ResponseWriter, r *http.Request, _ jit.Identity) {
+	// Integrations: one page per service jitd connects to, as tabs.
+	// Tailscale comes first: nothing works without it.
+	mux.HandleFunc("GET /admin/integrations", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/admin/integrations/tailscale", http.StatusFound)
+	})
+	for old, tab := range map[string]string{"/admin/setup": "tailscale", "/admin/slack": "slack", "/admin/okta": "okta"} {
+		mux.HandleFunc("GET "+old, func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, "/admin/integrations/"+tab, http.StatusMovedPermanently)
+		})
+	}
+	mux.HandleFunc("GET /admin/integrations/tailscale", s.adminPage(func(w http.ResponseWriter, r *http.Request, _ jit.Identity) {
 		var res *setup.Result
 		if s.Setup != nil {
 			res = s.setupResult(r)
 		}
-		s.renderAdmin(w, r, "setup", "Setup", "setup", res)
+		s.renderAdmin(w, r, "setup", "Tailscale", "integrations/tailscale", res)
 	}))
-	mux.HandleFunc("GET /admin/slack", s.adminPage(func(w http.ResponseWriter, r *http.Request, id jit.Identity) {
+	mux.HandleFunc("GET /admin/integrations/slack", s.adminPage(func(w http.ResponseWriter, r *http.Request, id jit.Identity) {
 		if s.Slack == nil {
 			s.notFound(w, r, &jit.Error{Code: "not_found", Status: 404, Message: "no Slack integration in this build"})
 			return
 		}
-		s.renderAdmin(w, r, "slack", "Slack", "slack", s.slackPage(r, id))
+		s.renderAdmin(w, r, "slack", "Slack", "integrations/slack", s.slackPage(r, id))
+	}))
+	mux.HandleFunc("GET /admin/integrations/okta", s.adminPage(func(w http.ResponseWriter, r *http.Request, _ jit.Identity) {
+		if s.Okta == nil {
+			s.notFound(w, r, &jit.Error{Code: "not_found", Status: 404, Message: "no Okta setup in this build"})
+			return
+		}
+		s.renderAdmin(w, r, "okta", "Okta", "integrations/okta", s.oktaPage(r))
 	}))
 	// Old links.
 	for _, old := range []string{"/workflows", "/workflows/{rest...}", "/policy"} {
@@ -403,6 +435,29 @@ func (s *Server) slackPage(r *http.Request, admin jit.Identity) slackPageData {
 		d.Flows = fcs
 		d.Channels, _ = s.Slack.Channels(r.Context())
 	}
+	return d
+}
+
+// oktaPageData fills the Okta page.
+type oktaPageData struct {
+	Status oktasetup.Status
+	Flows  int // approval flows that grant Okta groups
+}
+
+func (s *Server) oktaPage(r *http.Request) oktaPageData {
+	d := oktaPageData{Status: s.Okta.Status()}
+	if d.Status.Enabled && d.Status.CheckedAt.IsZero() {
+		// Nothing has tried the credentials since jitd started.
+		s.Svc.OktaCheckNow(r.Context())
+		d.Status = s.Okta.Status()
+	}
+	s.Svc.Store.View(func(data *jit.Data) {
+		for _, w := range data.Workflows {
+			if len(w.OktaGroups) > 0 {
+				d.Flows++
+			}
+		}
+	})
 	return d
 }
 

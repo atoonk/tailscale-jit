@@ -303,10 +303,55 @@ func (s *Service) verifyOktaUser(ctx context.Context, userID string) {
 
 // oktaHealth is the outcome of the last check of the Okta credentials.
 type oktaHealth struct {
-	mu  sync.Mutex
-	at  time.Time
-	err string
-	off bool // Okta was off with memberships still to look after, and that was logged
+	mu    sync.Mutex
+	at    time.Time
+	err   string
+	cause error // the error err is the text of
+	off   bool  // Okta was off with memberships still to look after, and that was logged
+}
+
+// OktaState is how jitd's use of Okta stands, for the Okta page.
+type OktaState struct {
+	Enabled   bool      // credentials are set and usable (Okta may still refuse them: Err)
+	Off       string    // why not, when they are not
+	CheckedAt time.Time // when jitd last tried the credentials against Okta; zero if not yet
+	Err       error     // what that try came back with; nil when it worked
+	Held      int       // requests whose Okta memberships jitd still has to look after
+}
+
+// OktaState reports how jitd's use of Okta stands.
+func (s *Service) OktaState() OktaState {
+	if s.Okta == nil {
+		return OktaState{Off: "this build of jitd has no Okta client"}
+	}
+	st := OktaState{Enabled: s.oktaEnabled(), Held: s.oktaOwed()}
+	if !st.Enabled {
+		st.Off = s.oktaWhyOff()
+		return st
+	}
+	h := &s.okHealth
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	st.CheckedAt = h.at
+	if h.err != "" {
+		st.Err = h.cause
+	}
+	return st
+}
+
+// OktaCheckNow tries the Okta credentials now rather than at the next
+// check that is due, and returns what Okta said. An admin asks for this on
+// the Okta page, and saving credentials there does it.
+func (s *Service) OktaCheckNow(ctx context.Context) error {
+	if s.Okta == nil {
+		return nil
+	}
+	h := &s.okHealth
+	h.mu.Lock()
+	h.at = time.Time{}
+	h.mu.Unlock()
+	s.checkOkta(ctx)
+	return s.OktaState().Err
 }
 
 // checkOkta checks, now and then, that the Okta credentials still work, so
@@ -322,7 +367,7 @@ func (s *Service) checkOkta(ctx context.Context) {
 		owed := s.oktaOwed()
 		h.mu.Lock()
 		was := h.off
-		h.off, h.at, h.err = owed > 0, time.Time{}, ""
+		h.off, h.at, h.err, h.cause = owed > 0, time.Time{}, "", nil
 		h.mu.Unlock()
 		if owed > 0 && !was {
 			s.Log.Error("Okta is off while jitd still has Okta group memberships to look after; they stay in place until Okta is configured again",
@@ -346,11 +391,12 @@ func (s *Service) checkOkta(ctx context.Context) {
 	cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), oktaCheckTimeout)
 	defer cancel()
 	msg := ""
-	if err := s.Okta.Check(cctx); err != nil {
+	err := s.Okta.Check(cctx)
+	if err != nil {
 		msg = err.Error()
 	}
 	h.mu.Lock()
-	h.at, h.err = now, msg
+	h.at, h.err, h.cause = now, msg, err
 	h.mu.Unlock()
 	switch {
 	case msg != "" && msg != was:
@@ -384,7 +430,7 @@ func (s *Service) OktaProblems() []OktaProblem {
 	} else {
 		if st, ok := s.Okta.(interface{ StaleSettings() string }); ok {
 			if why := st.StaleSettings(); why != "" {
-				out = append(out, OktaProblem{Text: "jitd cannot read the Okta settings in its env file and carries on with the ones it read last, allowlists included: " + why})
+				out = append(out, OktaProblem{Text: "jitd cannot read its Okta settings and carries on with the ones it read last, allowlists included: " + why})
 			}
 		}
 		h := &s.okHealth
