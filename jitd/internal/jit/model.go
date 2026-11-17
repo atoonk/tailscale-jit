@@ -28,8 +28,11 @@ const AutogroupMember Principal = "autogroup:member"
 type Status string
 
 const (
-	StatusPending   Status = "pending"
-	StatusApproved  Status = "approved"
+	StatusPending  Status = "pending"
+	StatusApproved Status = "approved"
+	// StatusScheduled is approved, for a window that has not started yet.
+	// Nothing is granted until it does; then it becomes approved.
+	StatusScheduled Status = "scheduled"
 	StatusDeclined  Status = "declined"
 	StatusExpired   Status = "expired"
 	StatusRevoked   Status = "revoked"
@@ -394,9 +397,12 @@ type AccessRequest struct {
 	Requester      Identity    `json:"requester"`
 	TargetDeviceID string      `json:"target_device_id"`
 	Duration       Duration    `json:"duration"`
-	Reason         string      `json:"reason"`
-	Status         Status      `json:"status"`
-	Timeline       []Event     `json:"timeline"`
+	// StartAt is when access starts, for a request scheduled ahead; nil
+	// means on approval.
+	StartAt  *time.Time `json:"start_at,omitempty"`
+	Reason   string     `json:"reason"`
+	Status   Status     `json:"status"`
+	Timeline []Event    `json:"timeline"`
 	// Approvals so far; access is granted once ApprovalsRequired is reached.
 	Approvals         []Approval  `json:"approvals,omitempty"`
 	ApprovalsRequired int         `json:"approvals_required"` // the flow's quorum; follows the flow while pending

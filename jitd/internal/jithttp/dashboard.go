@@ -35,9 +35,10 @@ type flowCount struct {
 }
 
 type dashboardData struct {
-	Admin                bool // the organisation-wide view
-	NeedsMe              int  // pending requests the viewer can approve
-	ActiveOthers         int  // active access of others through flows the viewer approves for (user view)
+	Admin                bool         // the organisation-wide view
+	NeedsMe              int          // pending requests the viewer can approve
+	ActiveOthers         int          // active access of others through flows the viewer approves for (user view)
+	Scheduled            []requestRow // approved, starting later (the viewer's own, or everyone's for admins)
 	Active, Pending      []requestRow
 	Requests7d, Flows    int
 	Approved30d, Done30d int
@@ -94,6 +95,10 @@ func (s *Server) dashboard(r *http.Request, admin bool) dashboardData {
 			} else {
 				d.ActiveOthers++
 			}
+		case jit.StatusScheduled:
+			if admin || jit.IsMine(id, q) {
+				d.Scheduled = append(d.Scheduled, row)
+			}
 		case jit.StatusPending:
 			d.Pending = append(d.Pending, row)
 			if row.Can.Approve {
@@ -142,6 +147,7 @@ func (s *Server) dashboard(r *http.Request, admin bool) dashboardData {
 	// Soonest expiry first; oldest pending first.
 	slices.SortFunc(d.Active, func(a, b requestRow) int { return expiry(a.R).Compare(expiry(b.R)) })
 	slices.SortFunc(d.Pending, func(a, b requestRow) int { return a.R.CreatedAt.Compare(b.R.CreatedAt) })
+	slices.SortFunc(d.Scheduled, func(a, b requestRow) int { return a.R.StartAt.Compare(*b.R.StartAt) })
 	slices.SortFunc(d.Activity, func(a, b activity) int { return b.Event.At.Compare(a.Event.At) })
 	d.Activity = d.Activity[:min(len(d.Activity), 12)]
 	for _, fc := range flows {

@@ -278,8 +278,33 @@ document.addEventListener("click", async (ev) => {
   });
 
   // Submit one request per chosen flow; report each; leave when all went in.
+  // When: now, or a local date and time up to 30 days ahead.
+  const startInput = form.start_at;
+  const pad = (n) => String(n).padStart(2, "0");
+  const local = (d) => d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate()) + "T" + pad(d.getHours()) + ":" + pad(d.getMinutes());
+  form.querySelectorAll('input[name="when"]').forEach((r) => r.addEventListener("change", () => {
+    const later = form.when.value === "later";
+    startInput.disabled = !later;
+    startInput.required = later;
+    if (later) {
+      const now = new Date();
+      startInput.min = local(new Date(now.getTime() + 5 * 60000));
+      startInput.max = local(new Date(now.getTime() + 30 * 86400000));
+      if (!startInput.value) {
+        const t = new Date(now.getTime() + 3600000);
+        t.setMinutes(0, 0, 0);
+        startInput.value = local(t);
+      }
+      startInput.focus();
+    }
+  }));
+  const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  if (tz) document.getElementById("whenhint").textContent += " Times are in " + tz + ".";
+  const startAt = () => (form.when.value === "later" && startInput.value) ? new Date(startInput.value).toISOString() : undefined;
+
   window.submitRequests = async (f) => {
     if (!checkDur()) return;
+    if (f.when.value === "later" && !startInput.reportValidity()) return;
     const sel = chosen();
     const btn = document.getElementById("submitreq");
     btn.disabled = true;
@@ -292,10 +317,10 @@ document.addEventListener("click", async (ev) => {
       res.appendChild(li);
       try {
         const duration = f.dur_n.value + f.dur_unit.selectedOptions[0].dataset.suffix;
-        const r = await api("POST", "/v1/requests", { workflow_id: b.value, duration, reason: f.reason.value });
+        const r = await api("POST", "/v1/requests", { workflow_id: b.value, duration, reason: f.reason.value, start_at: startAt() });
         b.dataset.done = r.id;
         li.className = "ok";
-        li.textContent = b.dataset.name + ": requested";
+        li.textContent = b.dataset.name + (r.start_at ? ": requested, starting " + new Date(r.start_at).toLocaleString() : ": requested");
       } catch (e) {
         failed++;
         li.className = "bad";

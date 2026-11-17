@@ -77,7 +77,7 @@
       <div class="field">
         <span class="label">Approval timeout</span>
         {{template "durfield" (durfield "approval_timeout" .ApprovalTimeout)}}
-        <span class="hint">Pending requests nobody decides on expire after this.</span>
+        <span class="hint">Pending requests nobody decides on expire after this. Requests scheduled for later stay open until their window ends.</span>
       </div>
     </div>
   </div>

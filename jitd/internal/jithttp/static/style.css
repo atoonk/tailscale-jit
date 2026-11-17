@@ -119,6 +119,7 @@ table.plain tr:first-child td { border-top: 0; }
 .status { display: inline-block; border-radius: 999px; padding: 2px 10px; font-size: 12px; font-weight: 500; text-transform: capitalize; white-space: nowrap; }
 .status.pending { background: var(--warn-bg); color: var(--warn); }
 .status.approved { background: var(--ok-bg); color: var(--ok); }
+.status.scheduled { background: var(--accent-bg); color: var(--accent); }
 .status.declined { background: var(--bad-bg); color: var(--bad); }
 .status.revoked, .status.expired, .status.cancelled { background: var(--grey-bg); color: var(--muted); }
 a.status:hover { text-decoration: none; filter: brightness(.95); }
@@ -278,6 +279,9 @@ pre.code { background: #1f1e1e; color: #ece9e6; padding: 18px 20px; border-radiu
 #addres { align-self: flex-start; }
 .durpick { display: flex; gap: 8px; }
 .durpick input { width: 7em; }
+.whenpick { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 16px; }
+.whenpick input[type="datetime-local"] { width: auto; }
+.whenpick input[type="datetime-local"]:disabled { opacity: .5; }
 .durpick select { width: auto; }
 .hint.bad { color: var(--bad); }
 

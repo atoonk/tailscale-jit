@@ -63,6 +63,20 @@
       {{end}}
     </ul>
     {{else}}<div class="none">{{if $d.Admin}}Nobody has JIT access right now.{{else}}You have no active access.{{end}}</div>{{end}}
+    {{if $d.Scheduled}}
+    <h3 class="small muted" style="margin:14px 0 4px">Scheduled</h3>
+    <ul class="rows">
+      {{range $d.Scheduled}}{{$r := .R}}
+      <li>
+        <a class="rowmain" href="/requests/{{$r.ID}}">
+          <span>{{if and (mine $.Me $r) (not $d.Admin)}}<b>You</b>{{else}}<b>{{$r.Requester.Actor}}</b>{{end}} · <b>{{$r.WorkflowName}}</b> <span class="status scheduled">scheduled</span></span>
+          <span class="meta">{{$r.Requester.DeviceName}} · starts <b title="{{ts $r.StartAt}}">{{ago $r.StartAt}}</b> · ends <span title="{{ts $r.ExpiresAt}}">{{ago $r.ExpiresAt}}</span></span>
+        </a>
+        <span class="rowact">{{if .Can.Revoke}}<button class="btn sm" data-action="/v1/requests/{{$r.ID}}/revoke">Call off</button>{{end}}</span>
+      </li>
+      {{end}}
+    </ul>
+    {{end}}
     {{if $d.ActiveOthers}}<div class="muted small" style="margin-top:10px">{{$d.ActiveOthers}} other{{if ne $d.ActiveOthers 1}}s have{{else}} has{{end}} access through flows you approve for · <a href="/requests?scope=approvals&status=approved">see them</a></div>{{end}}
   </section>
 </div>
@@ -101,7 +115,7 @@
       <li class="ev-{{.Event.Type}}">
         <i></i>
         <div>
-          <b>{{.Event.Actor}}</b> {{if eq .Event.Type "submitted"}}requested{{else if eq .Event.Type "approval"}}approved{{else if eq .Event.Type "approve_failed"}}tried to approve{{else if eq .Event.Type "revoke_failed"}}tried to revoke{{else}}{{.Event.Type}}{{end}}{{if eq .Event.Via "slack"}} <span class="via">via Slack</span>{{end}}
+          <b>{{.Event.Actor}}</b> {{if eq .Event.Type "submitted"}}requested{{else if eq .Event.Type "approval"}}approved{{else if eq .Event.Type "approve_failed"}}tried to approve{{else if eq .Event.Type "revoke_failed"}}tried to revoke{{else if eq .Event.Type "started"}}started the scheduled access{{else if eq .Event.Type "start_failed"}}could not start the scheduled access{{else}}{{.Event.Type}}{{end}}{{if eq .Event.Via "slack"}} <span class="via">via Slack</span>{{end}}
           <a href="/requests/{{.Request.ID}}">{{.Request.WorkflowName}}</a>{{if ne .Event.Type "submitted"}} for {{.Request.Requester.Actor}}{{end}}
           <span class="meta" title="{{ts .Event.At}}">{{ago .Event.At}}</span>
         </div>

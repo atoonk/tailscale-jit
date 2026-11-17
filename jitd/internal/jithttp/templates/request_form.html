@@ -1,7 +1,7 @@
 {{define "content"}}
 <div class="crumbs"><a href="/requests">Access requests</a> › New</div>
 <h1>Request access</h1>
-<p class="sub">Pick one or more, then <b>Request access</b>. Access goes to this device{{with .Me}} ({{.DeviceName}}){{end}} once it is approved, and ends on its own.</p>
+<p class="sub">Pick one or more, then <b>Request access</b>. Access goes to this device{{with .Me}} ({{.DeviceName}}){{end}} once it is approved (or at the time you schedule it for), and ends on its own.</p>
 {{if not .Me}}
 <div class="empty">Cannot identify you: {{.MeErr}}</div>
 {{else if not .Data}}
@@ -58,6 +58,15 @@
         </select>
       </div>
       <span class="hint" id="maxhint"></span>
+    </div>
+    <div class="field">
+      <span class="label">When</span>
+      <div class="whenpick">
+        <label class="check"><input type="radio" name="when" value="now" checked> As soon as it is approved</label>
+        <label class="check"><input type="radio" name="when" value="later"> Starting at</label>
+        <input type="datetime-local" name="start_at" aria-label="Start time" disabled>
+      </div>
+      <span class="hint" id="whenhint">Schedule it up to 30 days ahead. It can be approved any time before; access starts at that time, for the duration above.</span>
     </div>
     <label>Reason <textarea name="reason" rows="3" required placeholder="What you need to do and why"></textarea></label>
     <div class="actions">
