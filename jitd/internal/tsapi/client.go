@@ -238,7 +238,7 @@ func (f *federatedTokenSource) Token() (*oauth2.Token, error) {
 	if err != nil {
 		var re *oauth2.RetrieveError
 		if errors.As(err, &re) && re.Response != nil {
-			return nil, fmt.Errorf("federated identity token exchange failed (%d): %s", re.Response.StatusCode, strings.TrimSpace(string(re.Body)))
+			return nil, &exchangeError{re}
 		}
 		return nil, fmt.Errorf("federated identity token exchange: %w", err)
 	}
@@ -250,6 +250,18 @@ func (f *federatedTokenSource) Token() (*oauth2.Token, error) {
 	}
 	return tok, nil
 }
+
+// exchangeError is Tailscale answering a federated identity's token exchange
+// with an error. It reads as one line, and it still unwraps to the
+// oauth2.RetrieveError: that is how the setup check tells a refused
+// credential from an API it could not reach.
+type exchangeError struct{ re *oauth2.RetrieveError }
+
+func (e *exchangeError) Error() string {
+	return fmt.Sprintf("federated identity token exchange failed (%d): %s", e.re.Response.StatusCode, strings.TrimSpace(string(e.re.Body)))
+}
+
+func (e *exchangeError) Unwrap() error { return e.re }
 
 // federatedTokenFallbackTTL is how long a token exchanged without an expiry
 // is used before exchanging again.

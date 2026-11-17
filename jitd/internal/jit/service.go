@@ -147,7 +147,7 @@ func (s *Service) GetWorkflow(id string) (*Workflow, error) {
 func (s *Service) CreateWorkflow(w Workflow) (*Workflow, error) {
 	w.Normalize()
 	// The Okta lookups only touch w: they run before the lock is taken.
-	if err := s.resolveGroups(context.Background(), &w); err != nil {
+	if err := s.resolveGroups(context.Background(), &w, nil); err != nil {
 		return nil, err
 	}
 	if err := s.checkOktaPrincipals(context.Background(), &w); err != nil {
@@ -317,7 +317,8 @@ func (s *Service) selfServeRole(d *Data, w *Workflow, ids map[string]string) err
 func (s *Service) UpdateWorkflow(id string, w Workflow) (*Workflow, error) {
 	w.Normalize()
 	// The Okta lookups only touch w: they run before the lock is taken.
-	if err := s.resolveGroups(context.Background(), &w); err != nil {
+	was, _ := s.GetWorkflow(id) // nil when there is none; the update below says so
+	if err := s.resolveGroups(context.Background(), &w, was); err != nil {
 		return nil, err
 	}
 	if err := s.checkOktaPrincipals(context.Background(), &w); err != nil {
@@ -800,7 +801,7 @@ func (s *Service) submit(ctx context.Context, caller Identity, in NewRequest) (_
 		}
 	})
 	if existing != nil {
-		e := conflict("there is already a %s request for %q on this device for that time (%s)", existing.Status, w.Name, existing.ID)
+		e := conflict("this device already has a request for %q for that time, and it is %s (%s)", w.Name, existing.Status, existing.ID)
 		e.RequestID = existing.ID
 		return nil, false, e
 	}

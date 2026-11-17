@@ -71,6 +71,8 @@ func init() {
 		"human":    jit.Duration.Human,
 		"sub":      func(a, b int) int { return a - b },
 		"attrname": func(attr string) string { return strings.TrimPrefix(attr, jit.AttrPrefix) },
+		// noresource is an empty "Gives access to" row for the flow form.
+		"noresource": func() jit.Resource { return jit.Resource{} },
 		"oktagroups": func(gs []jit.OktaGroup) string {
 			out := make([]string, len(gs))
 			for i, g := range gs {

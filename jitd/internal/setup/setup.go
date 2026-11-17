@@ -219,13 +219,19 @@ func (c *Checker) check(ctx context.Context, vars map[string]string, cred Creden
 	// rejected records whether an error rejected the credential itself, as
 	// opposed to the API being unreachable or failing for a while.
 	rejected := false
+	fix := func(err error, scope string) string {
+		if cred.Kind == "federated" && tokenRefused(err) {
+			return "Tailscale refused the identity token. Check that TS_OAUTH_CLIENT_ID is the federated identity's client ID, and that the token's issuer, subject and audience are the ones the federated identity expects (admin console, Settings → Trust credentials). Then click Check again."
+		}
+		return fixFor(err, scope, fileHint)
+	}
 	fail := func(name string, err error, scope string) bool {
 		if credentialRejected(err) {
 			rejected = true
 		} else {
 			res.Transient = true
 		}
-		return step(name, false, describe(err), fixFor(err, scope, fileHint))
+		return step(name, false, describe(err), fix(err, scope))
 	}
 	if c.Tag != "" && res.Node.ID != "" && !slices.Contains(res.Node.Tags, c.Tag) {
 		step("Node tag", false, fmt.Sprintf("this node is not tagged %s (tags: %s)", c.Tag, strings.Join(res.Node.Tags, ", ")),
@@ -318,7 +324,7 @@ func (c *Checker) check(ctx context.Context, vars map[string]string, cred Creden
 				if !credentialRejected(err) {
 					res.Transient = true
 				}
-				ok = step("Posture attributes write", false, describe(err), fixFor(err, "devices:posture_attributes (write)", fileHint))
+				ok = step("Posture attributes write", false, describe(err), fix(err, "devices:posture_attributes (write)"))
 			} else if err := client.DeleteAttribute(ctx, res.Node.ID, selfCheckKey); err != nil {
 				ok = step("Posture attributes write", false, "set "+selfCheckKey+" but could not delete it: "+describe(err), "")
 			} else {
@@ -499,6 +505,37 @@ func (c *Checker) Remove(ctx context.Context, by string) (*Result, error) {
 	return c.runAndKeep(ctx), nil
 }
 
+// OptionalEnvFile reads an env file that need not exist. One that has not
+// been there since jitd started reads as empty: the settings then come
+// from the pages and the environment. One that was read and is gone
+// afterwards is an error, like one that cannot be read: the lists it held
+// limit what jitd may do, so losing the file (a removed file, a volume that
+// did not mount) must not lift them. The caller carries on with what it
+// read last.
+type OptionalEnvFile struct {
+	Path string
+
+	mu   sync.Mutex
+	seen bool // the file was read at least once
+}
+
+// Read returns what the file sets.
+func (f *OptionalEnvFile) Read() (map[string]string, error) {
+	vars, err := ReadEnvFile(f.Path)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	switch {
+	case err == nil:
+		f.seen = true
+		return vars, nil
+	case !errors.Is(err, os.ErrNotExist):
+		return nil, err
+	case f.seen:
+		return nil, fmt.Errorf("the env file %s was there when jitd read it earlier and is gone now; put it back, or restart jitd to run without it", f.Path)
+	}
+	return map[string]string{}, nil
+}
+
 // ReadEnvFile parses KEY=VALUE lines. Blank lines and # comments are
 // ignored, a leading "export " is allowed, and values may be quoted.
 func ReadEnvFile(path string) (map[string]string, error) {
@@ -568,6 +605,13 @@ func fixFor(err error, scope, fileHint string) string {
 		return "The credential works and the Tailscale API answered, but jitd could not read the response: it uses syntax this version of jitd does not know. Nothing is wrong with your credential or this host; please report this as a jitd bug."
 	}
 	return "Could not reach the Tailscale API, or it failed for a moment. jitd keeps the credential and retries; check this host's internet access if it persists."
+}
+
+// tokenRefused reports whether the token endpoint itself turned the
+// credential down, before any API call was made with it.
+func tokenRefused(err error) bool {
+	var re *oauth2.RetrieveError
+	return errors.As(err, &re) && credentialRejected(err)
 }
 
 // credentialRejected reports whether err says the credential itself is no

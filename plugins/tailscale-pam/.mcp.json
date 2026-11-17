@@ -1,8 +1,0 @@
-{
-  "mcpServers": {
-    "tailscale-pam": {
-      "type": "http",
-      "url": "${user_config.jit_url}/mcp"
-    }
-  }
-}

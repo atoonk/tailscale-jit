@@ -341,12 +341,14 @@ func TestGoogleFlowAndRemoveWhileHeld(t *testing.T) {
 	}
 
 	// As the form sends it: groups by address, no posture attribute.
-	var w jit.Workflow
-	if code := call(t, srv, "root", "POST", "/v1/workflows", map[string]any{
-		"name": "AWS admin", "google_groups": []map[string]string{{"name": "AWS-Admin@example.com"}},
+	var created flowJSON
+	code := call(t, srv, "root", "POST", "/v1/workflows", map[string]any{
+		"name": "AWS admin", "grants": map[string]any{"google": map[string]any{"groups": []map[string]string{{"name": "AWS-Admin@example.com"}}}},
 		"requesters": []string{"autogroup:member"}, "approvers": []string{"bob@example.com"}, "max_duration": "1h",
-	}, &w); code != 201 || len(w.GoogleGroups) != 1 || w.GoogleGroups[0].ID != googleAdmins || w.GoogleGroups[0].Name != googleAdminsA || w.Attribute != "" {
-		t.Fatalf("creating the flow = %d %+v", code, w)
+	}, &created)
+	w, err := created.workflow()
+	if code != 201 || err != nil || len(w.GoogleGroups) != 1 || w.GoogleGroups[0].ID != googleAdmins || w.GoogleGroups[0].Name != googleAdminsA || w.Attribute != "" {
+		t.Fatalf("creating the flow = %d %+v (%v)", code, w, err)
 	}
 	var e apiErr
 	if code := call(t, srv, "root", "POST", "/v1/workflows", map[string]any{

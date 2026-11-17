@@ -134,7 +134,7 @@ spec:
           {{- end }}
           # No probes: jitd listens only on its tailnet address, which the
           # kubelet cannot reach. Its health shows in the Tailscale admin
-          # console and on its Setup page.
+          # console and on its Integrations page.
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
           resources:
