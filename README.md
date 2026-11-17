@@ -14,6 +14,31 @@ It works with whatever Tailscale PAM can put in front of: SSH, databases
 (MySQL, PostgreSQL, MongoDB, MS SQL, CockroachDB, Elasticsearch),
 Kubernetes, RDP, VNC, HTTP, TCP and AWS S3.
 
+## Agents are first-class: jitd is an MCP server
+
+jitd has an MCP server built in, at `http://jit/mcp`. An agent uses it the
+way a person uses the web page: it sees what it could ask for, files a
+request with a reason and a duration, shows you the approval link, waits,
+and connects once someone approves.
+
+Connecting Claude Code is one command, with nothing to install:
+
+```sh
+claude mcp add --transport http --scope user jit http://jit/mcp
+```
+
+- **No login and no keys.** jitd knows who is asking, and from which
+  device, from the Tailscale connection.
+- **The server teaches the agent.** The instructions come with the tools:
+  ask for the narrowest access, show the approval link, connect without
+  credentials.
+- **Agents ask; people approve.** There is no approve tool.
+- **Any MCP client works.** VS Code, Claude Desktop and others point at the
+  same address; see [Other MCP clients](#other-mcp-clients).
+
+Setting up jitd itself comes first; that is under
+[Get started](#get-started).
+
 ## See it in action
 
 The agent gives you a link. Whoever approves opens it and sees this:
@@ -71,7 +96,7 @@ jitd itself. Moving to a later release is replacing that one file and
 restarting — see
 [Upgrading to a new release](jitd/README.md#upgrading-to-a-new-release).
 
-### 2. Connect Claude Code (everyone, once per machine)
+### 2. Connect Claude Code over MCP (everyone, once per machine)
 
 You need:
 
@@ -81,13 +106,15 @@ You need:
 - jitd running on your tailnet, normally at `http://jit` (see below if
   yours has another name).
 
-Then, from a shell:
+Then add jitd's MCP server to Claude Code, from a shell:
 
 ```sh
 claude mcp add --transport http --scope user jit http://jit/mcp
 ```
 
-That's it: no download, no login. Run `/mcp` in Claude Code and you should
+That's it: no download, no login, nothing else to install. `--scope user`
+makes it available in every project on this machine. Run `claude mcp list`,
+or `/mcp` inside Claude Code, and you should
 see `jit` connected, with five tools: `list_requestable`, `request_access`,
 `wait_for_access`, `get_access_request` and `cancel_access_request`. The
 server is jitd itself, over the tailnet: it knows who you are from your
