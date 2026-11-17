@@ -2,6 +2,7 @@ package jit
 
 import (
 	"errors"
+	"slices"
 	"testing"
 	"time"
 )
@@ -258,5 +259,196 @@ func TestScheduledGrantOutlivesApprovalTimeout(t *testing.T) {
 	h.svc.ExpireDue()
 	if g, _ := h.svc.GetRequest(ctx, carol, now.ID); g.Status != StatusExpired {
 		t.Errorf("immediate request after the approval timeout: %s", g.Status)
+	}
+}
+
+// schedOktaFlow grants an Okta group and a posture attribute, with bob
+// approving.
+func schedOktaFlow() Workflow {
+	w := oktaFlow(OktaGroup{ID: gAdmin})
+	w.Attribute = "aws"
+	return w
+}
+
+// scheduled files a request an hour ahead on flow w and has bob approve it.
+func scheduled(t *testing.T, h *harness, w *Workflow) *AccessRequest {
+	t.Helper()
+	r, err := h.svc.Submit(ctx, alice, NewRequest{WorkflowID: w.ID, Duration: Duration(time.Hour), Reason: "x", StartAt: at(time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := h.svc.Approve(ctx, bob, r.ID, "")
+	if err != nil || got.Status != StatusScheduled {
+		t.Fatalf("approve = %v, %s", err, statusOf(got))
+	}
+	return got
+}
+
+// A scheduled start adds the Okta memberships the way an approval does:
+// what it is about to add is on record before the first change in Okta, and
+// no Okta call is made with the service lock held.
+func TestScheduledStartOktaLikeAnApproval(t *testing.T) {
+	h, f := oktaHarness(t)
+	w := h.workflow(t, schedOktaFlow())
+	r := scheduled(t, h, w)
+	if n := len(f.Mutations()); n != 0 || f.Member(gAdmin, uAlice) {
+		t.Fatalf("approving ahead of time changed Okta: %v", f.Mutations())
+	}
+	var held []string
+	var seen *OktaIntent
+	f.Hook = func(call string) {
+		if !h.svc.mu.TryLock() {
+			held = append(held, call)
+		} else {
+			h.svc.mu.Unlock()
+		}
+		if call == "add" && seen == nil {
+			seen = &OktaIntent{}
+			if cur := h.svc.Request(r.ID); cur.OktaAdding != nil {
+				seen = cur.OktaAdding
+			}
+		}
+	}
+	h.now = t0.Add(time.Hour)
+	h.svc.ExpireDue()
+	f.Hook = nil
+	if len(held) > 0 {
+		t.Errorf("Okta calls made with the service lock held: %v", held)
+	}
+	if seen == nil || seen.UserID != uAlice || !slices.Equal(seen.Groups, []string{gAdmin}) {
+		t.Fatalf("on record at the first Okta change: %+v", seen)
+	}
+	cur := h.svc.Request(r.ID)
+	if cur.Status != StatusApproved || cur.OktaAdding != nil || cur.Okta == nil || !slices.Equal(cur.Okta.Added, []string{gAdmin}) || !f.Member(gAdmin, uAlice) {
+		t.Fatalf("after the start: %s adding=%+v okta=%+v member=%v", cur.Status, cur.OktaAdding, cur.Okta, f.Member(gAdmin, uAlice))
+	}
+	if _, ok := h.ts.attrs["nALICE|custom:jit_aws"]; !ok {
+		t.Errorf("attribute not set at the start: %v", h.ts.attrs)
+	}
+	// And both come off at the end of the window.
+	h.now = t0.Add(2 * time.Hour)
+	h.svc.ExpireDue()
+	if cur := h.svc.Request(r.ID); cur.Status != StatusExpired || f.Member(gAdmin, uAlice) {
+		t.Errorf("after the window: %s member=%v", cur.Status, f.Member(gAdmin, uAlice))
+	}
+}
+
+// The posture attribute is set after the Okta memberships. If that fails at
+// a scheduled start, the memberships are taken back, the request stays
+// scheduled, and the next tick tries again.
+func TestScheduledStartTakesOktaBackWhenAttributeFails(t *testing.T) {
+	h, f := oktaHarness(t)
+	w := h.workflow(t, schedOktaFlow())
+	r := scheduled(t, h, w)
+	h.ts.fail["custom:jit_aws"] = errors.New("tailscale down")
+	h.now = t0.Add(time.Hour)
+	h.svc.ExpireDue()
+	cur := h.svc.Request(r.ID)
+	if cur.Status != StatusScheduled || cur.LastError == "" || cur.Okta != nil || cur.OktaAdding != nil || f.Member(gAdmin, uAlice) {
+		t.Fatalf("after the failed start: %s err=%q okta=%+v adding=%+v member=%v", cur.Status, cur.LastError, cur.Okta, cur.OktaAdding, f.Member(gAdmin, uAlice))
+	}
+	delete(h.ts.fail, "custom:jit_aws")
+	h.now = t0.Add(time.Hour + time.Minute)
+	h.svc.ExpireDue()
+	cur = h.svc.Request(r.ID)
+	if cur.Status != StatusApproved || !f.Member(gAdmin, uAlice) || cur.LastError != "" {
+		t.Fatalf("after the retry: %s member=%v err=%q", cur.Status, f.Member(gAdmin, uAlice), cur.LastError)
+	}
+}
+
+// While Okta is being called for a start the service is not locked, so the
+// request can be revoked underneath it. It then does not start, and the
+// membership added for it is taken back.
+func TestScheduledStartLosesToRevoke(t *testing.T) {
+	h, f := oktaHarness(t)
+	w := h.workflow(t, schedOktaFlow())
+	r := scheduled(t, h, w)
+	f.Hook = func(call string) {
+		if call == "add" {
+			f.Hook = nil
+			if _, err := h.svc.Revoke(ctx, bob, r.ID, "not today"); err != nil {
+				t.Errorf("revoke during the Okta call: %v", err)
+			}
+		}
+	}
+	h.now = t0.Add(time.Hour)
+	h.svc.ExpireDue()
+	cur := h.svc.Request(r.ID)
+	if cur.Status != StatusRevoked || cur.Okta != nil || cur.OktaAdding != nil {
+		t.Errorf("request = %s okta=%+v adding=%+v", cur.Status, cur.Okta, cur.OktaAdding)
+	}
+	if f.Member(gAdmin, uAlice) {
+		t.Error("the membership added for a revoked request was left in Okta")
+	}
+	if _, ok := h.ts.attrs["nALICE|custom:jit_aws"]; ok {
+		t.Errorf("attribute set for a revoked request: %v", h.ts.attrs)
+	}
+}
+
+// jitd stops after it added the user in Okta for a start and before the
+// start was saved. The membership is on record, so the next tick's start
+// takes it over as jitd's own: it comes off when the window ends.
+func TestScheduledStartAfterUnfinishedStart(t *testing.T) {
+	h, f := oktaHarness(t)
+	w := h.workflow(t, schedOktaFlow())
+	r := scheduled(t, h, w)
+	h.now = t0.Add(time.Hour)
+	if out := h.svc.grantOkta(ctx, h.svc.Request(r.ID)); out.err != nil { // a start that gets no further
+		t.Fatal(out.err)
+	}
+	cur := h.svc.Request(r.ID)
+	if !f.Member(gAdmin, uAlice) || cur.Status != StatusScheduled || cur.OktaAdding == nil {
+		t.Fatalf("after the unfinished start: member=%v %s adding=%+v", f.Member(gAdmin, uAlice), cur.Status, cur.OktaAdding)
+	}
+	h.svc.ExpireDue()
+	cur = h.svc.Request(r.ID)
+	if cur.Status != StatusApproved || cur.OktaAdding != nil || cur.Okta == nil || !slices.Equal(cur.Okta.Added, []string{gAdmin}) || len(cur.Okta.Preexisting) != 0 {
+		t.Fatalf("after the tick: %s adding=%+v okta=%+v", cur.Status, cur.OktaAdding, cur.Okta)
+	}
+	h.now = t0.Add(2 * time.Hour)
+	h.svc.ExpireDue()
+	if f.Member(gAdmin, uAlice) {
+		t.Error("membership outlived the window")
+	}
+}
+
+// The same, but the request is revoked before jitd is back: nothing starts
+// it, so the tick takes the membership back.
+func TestScheduledUnfinishedStartTakenBackAfterRevoke(t *testing.T) {
+	h, f := oktaHarness(t)
+	w := h.workflow(t, schedOktaFlow())
+	r := scheduled(t, h, w)
+	h.now = t0.Add(time.Hour)
+	if out := h.svc.grantOkta(ctx, h.svc.Request(r.ID)); out.err != nil {
+		t.Fatal(out.err)
+	}
+	if _, err := h.svc.Revoke(ctx, bob, r.ID, ""); err != nil {
+		t.Fatal(err)
+	}
+	h.svc.ExpireDue()
+	cur := h.svc.Request(r.ID)
+	if f.Member(gAdmin, uAlice) || cur.Status != StatusRevoked || cur.OktaAdding != nil {
+		t.Errorf("after the tick: member=%v %s adding=%+v", f.Member(gAdmin, uAlice), cur.Status, cur.OktaAdding)
+	}
+}
+
+// A scheduled request on an automatic flow that a stopped jitd left pending
+// is ended on the next tick, like any other: nobody may be able to approve
+// it.
+func TestScheduledAutoApproveUnfinishedIsEnded(t *testing.T) {
+	h, _ := oktaHarness(t)
+	w := h.workflow(t, autoFlow(OktaGroup{ID: gAdmin}))
+	r, auto, err := h.svc.submit(ctx, alice, NewRequest{WorkflowID: w.ID, Duration: Duration(time.Hour), Reason: "x", StartAt: at(time.Hour)})
+	if err != nil || !auto {
+		t.Fatalf("submit = %v auto=%v", err, auto)
+	}
+	h.svc.ExpireDue()
+	if cur := h.svc.Request(r.ID); cur.Status != StatusPending {
+		t.Fatalf("a grant in flight was ended by the tick: %s", cur.Status)
+	}
+	h.svc.autoBusy = nil // jitd stops there and starts again
+	h.svc.ExpireDue()
+	if cur := h.svc.Request(r.ID); cur.Status != StatusExpired {
+		t.Errorf("an automatic request nobody can approve is still %s after the tick", cur.Status)
 	}
 }
