@@ -216,7 +216,8 @@ func (s *Server) slackField(r *http.Request, w *jit.Workflow) *slackField {
 type page struct {
 	Title    string
 	Nav      string
-	Tab      string // on an Integrations page: which one (tailscale, slack, okta)
+	Tab      string // on an Integrations page: which one (tailscale, slack, okta, ...)
+	Tabs     []tab  // on an Integrations page: the tab strip
 	Me       *jit.Identity
 	MeErr    string
 	Admin    bool
@@ -231,6 +232,56 @@ type page struct {
 	OktaBad []jit.OktaProblem
 	Changes uint64 // store change counter at render time, for auto-refresh
 	Data    any
+}
+
+// tab is one entry of the Integrations tab strip.
+type tab struct {
+	Key   string // the last part of /admin/integrations/<key>
+	Label string
+	Bad   string // why it needs a look: shows a red dot with this as its title
+	Soon  bool   // not built yet: the tab leads to a page that says so
+}
+
+// soonPage is an integration that has a tab but is not built yet, so
+// that admins see what is coming and where it will live.
+type soonPage struct {
+	Key, Label string
+	What       string // what it will do
+	Like       string // the tab that does the same job today
+}
+
+var comingSoon = []soonPage{
+	{
+		Key: "google", Label: "Google Groups", Like: "Okta",
+		What: "Let an approval put the requester in Google groups for as long as the access lasts, and take them out again when it ends.",
+	},
+}
+
+// tabs lists the Integrations tabs for the page being rendered. A new
+// integration is one more entry here, plus its route.
+func (p *page) tabs() []tab {
+	out := []tab{{Key: "tailscale", Label: "Tailscale"}}
+	if p.SetupBad {
+		out[0].Bad = "The Tailscale check failed"
+	}
+	if p.SlackOn {
+		t := tab{Key: "slack", Label: "Slack"}
+		if p.SlackBad != "" {
+			t.Bad = "Slack is not connected: " + p.SlackBad
+		}
+		out = append(out, t)
+	}
+	if p.OktaOn {
+		t := tab{Key: "okta", Label: "Okta"}
+		if p.OktaDot {
+			t.Bad = "Okta needs a look"
+		}
+		out = append(out, t)
+	}
+	for _, c := range comingSoon {
+		out = append(out, tab{Key: c.Key, Label: c.Label, Soon: true})
+	}
+	return out
 }
 
 func (s *Server) render(w http.ResponseWriter, r *http.Request, name, title, nav string, data any) {
@@ -271,6 +322,9 @@ func (s *Server) renderStatus(w http.ResponseWriter, r *http.Request, status int
 				p.OktaBad = slices.DeleteFunc(p.OktaBad, func(x jit.OktaProblem) bool { return x.RequestID == "" })
 			}
 		}
+	}
+	if p.Tab != "" {
+		p.Tabs = p.tabs()
 	}
 	var buf bytes.Buffer
 	if err := pages[name].ExecuteTemplate(&buf, "layout", p); err != nil {
@@ -367,6 +421,11 @@ func (s *Server) webRoutes(mux *http.ServeMux) {
 		}
 		s.renderAdmin(w, r, "okta", "Okta", "integrations/okta", s.oktaPage(r))
 	}))
+	for _, c := range comingSoon {
+		mux.HandleFunc("GET /admin/integrations/"+c.Key, s.adminPage(func(w http.ResponseWriter, r *http.Request, _ jit.Identity) {
+			s.renderAdmin(w, r, "soon", c.Label, "integrations/"+c.Key, c)
+		}))
+	}
 	// Old links.
 	for _, old := range []string{"/workflows", "/workflows/{rest...}", "/policy"} {
 		mux.HandleFunc("GET "+old, func(w http.ResponseWriter, r *http.Request) {

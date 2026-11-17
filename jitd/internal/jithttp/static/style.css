@@ -298,10 +298,12 @@ pre.code { background: #1f1e1e; color: #ece9e6; padding: 18px 20px; border-radiu
 .oktaform textarea { font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; resize: vertical; }
 .oktaform .formerr { margin: 0; }
 details.more { margin: 4px 0 14px; }
-.tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin: -6px 0 24px; }
-.tabs a { padding: 8px 14px; color: var(--muted); font-weight: 500; border-bottom: 2px solid transparent; margin-bottom: -1px; }
-.tabs a:hover { color: var(--ink); text-decoration: none; }
-.tabs a.on { color: var(--ink); border-bottom-color: var(--accent); }
+nav.tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin: -6px 0 24px; }
+nav.tabs a { padding: 8px 14px; color: var(--muted); font-weight: 500; border-bottom: 2px solid transparent; margin-bottom: -1px; }
+nav.tabs a:hover { color: var(--ink); text-decoration: none; }
+nav.tabs a.on { color: var(--ink); border-bottom-color: var(--accent); }
+nav.tabs a { text-transform: none; }
+nav.tabs em { margin-left: 2px; padding: 1px 6px; border-radius: 999px; background: var(--grey-bg); color: var(--muted); font-size: 11px; }
 details.more > summary { cursor: pointer; color: var(--accent); font-weight: 500; }
 details.more[open] > summary { margin-bottom: 10px; }
 .oktaresult { margin-top: 12px; }

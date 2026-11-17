@@ -46,9 +46,8 @@
     {{if and .OktaOn (ne .Tab "okta")}}<div><a href="/admin/integrations/okta">Open the Okta page</a> to see what to fix.</div>{{end}}
   </div>{{end}}
   {{if .Tab}}<nav class="tabs" aria-label="Integrations">
-    <a href="/admin/integrations/tailscale" {{if eq .Tab "tailscale"}}class="on"{{end}}>Tailscale{{if .SetupBad}} <span class="dot bad" title="The Tailscale check failed"></span>{{end}}</a>
-    {{if .SlackOn}}<a href="/admin/integrations/slack" {{if eq .Tab "slack"}}class="on"{{end}}>Slack{{if .SlackBad}} <span class="dot bad" title="Slack is not connected: {{.SlackBad}}"></span>{{end}}</a>{{end}}
-    {{if .OktaOn}}<a href="/admin/integrations/okta" {{if eq .Tab "okta"}}class="on"{{end}}>Okta{{if .OktaDot}} <span class="dot bad" title="Okta needs a look"></span>{{end}}</a>{{end}}
+    {{range .Tabs}}<a href="/admin/integrations/{{.Key}}" {{if eq $.Tab .Key}}class="on"{{end}}>{{.Label}}{{if .Soon}} <em>soon</em>{{end}}{{with .Bad}} <span class="dot bad" title="{{.}}"></span>{{end}}</a>
+    {{end}}
   </nav>{{end}}
   {{template "content" .}}
 </main>
