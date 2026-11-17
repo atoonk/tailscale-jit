@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -171,19 +172,36 @@ func (g googleGroups) Member(_ context.Context, login string) (id, label string,
 	return email, email, nil
 }
 
-// noGoogleGroup is what to say when Google shows no such group.
-func noGoogleGroup(ref string) string {
-	s := fmt.Sprintf("Google has no group %q that jitd's service account can see.", ref)
+// noGoogleGroup is what to say when Google shows no such group. A name
+// without an @ is not an address, and Google was not asked about it by
+// address, so that is all there is to say; domains, the ones jitd may add
+// users of, only make the example look like the reader's own.
+func noGoogleGroup(ref string, domains []string) string {
 	if !strings.Contains(ref, "@") {
-		s += " Name the group by its email address."
+		return fmt.Sprintf("%q is not a Google group's email address. Name the group by its address, for example %s.", ref, GoogleAddressLike(ref, domains))
 	}
-	return s + " If the group exists, the Groups Admin role is not assigned to the service account yet (a new assignment can take a few minutes)."
+	return fmt.Sprintf("Google has no group %q that jitd's service account can see. If the group exists, the Groups Admin role is not assigned to the service account yet (a new assignment can take a few minutes).", ref)
+}
+
+var googleLocalRE = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+
+// GoogleAddressLike turns a group's name into what its address would look
+// like, for a message that asks for the address.
+func GoogleAddressLike(name string, domains []string) string {
+	local, domain := "team", "example.com"
+	if googleLocalRE.MatchString(name) {
+		local = strings.ToLower(name)
+	}
+	if len(domains) > 0 {
+		domain = domains[0]
+	}
+	return local + "@" + domain
 }
 
 func (g googleGroups) Group(ctx context.Context, ref string) (GroupRef, error) {
 	grp, err := g.c.FindGroup(ctx, ref)
 	if errors.Is(err, google.ErrNotFound) {
-		return GroupRef{}, badRequest("%s", noGoogleGroup(ref))
+		return GroupRef{}, badRequest("%s", noGoogleGroup(ref, g.domains()))
 	}
 	if err != nil {
 		return GroupRef{}, err
@@ -302,7 +320,7 @@ func (s *Service) CheckGoogleGroup(ctx context.Context, ref string) (GoogleGroup
 	defer cancel()
 	g, err := s.Google.FindGroup(actx, ref)
 	if errors.Is(err, google.ErrNotFound) {
-		return GoogleGroupCheck{}, notFound("%s", noGoogleGroup(ref))
+		return GoogleGroupCheck{}, notFound("%s", noGoogleGroup(ref, s.googleLimits().Domains))
 	}
 	if err != nil {
 		return GoogleGroupCheck{}, apiFailed("looking up Google group %q: %v", ref, err)

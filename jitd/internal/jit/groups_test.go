@@ -347,10 +347,12 @@ func TestGoogleFlowValidation(t *testing.T) {
 		t.Errorf("requestable = %+v", got)
 	}
 	_, err = h.svc.CreateWorkflow(googleFlow(GroupRef{Name: "nobody@example.com"}))
-	if code(err) != "bad_request" || !strings.Contains(err.Error(), "Groups Admin") || strings.Contains(err.Error(), "by its email address") {
+	if code(err) != "bad_request" || !strings.Contains(err.Error(), "Groups Admin") || strings.Contains(err.Error(), "by its address") {
 		t.Errorf("unknown group: %v", err)
 	}
-	if _, err = h.svc.CreateWorkflow(googleFlow(GroupRef{Name: "aws-admin"})); code(err) != "bad_request" || !strings.Contains(err.Error(), "by its email address") {
+	// A name is not an address: say so, and do not send the admin after the role.
+	if _, err = h.svc.CreateWorkflow(googleFlow(GroupRef{Name: "aws-admin"})); code(err) != "bad_request" || !strings.Contains(err.Error(), "by its address, for example aws-admin@") ||
+		strings.Contains(err.Error(), "Groups Admin") {
 		t.Errorf("a group named without its domain: %v", err)
 	}
 	if _, err = h.svc.CreateWorkflow(googleFlow(GroupRef{Name: "all-eng@example.com"})); code(err) != "bad_request" || !strings.Contains(err.Error(), "dynamic") {

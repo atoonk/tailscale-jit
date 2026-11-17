@@ -62,7 +62,7 @@ type Input struct {
 	// Domains are the email domains whose users jitd may add to groups,
 	// separated by commas or spaces.
 	Domains string `json:"allowed_domains"`
-	// Grant lists the groups flows may grant, by address or ID, with * as
+	// Grant lists the groups flows may grant, by address, with * as
 	// a wildcard, separated by commas or spaces.
 	Grant string `json:"grant_allowlist"`
 	// Force saves a key for another service account although jitd still
@@ -291,6 +291,17 @@ func (m *Manager) Save(ctx context.Context, admin jit.Identity, in Input) (Statu
 		return Status{}, err
 	}
 	s.Grant = list(in.Grant)
+	// Groups are matched by address, so a bare name matches none.
+	for _, g := range s.Grant {
+		if !grantEnv && !strings.ContainsAny(g, "@*") {
+			like := s.Domains
+			if len(like) == 0 && saved != nil {
+				like = saved.Domains
+			}
+			return Status{}, bad(fmt.Sprintf("Nothing was saved: %q, in the groups a flow may grant, is not a group's email address, so it would match no group. Write the address, like %s, a pattern like aws-*@example.com, or * for every group.",
+				g, jit.GoogleAddressLike(g, like)))
+		}
+	}
 	// A list that is set in the environment, or left out here, stays as
 	// it is saved.
 	switch {

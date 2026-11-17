@@ -145,10 +145,14 @@ func TestGoogleSetupPage(t *testing.T) {
 		"api off":    {"key": google.FakeKey("apioff@acme-prod.iam.gserviceaccount.com", "acme-prod"), "allowed_domains": "example.com", "grant_allowlist": "*"},
 		"not a key":  {"key": "hunter2", "allowed_domains": "example.com", "grant_allowlist": "*"},
 		"no domains": {"key": key, "allowed_domains": "", "grant_allowlist": "*"},
+		"a name":     {"key": key, "allowed_domains": "example.com", "grant_allowlist": "AWS-Admin"},
 	} {
 		if code := call(t, srv, "root", "PUT", "/v1/google", in, &e); code != 400 ||
 			!strings.Contains(e.Error.Message, "Nothing was saved") || strings.Contains(e.Error.Message, "PRIVATE KEY") || strings.Contains(e.Error.Message, "hunter2") {
 			t.Fatalf("%s: saving = %d %q", name, code, e.Error.Message)
+		}
+		if name == "a name" && !strings.Contains(e.Error.Message, "like aws-admin@example.com") {
+			t.Errorf("a group's name in the grant list: the answer does not show the address to write: %q", e.Error.Message)
 		}
 		if name == "api off" && !strings.Contains(e.Error.Message, "Cloud Identity API is not enabled") {
 			t.Errorf("a key from a project without the API: the answer does not say so: %q", e.Error.Message)
@@ -275,6 +279,14 @@ func TestGoogleRoleShowsOnlyThroughAGroup(t *testing.T) {
 	e = apiErr{}
 	if code := call(t, srv, "root", "POST", "/v1/workflows", flow, &e); code != 400 || !strings.Contains(e.Error.Message, "Groups Admin role is not assigned") {
 		t.Errorf("a flow with a group jitd cannot see = %d %q", code, e.Error.Message)
+	}
+
+	// A group's name is not its address. Google was not asked, so the
+	// answer must not send the admin after the role.
+	e = apiErr{}
+	if code := call(t, srv, "root", "POST", "/v1/google/check", map[string]any{"group": "AWS-Admin"}, &e); code != 404 ||
+		!strings.Contains(e.Error.Message, "for example aws-admin@example.com") || strings.Contains(e.Error.Message, "Groups Admin") {
+		t.Errorf("testing a group by its name = %d %q", code, e.Error.Message)
 	}
 
 	// With the role, and still no flow: taken, and still unproven.
