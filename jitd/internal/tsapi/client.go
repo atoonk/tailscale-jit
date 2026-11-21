@@ -380,6 +380,50 @@ func (c *HTTP) GetPolicy(ctx context.Context) (Policy, error) {
 	return p, err
 }
 
+// AuthKey is an auth key CreateAuthKey made. Key is the secret.
+type AuthKey struct {
+	ID  string `json:"id"`
+	Key string `json:"key"`
+}
+
+// CreateAuthKey creates a single-use, preauthorized, non-ephemeral auth key
+// for a device with tags, expiring after ttl. It needs the auth_keys scope
+// and the tags on the credential.
+func (c *HTTP) CreateAuthKey(ctx context.Context, tags []string, ttl time.Duration, description string) (AuthKey, error) {
+	in := map[string]any{
+		"capabilities": map[string]any{
+			"devices": map[string]any{
+				"create": map[string]any{
+					"reusable":      false,
+					"ephemeral":     false,
+					"preauthorized": true,
+					"tags":          tags,
+				},
+			},
+		},
+		"expirySeconds": int(ttl.Seconds()),
+		"description":   description,
+	}
+	var out AuthKey
+	if err := c.do(ctx, http.MethodPost, "/api/v2/tailnet/-/keys", in, &out); err != nil {
+		return AuthKey{}, err
+	}
+	if out.ID == "" || out.Key == "" {
+		return AuthKey{}, fmt.Errorf("tailscale API POST /api/v2/tailnet/-/keys: no key in the response")
+	}
+	return out, nil
+}
+
+// DeleteAuthKey deletes an auth key. A key that is already gone is not an
+// error. It needs the auth_keys scope.
+func (c *HTTP) DeleteAuthKey(ctx context.Context, id string) error {
+	err := c.do(ctx, http.MethodDelete, "/api/v2/tailnet/-/keys/"+url.PathEscape(id), nil, nil)
+	if e, ok := err.(*APIError); ok && e.Status == http.StatusNotFound {
+		return nil
+	}
+	return err
+}
+
 // ListDevices lists every device in the tailnet. It needs the
 // devices:core (read) scope.
 func (c *HTTP) ListDevices(ctx context.Context) ([]Device, error) {

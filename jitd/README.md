@@ -423,6 +423,16 @@ working. On Kubernetes the chart sets this up with `federatedIdentity.*` (see
 its README). If `TS_OAUTH_CLIENT_SECRET` is also set, the OAuth client is
 used.
 
+The same federated identity can join jitd's node to the tailnet too, so it
+needs no `TS_AUTHKEY` either. Give it the **Auth Keys** scope (write) with
+jitd's tag (`-tag`, `tag:jit` by default). On every start, jitd creates a
+single-use auth key with that tag that expires after ten minutes, starts the
+node advertising the tag, and deletes the key once the node is up. A running
+node ignores the key; a new node joins with it, and one whose node key
+expired or that was logged out logs in again with it. If the key cannot be
+created, jitd logs a warning and starts without it, which a node that has
+joined before doesn't need.
+
 The other tabs under Integrations (Slack, Okta, Google Groups) are optional and work the
 same way: steps, a form, and a test before anything is saved.
 

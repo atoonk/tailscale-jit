@@ -330,8 +330,27 @@ func main() {
 	}
 	defer srv.Close()
 
-	log.Info("starting tsnet node", "hostname", *hostname, "state_dir", *stateDir, "auth_key_set", os.Getenv("TS_AUTHKEY") != "")
+	// With a federated identity, the node joins (or logs in again) with a
+	// single-use auth key jitd creates and deletes once the node is up. If
+	// that fails, a node that has joined before carries on without one.
+	var deleteNodeKey func(context.Context) error
+	if vars, err := nodeKeyVars(*envFile); err != nil {
+		log.Warn("cannot read the Tailscale credentials for the node's auth key", "err", err)
+	} else {
+		deleteNodeKey, err = federatedNodeKey(ctx, srv, *jitTag, vars, func(vars map[string]string) (authKeys, error) {
+			return tsapi.NewFromValues(ctx, *apiBase, vars)
+		})
+		if err != nil {
+			log.Warn("cannot create an auth key for the node through the federated identity; a node that has not joined yet will wait for a login", "err", err)
+		}
+	}
+	log.Info("starting tsnet node", "hostname", *hostname, "state_dir", *stateDir, "auth_key_set", os.Getenv("TS_AUTHKEY") != "", "federated_auth_key", deleteNodeKey != nil)
 	st, err := srv.Up(ctx)
+	if deleteNodeKey != nil {
+		if err := deleteNodeKey(context.WithoutCancel(ctx)); err != nil {
+			log.Warn("cannot delete the node's auth key; it expires by itself", "ttl", nodeKeyTTL, "err", err)
+		}
+	}
 	if err != nil {
 		log.Error("tsnet up", "err", err)
 		os.Exit(1)
