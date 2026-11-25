@@ -396,9 +396,9 @@ func summarizeRequest(r accessRequest, viewer identity) string {
 		if r.StillWaiting {
 			b.WriteString("Call wait_for_access again now, in the same turn, until about five minutes have passed since you submitted it; after that, end your turn, say it is still pending, repeat the link and offer to keep waiting. ")
 		} else if r.ShowLinkFirst {
-			b.WriteString("Not waiting yet. If your message does not contain this link yet, write it now, then call wait_for_access again in the same turn. Don't end your turn or ask the user to tell you when it is approved. ")
+			b.WriteString("Not waiting yet. Saying that you submitted a request is not enough: the user needs the full URL above, printed literally on its own line, to approve it. If you have not printed that URL itself yet, print it now. Then call wait_for_access again in the same turn. Don't end your turn or ask the user to tell you when it is approved. ")
 		} else {
-			b.WriteString("Write that message to the user now, then, in the same turn, call wait_for_access with this request_id and keep calling it until the request is decided (about five minutes at most). Don't end your turn or ask the user to tell you when it is approved. ")
+			b.WriteString("Write that message to the user now, with the full URL printed literally on its own line (not just that you submitted a request), then, in the same turn, call wait_for_access with this request_id and keep calling it until the request is decided (about five minutes at most). Don't end your turn or ask the user to tell you when it is approved. ")
 		}
 		b.WriteString("Do not try to reach these services another way while it is pending.\n")
 	case string(jit.StatusScheduled):

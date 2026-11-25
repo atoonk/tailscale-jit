@@ -201,7 +201,7 @@ func (s *Server) addTools(srv *mcp.Server, id jit.Identity) {
 		Description: "Submit a just-in-time access request through a jitd approval flow (workflow_id from list_requestable) for the device you are on. " +
 			"Request the flow that fits the current step of the task, not the broadest one, for the time the work needs. " +
 			"Unless list_requestable says the flow is approved automatically (the result then comes back approved), a human must approve it. " +
-			"The result contains the approval URL; the user cannot see tool results, so first write a message saying you submitted the request, with the URL on its own line. " +
+			"The result contains the approval URL; the user cannot see tool results, so first write a short message that prints the full URL literally on its own line (saying you submitted a request is not enough: the user or an admin needs the link to approve it). " +
 			"Then, in the same turn, call wait_for_access and keep calling it until the request is decided: don't end your turn or wait for the user to say they approved it.",
 		Annotations: &mcp.ToolAnnotations{DestructiveHint: new(false), OpenWorldHint: new(false)},
 		Meta:        appMeta(),
@@ -478,18 +478,20 @@ Then call request_access.
 Access requests:
 - Tool results are not shown to the user. Anything they need from one, above all the approval link, goes in your own message.
 - Whenever you submit an access request on the user's behalf, tell the user right away, in plain words, ` +
-		`that you submitted an access request and are waiting for approval. Then print the approval link ` +
-		`from the result's "url" field on its own line so they can click it. Send this message before your next tool call, ` +
-		`not after waiting: the user has to approve before any wait can succeed. For example:
-    I've submitted an access request for "Database access (read-only)" (15m, reason: ...). It needs approval here:
-    ` + jitURL + `/requests/req_...
+		`that you submitted an access request and are waiting for approval, and print the full approval link ` +
+		`from the result's "url" field, literally, on its own line, so they can click it or pass it to an approver. ` +
+		`A message that only says you submitted a request is not enough. Send this message before your next tool call, ` +
+		`not after waiting: someone has to approve before any wait can succeed. Keep it short, link first. For example:
+    Approval needed: ` + jitURL + `/requests/req_...
+    I've submitted an access request for "Database access (read-only)" (15m, reason: ...) and I'm waiting for it to be approved.
 - A flow that list_requestable marks as approved automatically comes back approved: nobody has to approve. Tell the user ` +
 		`it was granted automatically and for how long, print the link, and carry on.
 - Then, in the same turn, wait for the decision yourself: don't end your turn and don't ask the user to tell you when ` +
 		`it is approved. Call wait_for_access with the request_id. Its first call for a pending request returns at once, ` +
 		`as a check that the link is already in your message; call it again. Later calls return when the request is decided ` +
 		`and the access is in place, or after 30 seconds (timeout_seconds, up to 50) with the request still pending: call it ` +
-		`again straight away, rather than polling get_access_request. Once it is approved, carry on with the task. ` +
+		`again straight away, rather than polling get_access_request. Once it is approved, carry on with the task, ` +
+		`and include the request link in your final reply too. ` +
 		`After about five minutes still pending, end your turn: say it is still pending, repeat the link, and offer to keep waiting.
 - If the user no longer needs the access, or asks to end it early, call cancel_access_request: it withdraws a pending ` +
 		`request or ends approved access now. Do not end access on your own initiative while the user may still use it.
