@@ -201,8 +201,8 @@ func (s *Server) addTools(srv *mcp.Server, id jit.Identity) {
 		Description: "Submit a just-in-time access request through a jitd approval flow (workflow_id from list_requestable) for the device you are on. " +
 			"Request the flow that fits the current step of the task, not the broadest one, for the time the work needs. " +
 			"Unless list_requestable says the flow is approved automatically (the result then comes back approved), a human must approve it. " +
-			"The result contains the approval URL; the user cannot see tool results, so write it in your reply on its own line and end your turn. " +
-			"Call wait_for_access once the user replies (they approved it, or want you to wait), before using the service.",
+			"The result contains the approval URL; the user cannot see tool results, so first write a message saying you submitted the request, with the URL on its own line. " +
+			"Then, in the same turn, call wait_for_access and keep calling it until the request is decided: don't end your turn or wait for the user to say they approved it.",
 		Annotations: &mcp.ToolAnnotations{DestructiveHint: new(false), OpenWorldHint: new(false)},
 		Meta:        appMeta(),
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in requestAccessInput) (*mcp.CallToolResult, accessRequest, error) {
@@ -256,10 +256,10 @@ func (s *Server) addTools(srv *mcp.Server, id jit.Identity) {
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:  "wait_for_access",
 		Title: "Wait for an access request to be decided",
-		Description: "Wait until a jitd access request is approved (and the access is in place on the device) or declined, for up to timeout_seconds (default 30, at most 50). The first call for a pending request returns at once, without waiting: " +
-			"end your turn with the approval link, and call it again when the user replies. " +
-			"Use it instead of polling get_access_request. If it returns with the request still pending, call it again while the user " +
-			"is waiting for this access (up to about ten minutes in total); when you report instead, say it is still pending, repeat the approval link, and offer to keep waiting.",
+		Description: "Wait until a jitd access request is approved (and the access is in place on the device) or declined, for up to timeout_seconds (default 30, at most 50). " +
+			"Write the approval link in your message to the user before the first call: the first call for a pending request returns at once as a reminder, then call it again. " +
+			"If it returns with the request still pending, call it again straight away, in the same turn, for up to about five minutes in total. Use it instead of polling get_access_request. " +
+			"Once approved, carry on with the task without asking. If it is still pending after about five minutes, end your turn: say it is still pending, repeat the approval link, and offer to keep waiting.",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true, IdempotentHint: true, OpenWorldHint: new(false)},
 		Meta:        appMeta(),
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in waitForAccessInput) (*mcp.CallToolResult, accessRequest, error) {
@@ -326,7 +326,8 @@ const maxWait = 50 * time.Second
 // show nothing while a tool call runs and do not show tool results, and
 // models often wait before replying, so the user would be left without the
 // link they have to click. The first call therefore returns at once and
-// tells the model to end its turn with the link. Only the requester's own
+// tells the model to write the link (if it has not) before it calls again
+// and blocks; text written before a tool call is shown. Only the requester's own
 // agent uses it up: an approver or admin reading someone else's request
 // waits normally. The entry is removed when a wait sees the request
 // decided; one whose agent never waits again stays until jitd restarts
@@ -484,12 +485,12 @@ Access requests:
     ` + jitURL + `/requests/req_...
 - A flow that list_requestable marks as approved automatically comes back approved: nobody has to approve. Tell the user ` +
 		`it was granted automatically and for how long, print the link, and carry on.
-- Then end your turn with that message. When the user replies (they approved it, or ask you to wait), call wait_for_access ` +
-		`with the request_id. If you call it before that, its first call for a pending request returns at once and tells you to ` +
-		`end your turn with the link. Later calls return when the request is decided and the access is in place, ` +
-		`or after 30 seconds (timeout_seconds, up to 50) with the request still pending. While the user is waiting for this ` +
-		`access, call it again rather than polling get_access_request; after about ten minutes, or when the user has moved on, ` +
-		`report that it is still pending, repeat the link, and offer to keep waiting.
+- Then, in the same turn, wait for the decision yourself: don't end your turn and don't ask the user to tell you when ` +
+		`it is approved. Call wait_for_access with the request_id. Its first call for a pending request returns at once, ` +
+		`as a check that the link is already in your message; call it again. Later calls return when the request is decided ` +
+		`and the access is in place, or after 30 seconds (timeout_seconds, up to 50) with the request still pending: call it ` +
+		`again straight away, rather than polling get_access_request. Once it is approved, carry on with the task. ` +
+		`After about five minutes still pending, end your turn: say it is still pending, repeat the link, and offer to keep waiting.
 - If the user no longer needs the access, or asks to end it early, call cancel_access_request: it withdraws a pending ` +
 		`request or ends approved access now. Do not end access on your own initiative while the user may still use it.
 - Repeat the link whenever you report that a request is still pending.

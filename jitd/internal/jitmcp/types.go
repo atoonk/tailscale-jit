@@ -149,7 +149,7 @@ type accessRequest struct {
 	StillWaiting bool `json:"still_waiting,omitempty"`
 	// ShowLinkFirst is set on the requester's first wait_for_access for a
 	// pending request, which returns at once so the user gets the link first.
-	ShowLinkFirst bool `json:"show_link_first,omitempty" jsonschema:"set when wait_for_access returned at once without waiting, so the user can be given the approval link first: end the turn with the link, then call wait_for_access again"`
+	ShowLinkFirst bool `json:"show_link_first,omitempty" jsonschema:"set when wait_for_access returned at once without waiting, so the user can be given the approval link first: write the link in your message if it is not there yet, then call wait_for_access again in the same turn"`
 }
 
 // remarshal converts between the service's types and these mirrors through
@@ -394,11 +394,11 @@ func summarizeRequest(r accessRequest, viewer identity) string {
 		}
 		fmt.Fprintf(&b, "The user cannot see this result. Your reply must contain this approval link on its own line, or they have nothing to click:\n%s\n", r.URL)
 		if r.StillWaiting {
-			b.WriteString("Offer to keep waiting (call wait_for_access again) rather than polling yourself. ")
+			b.WriteString("Call wait_for_access again now, in the same turn, until about five minutes have passed since you submitted it; after that, end your turn, say it is still pending, repeat the link and offer to keep waiting. ")
 		} else if r.ShowLinkFirst {
-			b.WriteString("Not waiting yet. End your turn now with a reply that contains this link (again, if you already gave it), and ask the user to tell you when it is approved. Call wait_for_access again once they reply. ")
+			b.WriteString("Not waiting yet. If your message does not contain this link yet, write it now, then call wait_for_access again in the same turn. Don't end your turn or ask the user to tell you when it is approved. ")
 		} else {
-			b.WriteString("Write that message to the user now and end your turn; call wait_for_access with this request_id once they reply (they approved it, or want you to wait). ")
+			b.WriteString("Write that message to the user now, then, in the same turn, call wait_for_access with this request_id and keep calling it until the request is decided (about five minutes at most). Don't end your turn or ask the user to tell you when it is approved. ")
 		}
 		b.WriteString("Do not try to reach these services another way while it is pending.\n")
 	case string(jit.StatusScheduled):
