@@ -200,11 +200,11 @@ func TestRequestWaitApprove(t *testing.T) {
 	}
 
 	// The requester's first wait for a pending request returns at once and
-	// tells the model to write the link, then keep waiting in the same turn.
+	// tells the model to end its turn with the link, with a background poll.
 	start0 := time.Now()
 	res, sc = call(t, cs, "wait_for_access", map[string]any{"request_id": id, "timeout_seconds": 50})
 	if sc["status"] != "pending" || sc["show_link_first"] != true || time.Since(start0) > 3*time.Second ||
-		!strings.Contains(textOf(res), "call wait_for_access again in the same turn") || !strings.Contains(textOf(res), "http://jit/requests/"+id) {
+		!strings.Contains(textOf(res), "/v1/requests/"+id+"'") || !strings.Contains(textOf(res), "http://jit/requests/"+id) {
 		t.Errorf("first wait = %v after %s\n%s", sc, time.Since(start0), textOf(res))
 	}
 

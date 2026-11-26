@@ -1237,13 +1237,15 @@ person on that device. The tools are `list_requestable`, `request_access`,
 `wait_for_access`, `get_access_request` and `cancel_access_request`; there is
 no approve tool, on purpose. After `request_access` (which takes
 `start_at` to schedule the access for later), the agent shows the approval
-link and then waits by itself: it calls `wait_for_access` (up to 50 seconds
-a call) again and again in the same turn, and carries on once the request
-is approved, so you don't have to tell it. After about five minutes still
-pending it stops, repeats the link and offers to keep waiting. The first
-`wait_for_access` for a pending request returns at once, so an agent that
-skipped the link has to show it before anything blocks: hosts such as
-Claude Code show nothing while a tool call runs. A request through a flow the tailnet policy
+link as the last message of its turn: Claude Code may hide or condense text
+written just before a tool call, so a link followed by more waiting can go
+unseen. An agent that can run a background command that wakes it when it
+exits (Claude Code can) first starts a small `curl` loop against
+`/v1/requests/<id>`, every 15 seconds for about five minutes, and carries on
+by itself once the request is approved, so you don't have to tell it.
+Otherwise it calls `wait_for_access` (up to 50 seconds a call) when you
+reply. The first `wait_for_access` for a pending request returns at once and
+tells the agent to end its turn with the link. A request through a flow the tailnet policy
 does not use yet is refused with a message to pass on to the user, since
 approving it would unlock nothing. The server's instructions tell the agent
 how to use the tools and how to connect to a service once it is granted, so

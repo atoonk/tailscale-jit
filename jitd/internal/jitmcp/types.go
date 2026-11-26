@@ -149,7 +149,7 @@ type accessRequest struct {
 	StillWaiting bool `json:"still_waiting,omitempty"`
 	// ShowLinkFirst is set on the requester's first wait_for_access for a
 	// pending request, which returns at once so the user gets the link first.
-	ShowLinkFirst bool `json:"show_link_first,omitempty" jsonschema:"set when wait_for_access returned at once without waiting, so the user can be given the approval link first: write the link in your message if it is not there yet, then call wait_for_access again in the same turn"`
+	ShowLinkFirst bool `json:"show_link_first,omitempty" jsonschema:"set when wait_for_access returned at once without waiting, so the user can be given the approval link first: end the turn with the link (after starting the background status poll, if you can) and call wait_for_access again later"`
 }
 
 // remarshal converts between the service's types and these mirrors through
@@ -394,11 +394,14 @@ func summarizeRequest(r accessRequest, viewer identity) string {
 		}
 		fmt.Fprintf(&b, "The user cannot see this result. Your reply must contain this approval link on its own line, or they have nothing to click:\n%s\n", r.URL)
 		if r.StillWaiting {
-			b.WriteString("Call wait_for_access again now, in the same turn, until about five minutes have passed since you submitted it; after that, end your turn, say it is still pending, repeat the link and offer to keep waiting. ")
-		} else if r.ShowLinkFirst {
-			b.WriteString("Not waiting yet. Saying that you submitted a request is not enough: the user needs the full URL above, printed literally on its own line, to approve it. If you have not printed that URL itself yet, print it now. Then call wait_for_access again in the same turn. Don't end your turn or ask the user to tell you when it is approved. ")
+			b.WriteString("Still pending: say so, repeat the link above, and offer to keep waiting (call wait_for_access again) rather than polling yourself. ")
 		} else {
-			b.WriteString("Write that message to the user now, with the full URL printed literally on its own line (not just that you submitted a request), then, in the same turn, call wait_for_access with this request_id and keep calling it until the request is decided (about five minutes at most). Don't end your turn or ask the user to tell you when it is approved. ")
+			if r.ShowLinkFirst {
+				b.WriteString("Not waiting yet: the user would not see the link while you wait. ")
+			}
+			b.WriteString("Print the full URL above literally, on its own line, in the LAST message of this turn, then end your turn (saying you submitted a request is not enough, and text written just before a tool call may not be shown). ")
+			fmt.Fprintf(&b, "If you can run a shell command in the background that wakes you when it exits (Claude Code: Bash with run_in_background), start this status poll first, so you can carry on by yourself once it is approved:\n%s\n", statusPoll(r.URL))
+			b.WriteString("When it exits, or when the user replies, call wait_for_access with this request_id, which confirms the access is in place, and carry on with the task without asking. ")
 		}
 		b.WriteString("Do not try to reach these services another way while it is pending.\n")
 	case string(jit.StatusScheduled):
@@ -472,4 +475,17 @@ func listed(svcs []string) string {
 		return svcs[0] + " is"
 	}
 	return strings.Join(svcs, ", ") + " are"
+}
+
+// statusPoll is a shell command an agent can run in the background: it reads
+// the request from jitd's HTTP API every 15 seconds, for about five minutes,
+// and exits as soon as it is no longer pending. Hosts that wake the agent when
+// a background command exits (Claude Code) let it end its turn with the
+// approval link, which is then shown, and still carry on by itself once the
+// request is approved. The request page URL is <base>/requests/<id>; the API
+// is at <base>/v1/requests/<id>, readable by the requester's own device.
+func statusPoll(pageURL string) string {
+	api := strings.Replace(pageURL, "/requests/", "/v1/requests/", 1)
+	return `s=""; for i in $(seq 20); do s=$(curl -s -m 10 '` + api + `' | grep -o '"status": *"[a-z]*"' | head -n 1); ` +
+		`case "$s" in *pending*|"") sleep 15;; *) break;; esac; done; echo "jit request: ${s:-unknown}"`
 }
