@@ -460,8 +460,9 @@ Access requests (read this first):
 		`When it exits, call wait_for_access once (it confirms the access is in place) and carry on with the task without asking; ` +
 		`if it is still pending, say so and repeat the link. Without background commands, call wait_for_access when the user replies. ` +
 		`For a pending request found through list_requestable, use its "active_poll_command" the same way.
+- Show the approval link only while someone has to approve: once a request is approved, declined or over, don't repeat it unless the user asks.
 - Results carry a "summary" field: read it, it says what to do next.
-- A flow marked as approved automatically comes back approved: say it was granted and for how long, print the link, and carry on.
+- A flow marked as approved automatically comes back approved: say it was granted and for how long, and carry on (no link needed).
 - Never approve or decline a request yourself, by any means, not even on a flow that allows self-approval: people decide, you ask.
 - While a request is pending, declined or expired, do not try to reach the service another way.
 - cancel_access_request withdraws a pending request or ends approved access now: use it when the user no longer needs it, not on your own initiative.

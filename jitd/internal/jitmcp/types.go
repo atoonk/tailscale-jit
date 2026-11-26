@@ -420,7 +420,10 @@ func summarizeRequest(r accessRequest, viewer identity) string {
 		fmt.Fprintf(&b, "Access request %s%s for %s is SCHEDULED: approved, starting %s and ending %s.\n%s\n", r.ID, by, what, shortTime(r.StartAt), shortTime(r.ExpiresAt), r.URL)
 		b.WriteString("Nothing is granted until it starts, so do not try to use the access before then. There is no need to wait for it now.\n")
 	case string(jit.StatusApproved):
-		fmt.Fprintf(&b, "Access request %s%s for %s is APPROVED until %s.\n%s\n", r.ID, by, what, shortTime(r.ExpiresAt), r.URL)
+		fmt.Fprintf(&b, "Access request %s%s for %s is APPROVED until %s.\n", r.ID, by, what, shortTime(r.ExpiresAt))
+		if mine {
+			b.WriteString("Don't show the approval link again: it was only needed for approving. (It is in \"url\" if the user asks for it.)\n")
+		}
 		groups := groupNames(r.OktaGroups, r.GoogleGroups)
 		switch {
 		case !mine:
@@ -447,7 +450,7 @@ func summarizeRequest(r accessRequest, viewer identity) string {
 		} else {
 			fmt.Fprintf(&b, "%s does not have this access.", r.Requester.who())
 		}
-		fmt.Fprintf(&b, "\n%s\n", r.URL)
+		b.WriteString(" (The request page is in \"url\" if the user asks for it; no need to show it otherwise.)\n")
 	}
 	if r.Policy.noEffect() {
 		verb := "would unlock"
