@@ -52,6 +52,7 @@ type requestableFlow struct {
 	ActiveRequestURL  string      `json:"active_request_url,omitempty"`
 	ActiveStatus      string      `json:"active_status,omitempty"`
 	ActiveExpiresAt   string      `json:"active_expires_at,omitempty"`
+	ActivePollCommand string      `json:"active_poll_command,omitempty" jsonschema:"for your pending request: shell command to run in the background after printing its link; it exits when the request is decided, then call wait_for_access"`
 }
 
 // oktaGroup is an Okta or Google group a flow grants membership in.
@@ -93,6 +94,8 @@ func noEffectReason(unreferenced bool) string {
 }
 
 type listRequestableOutput struct {
+	// Summary repeats the text content, as accessRequest.Summary does.
+	Summary     string            `json:"summary,omitempty" jsonschema:"what this means and what to do next; read it first"`
 	Identity    identity          `json:"identity" jsonschema:"who jitd says you are (Tailscale WhoIs)"`
 	Requestable []requestableFlow `json:"requestable" jsonschema:"approval flows you may request access through"`
 }
@@ -118,6 +121,12 @@ type enforcement struct {
 }
 
 type accessRequest struct {
+	// Summary repeats the text content. Some hosts (Claude Code) give the
+	// model only the structured result when there is one, so the guidance
+	// in the text has to be here too.
+	Summary string `json:"summary,omitempty" jsonschema:"what this means and what to do next; read it first"`
+	// PollCommand is set on the requester's own pending request (statusPoll).
+	PollCommand    string      `json:"poll_command,omitempty" jsonschema:"shell command to run in the background (Claude Code: Bash with run_in_background) after printing the approval link: it exits when the request is decided, then call wait_for_access"`
 	ID             string      `json:"id"`
 	URL            string      `json:"url" jsonschema:"approval page; the user cannot see tool results, so put it in your reply"`
 	WorkflowID     string      `json:"workflow_id"`
@@ -358,6 +367,9 @@ func summarizeRequestable(o listRequestableOutput) string {
 		b.WriteString("\n")
 		if f.ActiveRequestID != "" {
 			fmt.Fprintf(&b, "  you already have a request (%s): %s\n  %s\n", f.ActiveStatus, f.ActiveRequestID, f.ActiveRequestURL)
+			if f.ActivePollCommand != "" {
+				b.WriteString("  it is still pending: if the user wants it, print that link in the last message of your turn, after starting its active_poll_command in the background if you can\n")
+			}
 		}
 	}
 	return b.String()
