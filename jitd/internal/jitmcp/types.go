@@ -52,6 +52,7 @@ type requestableFlow struct {
 	ActiveRequestURL  string      `json:"active_request_url,omitempty"`
 	ActiveStatus      string      `json:"active_status,omitempty"`
 	ActiveExpiresAt   string      `json:"active_expires_at,omitempty"`
+	ActivePollCommand string      `json:"active_poll_command,omitempty" jsonschema:"for your pending request: shell command to run in the background after printing its link; it exits when the request is decided, then call wait_for_access"`
 }
 
 // oktaGroup is an Okta or Google group a flow grants membership in.
@@ -93,6 +94,8 @@ func noEffectReason(unreferenced bool) string {
 }
 
 type listRequestableOutput struct {
+	// Summary repeats the text content, as accessRequest.Summary does.
+	Summary     string            `json:"summary,omitempty" jsonschema:"what this means and what to do next; read it first"`
 	Identity    identity          `json:"identity" jsonschema:"who jitd says you are (Tailscale WhoIs)"`
 	Requestable []requestableFlow `json:"requestable" jsonschema:"approval flows you may request access through"`
 }
@@ -118,6 +121,12 @@ type enforcement struct {
 }
 
 type accessRequest struct {
+	// Summary repeats the text content. Some hosts (Claude Code) give the
+	// model only the structured result when there is one, so the guidance
+	// in the text has to be here too.
+	Summary string `json:"summary,omitempty" jsonschema:"what this means and what to do next; read it first"`
+	// PollCommand is set on the requester's own pending request (statusPoll).
+	PollCommand    string      `json:"poll_command,omitempty" jsonschema:"shell command to run in the background (Claude Code: Bash with run_in_background) after printing the approval link: it exits when the request is decided, then call wait_for_access"`
 	ID             string      `json:"id"`
 	URL            string      `json:"url" jsonschema:"approval page; the user cannot see tool results, so put it in your reply"`
 	WorkflowID     string      `json:"workflow_id"`
@@ -149,7 +158,7 @@ type accessRequest struct {
 	StillWaiting bool `json:"still_waiting,omitempty"`
 	// ShowLinkFirst is set on the requester's first wait_for_access for a
 	// pending request, which returns at once so the user gets the link first.
-	ShowLinkFirst bool `json:"show_link_first,omitempty" jsonschema:"set when wait_for_access returned at once without waiting, so the user can be given the approval link first: end the turn with the link, then call wait_for_access again"`
+	ShowLinkFirst bool `json:"show_link_first,omitempty" jsonschema:"set when wait_for_access returned at once without waiting, so the user can be given the approval link first: end the turn with the link (after starting the background status poll, if you can) and call wait_for_access again later"`
 }
 
 // remarshal converts between the service's types and these mirrors through
@@ -358,6 +367,9 @@ func summarizeRequestable(o listRequestableOutput) string {
 		b.WriteString("\n")
 		if f.ActiveRequestID != "" {
 			fmt.Fprintf(&b, "  you already have a request (%s): %s\n  %s\n", f.ActiveStatus, f.ActiveRequestID, f.ActiveRequestURL)
+			if f.ActivePollCommand != "" {
+				b.WriteString("  it is still pending: if the user wants it, print that link in the last message of your turn, after starting its active_poll_command in the background if you can\n")
+			}
 		}
 	}
 	return b.String()
@@ -394,18 +406,24 @@ func summarizeRequest(r accessRequest, viewer identity) string {
 		}
 		fmt.Fprintf(&b, "The user cannot see this result. Your reply must contain this approval link on its own line, or they have nothing to click:\n%s\n", r.URL)
 		if r.StillWaiting {
-			b.WriteString("Offer to keep waiting (call wait_for_access again) rather than polling yourself. ")
-		} else if r.ShowLinkFirst {
-			b.WriteString("Not waiting yet. End your turn now with a reply that contains this link (again, if you already gave it), and ask the user to tell you when it is approved. Call wait_for_access again once they reply. ")
+			b.WriteString("Still pending: say so, repeat the link above, and offer to keep waiting (call wait_for_access again) rather than polling yourself. ")
 		} else {
-			b.WriteString("Write that message to the user now and end your turn; call wait_for_access with this request_id once they reply (they approved it, or want you to wait). ")
+			if r.ShowLinkFirst {
+				b.WriteString("Not waiting yet: the user would not see the link while you wait. ")
+			}
+			b.WriteString("Print the full URL above literally, on its own line, in the LAST message of this turn, then end your turn (saying you submitted a request is not enough, and text written just before a tool call may not be shown). ")
+			fmt.Fprintf(&b, "If you can run a shell command in the background that wakes you when it exits (Claude Code: Bash with run_in_background), start this status poll first, so you can carry on by yourself once it is approved:\n%s\n", statusPoll(r.URL))
+			b.WriteString("When it exits, or when the user replies, call wait_for_access with this request_id, which confirms the access is in place, and carry on with the task without asking. ")
 		}
 		b.WriteString("Do not try to reach these services another way while it is pending.\n")
 	case string(jit.StatusScheduled):
 		fmt.Fprintf(&b, "Access request %s%s for %s is SCHEDULED: approved, starting %s and ending %s.\n%s\n", r.ID, by, what, shortTime(r.StartAt), shortTime(r.ExpiresAt), r.URL)
 		b.WriteString("Nothing is granted until it starts, so do not try to use the access before then. There is no need to wait for it now.\n")
 	case string(jit.StatusApproved):
-		fmt.Fprintf(&b, "Access request %s%s for %s is APPROVED until %s.\n%s\n", r.ID, by, what, shortTime(r.ExpiresAt), r.URL)
+		fmt.Fprintf(&b, "Access request %s%s for %s is APPROVED until %s.\n", r.ID, by, what, shortTime(r.ExpiresAt))
+		if mine {
+			b.WriteString("Don't show the approval link again: it was only needed for approving. (It is in \"url\" if the user asks for it.)\n")
+		}
 		groups := groupNames(r.OktaGroups, r.GoogleGroups)
 		switch {
 		case !mine:
@@ -432,7 +450,7 @@ func summarizeRequest(r accessRequest, viewer identity) string {
 		} else {
 			fmt.Fprintf(&b, "%s does not have this access.", r.Requester.who())
 		}
-		fmt.Fprintf(&b, "\n%s\n", r.URL)
+		b.WriteString(" (The request page is in \"url\" if the user asks for it; no need to show it otherwise.)\n")
 	}
 	if r.Policy.noEffect() {
 		verb := "would unlock"
@@ -472,4 +490,17 @@ func listed(svcs []string) string {
 		return svcs[0] + " is"
 	}
 	return strings.Join(svcs, ", ") + " are"
+}
+
+// statusPoll is a shell command an agent can run in the background: it reads
+// the request from jitd's HTTP API every 15 seconds, for about five minutes,
+// and exits as soon as it is no longer pending. Hosts that wake the agent when
+// a background command exits (Claude Code) let it end its turn with the
+// approval link, which is then shown, and still carry on by itself once the
+// request is approved. The request page URL is <base>/requests/<id>; the API
+// is at <base>/v1/requests/<id>, readable by the requester's own device.
+func statusPoll(pageURL string) string {
+	api := strings.Replace(pageURL, "/requests/", "/v1/requests/", 1)
+	return `s=""; for i in $(seq 20); do s=$(curl -s -m 10 '` + api + `' | grep -o '"status": *"[a-z]*"' | head -n 1); ` +
+		`case "$s" in *pending*|"") sleep 15;; *) break;; esac; done; echo "jit request: ${s:-unknown}"`
 }

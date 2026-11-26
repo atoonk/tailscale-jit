@@ -191,8 +191,12 @@ func (s *Server) addTools(srv *mcp.Server, id jit.Identity) {
 		}
 		for i := range out.Requestable {
 			out.Requestable[i].scrub()
+			if f := &out.Requestable[i]; f.ActiveStatus == string(jit.StatusPending) && f.ActiveRequestURL != "" {
+				f.ActivePollCommand = statusPoll(f.ActiveRequestURL)
+			}
 		}
-		return text(summarizeRequestable(out)), out, nil
+		out.Summary = summarizeRequestable(out)
+		return text(out.Summary), out, nil
 	})
 
 	mcp.AddTool(srv, &mcp.Tool{
@@ -201,8 +205,9 @@ func (s *Server) addTools(srv *mcp.Server, id jit.Identity) {
 		Description: "Submit a just-in-time access request through a jitd approval flow (workflow_id from list_requestable) for the device you are on. " +
 			"Request the flow that fits the current step of the task, not the broadest one, for the time the work needs. " +
 			"Unless list_requestable says the flow is approved automatically (the result then comes back approved), a human must approve it. " +
-			"The result contains the approval URL; the user cannot see tool results, so write it in your reply on its own line and end your turn. " +
-			"Call wait_for_access once the user replies (they approved it, or want you to wait), before using the service.",
+			"The result contains the approval URL. The user cannot see tool results, and hosts such as Claude Code may hide text written just before a tool call, so the link must be in the LAST message of your turn: " +
+			"print the full URL literally on its own line and end your turn. If you can run a shell command in the background that wakes you when it exits (Claude Code: Bash with run_in_background), " +
+			"start the result's poll_command that way before ending the turn, so you carry on by yourself once it is approved; otherwise call wait_for_access when the user replies.",
 		Annotations: &mcp.ToolAnnotations{DestructiveHint: new(false), OpenWorldHint: new(false)},
 		Meta:        appMeta(),
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in requestAccessInput) (*mcp.CallToolResult, accessRequest, error) {
@@ -256,10 +261,10 @@ func (s *Server) addTools(srv *mcp.Server, id jit.Identity) {
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:  "wait_for_access",
 		Title: "Wait for an access request to be decided",
-		Description: "Wait until a jitd access request is approved (and the access is in place on the device) or declined, for up to timeout_seconds (default 30, at most 50). The first call for a pending request returns at once, without waiting: " +
-			"end your turn with the approval link, and call it again when the user replies. " +
-			"Use it instead of polling get_access_request. If it returns with the request still pending, call it again while the user " +
-			"is waiting for this access (up to about ten minutes in total); when you report instead, say it is still pending, repeat the approval link, and offer to keep waiting.",
+		Description: "Wait until a jitd access request is approved (and the access is in place on the device) or declined, for up to timeout_seconds (default 30, at most 50). " +
+			"Call it once the background status poll from request_access reports a decision, or when the user replies; then carry on with the task. " +
+			"Don't call it in the same turn as request_access for a pending request: the user would not see the approval link while you wait, so the first call for a pending request returns at once and tells you to end your turn with the link. " +
+			"If it returns with the request still pending, say so and repeat the approval link. Use it instead of polling get_access_request.",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true, IdempotentHint: true, OpenWorldHint: new(false)},
 		Meta:        appMeta(),
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in waitForAccessInput) (*mcp.CallToolResult, accessRequest, error) {
@@ -325,8 +330,10 @@ const maxWait = 50 * time.Second
 // records it; it returns the request it read. Hosts such as Claude Code
 // show nothing while a tool call runs and do not show tool results, and
 // models often wait before replying, so the user would be left without the
-// link they have to click. The first call therefore returns at once and
-// tells the model to end its turn with the link. Only the requester's own
+// link they have to click (Claude Code also condenses text written just
+// before a tool call). The first call therefore returns at once and tells
+// the model to end its turn with the link, after starting a background
+// status poll if it can (see statusPoll). Only the requester's own
 // agent uses it up: an approver or admin reading someone else's request
 // waits normally. The entry is removed when a wait sees the request
 // decided; one whose agent never waits again stays until jitd restarts
@@ -408,7 +415,11 @@ func (s *Server) result(ctx context.Context, id jit.Identity, r *jit.AccessReque
 	out.scrub()
 	out.StillWaiting = stillWaiting
 	out.ShowLinkFirst = showLinkFirst
-	return text(summarizeRequest(out, identity{Login: id.Login, DeviceID: id.DeviceID, DeviceName: id.DeviceName, Tags: id.Tags})), out, nil
+	if out.Status == string(jit.StatusPending) && out.Requester.Login == id.Login && out.TargetDeviceID == id.DeviceID {
+		out.PollCommand = statusPoll(out.URL)
+	}
+	out.Summary = summarizeRequest(out, identity{Login: id.Login, DeviceID: id.DeviceID, DeviceName: id.DeviceName, Tags: id.Tags})
+	return text(out.Summary), out, nil
 }
 
 // withURL adds the approval link to an error that points at a request (a
@@ -436,6 +447,26 @@ func instructions(jitURL string) string {
 		`(MySQL, PostgreSQL, MongoDB, MS SQL, CockroachDB, Elasticsearch), Kubernetes, RDP, VNC, HTTP, TCP or AWS S3. ` +
 		`Tailscale PAM puts those behind Tailscale Services; jitd (` + jitURL + `) grants just-in-time access to them after a human approves, or at once for the flows an admin made automatic ` +
 		`(tools: list_requestable, request_access, wait_for_access, get_access_request, cancel_access_request).
+
+Access requests (read this first):
+- Tool results are not shown to the user. When request_access returns a pending request, the LAST message of your turn ` +
+		`must print the full approval link (the result's "url") literally, on its own line, so the user can click it or pass it to an approver. ` +
+		`Hosts such as Claude Code hide or condense text written just before a tool call, so never print the link and then keep calling tools. ` +
+		`Saying you submitted a request is not enough. For example:
+    Approval needed: ` + jitURL + `/requests/req_...
+    I've submitted an access request for "Database access (read-only)" (15m, reason: ...). I'll carry on once it is approved.
+- To carry on without the user having to say "approved": if you can run a shell command in the background that wakes you when ` +
+		`it exits (Claude Code: Bash with run_in_background), start the result's "poll_command" that way, then end your turn with the link. ` +
+		`When it exits, call wait_for_access once (it confirms the access is in place) and carry on with the task without asking; ` +
+		`if it is still pending, say so and repeat the link. Without background commands, call wait_for_access when the user replies. ` +
+		`For a pending request found through list_requestable, use its "active_poll_command" the same way.
+- Show the approval link only while someone has to approve: once a request is approved, declined or over, don't repeat it unless the user asks.
+- Results carry a "summary" field: read it, it says what to do next.
+- A flow marked as approved automatically comes back approved: say it was granted and for how long, and carry on (no link needed).
+- Never approve or decline a request yourself, by any means, not even on a flow that allows self-approval: people decide, you ask.
+- While a request is pending, declined or expired, do not try to reach the service another way.
+- cancel_access_request withdraws a pending request or ends approved access now: use it when the user no longer needs it, not on your own initiative.
+- After approval, run the service list (below) again to confirm the service is there before using it.
 
 What this device can reach right now comes from the local Tailscale client, not from jitd. Run in a shell:
     tailscale service list --json
@@ -473,27 +504,5 @@ Choosing what to request: ask for the access the task needs, not the most you co
 - In the reason, say what you will do and on what (for example "restart deployment payments to drop leaked DB connections"), ` +
 		`so the approver can judge whether it fits.
 Then call request_access.
-
-Access requests:
-- Tool results are not shown to the user. Anything they need from one, above all the approval link, goes in your own message.
-- Whenever you submit an access request on the user's behalf, tell the user right away, in plain words, ` +
-		`that you submitted an access request and are waiting for approval. Then print the approval link ` +
-		`from the result's "url" field on its own line so they can click it. Send this message before your next tool call, ` +
-		`not after waiting: the user has to approve before any wait can succeed. For example:
-    I've submitted an access request for "Database access (read-only)" (15m, reason: ...). It needs approval here:
-    ` + jitURL + `/requests/req_...
-- A flow that list_requestable marks as approved automatically comes back approved: nobody has to approve. Tell the user ` +
-		`it was granted automatically and for how long, print the link, and carry on.
-- Then end your turn with that message. When the user replies (they approved it, or ask you to wait), call wait_for_access ` +
-		`with the request_id. If you call it before that, its first call for a pending request returns at once and tells you to ` +
-		`end your turn with the link. Later calls return when the request is decided and the access is in place, ` +
-		`or after 30 seconds (timeout_seconds, up to 50) with the request still pending. While the user is waiting for this ` +
-		`access, call it again rather than polling get_access_request; after about ten minutes, or when the user has moved on, ` +
-		`report that it is still pending, repeat the link, and offer to keep waiting.
-- If the user no longer needs the access, or asks to end it early, call cancel_access_request: it withdraws a pending ` +
-		`request or ends approved access now. Do not end access on your own initiative while the user may still use it.
-- Repeat the link whenever you report that a request is still pending.
-- While a request is pending, declined or expired, do not try to reach the service another way.
-- Never approve or decline a request yourself, by any means, not even on a flow that allows self-approval: people decide, you ask.
-- After approval, run the service list again to confirm the service is there (it appears within seconds) before using it.`
+`
 }

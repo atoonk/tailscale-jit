@@ -200,12 +200,20 @@ func TestRequestWaitApprove(t *testing.T) {
 	}
 
 	// The requester's first wait for a pending request returns at once and
-	// tells the model to end its turn with the link.
+	// tells the model to end its turn with the link, with a background poll.
 	start0 := time.Now()
 	res, sc = call(t, cs, "wait_for_access", map[string]any{"request_id": id, "timeout_seconds": 50})
 	if sc["status"] != "pending" || sc["show_link_first"] != true || time.Since(start0) > 3*time.Second ||
-		!strings.Contains(textOf(res), "End your turn") || !strings.Contains(textOf(res), "http://jit/requests/"+id) {
+		!strings.Contains(textOf(res), "/v1/requests/"+id+"'") || !strings.Contains(textOf(res), "http://jit/requests/"+id) {
 		t.Errorf("first wait = %v after %s\n%s", sc, time.Since(start0), textOf(res))
+	}
+	// Hosts that give the model only the structured result still get the
+	// guidance and the poll command.
+	if pc, _ := sc["poll_command"].(string); !strings.Contains(pc, "/v1/requests/"+id+"'") {
+		t.Errorf("poll_command = %q", sc["poll_command"])
+	}
+	if sum, _ := sc["summary"].(string); sum != textOf(res) {
+		t.Errorf("summary does not repeat the text:\n%s", sum)
 	}
 
 	// Waiting with a short timeout returns the request still pending.
